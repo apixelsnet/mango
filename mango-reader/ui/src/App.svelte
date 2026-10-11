@@ -20,6 +20,7 @@
   import Settings from './routes/Settings.svelte';
   import Source from './routes/Source.svelte';
   import Title from './routes/Title.svelte';
+  import Welcome from './routes/Welcome.svelte';
 
   // `under` lists the first path segments that light the entry up.
   const NAV = [
@@ -50,6 +51,11 @@
   });
   const news = $derived(version.info?.updateAvailable ?? false);
 
+  // An invitation's link has done its work once its holder is in.
+  $effect(() => {
+    if (session.signedIn && area === 'join') go('/', true);
+  });
+
   function search(event: SubmitEvent) {
     event.preventDefault();
     const text = query.trim();
@@ -62,7 +68,11 @@
     <div class="page"><Notice error={session.error} retry={loadSession} /></div>
   {/if}
 {:else if !session.signedIn}
-  <SignIn />
+  {#if session.signup}
+    <Welcome />
+  {:else}
+    <SignIn />
+  {/if}
 {:else if area === 'read' && parts[1]}
   {#key parts[1]}
     <Reader id={Number(parts[1])} />

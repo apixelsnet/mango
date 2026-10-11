@@ -26,6 +26,7 @@ How Mango is shipped, configured, protected and kept up to date.
 | | `MANGO_PASSWORD` | none. Sets the password on a start that finds none |
 | `hosts` | `MANGO_HOSTS` | none. Names Mango goes by, comma separated in the variable; see below |
 | `proxied` | `MANGO_PROXIED` | `false`; `on` when a proxy in front writes each caller's address into `X-Forwarded-For` |
+| `signup` | `MANGO_SIGNUP` | `false`; `on` shows the main page to whoever is not signed in, and lets the holder of an admin's invitation make an account |
 | `host.dir` | `MANGO_HOST_DIR` | `host` beside the binary |
 | `host.java` | `MANGO_JAVA` | `java` |
 | `host.idle_secs` | `MANGO_HOST_IDLE_SECS` | `300`; `0` never stops the host |
@@ -87,6 +88,29 @@ Checked on Linux, in a container with no network: before the change, a `POST` wi
 - The host is not a wall between an admin and the server: whoever may bring in an extension can read every account's library through it.
 
 An admin does not see into another account's library, and nothing shows one account what another reads.
+
+## Main page and invitations (2026-10-11)
+
+Closed unless the owner opens it: `MANGO_SIGNUP=on`. Without it nothing here exists, and a browser that is not signed in sees the sign-in form alone, as before.
+
+- With it, that browser sees the main page: what Mango does, and beside it Sign in and Create account. Either one ends in the library.
+- Making an account takes an invitation. An admin makes one under Settings, Account, with a note on who it is for: `GET | POST /api/invites`, `DELETE /api/invites/{id}`. The answer that makes it carries its code, sixteen characters, and a link that opens the main page with the code filled in. The code sits after the `#` of that link, which a browser sends to no server. Mango keeps the code's hash only, so it is shown once.
+- `POST /api/auth/signup` takes a name, a password and the code. It makes a reader, never an admin, with an empty library, and signs the caller in. So what an invited person can bring into the host is what an admin already put there.
+- A code opens once and holds a week (`days` on the call that makes it: 1 to 90). Spending it and making the account are one step in the database, so two callers with one code make one account. A name that is taken or a password too short leaves it open.
+- A code that never was, one that was used and one that ran out are answered alike: 403 `invite_code`. Each counts against its sender as a wrong password does, and the same wait follows the fifth.
+- Taking an invitation back leaves the account that was made with it. Invitations that ran out unused are cleared at the next start.
+- Until the owner has a password there is no main page and no sign-up: the first visit stays what it was.
+
+The main page is for a Mango that people are invited to. Every account still shares the one extension host and the cookies sources keep there, and has no limit on what it downloads: invite people you know.
+
+Checked on Linux, in a container behind a published port:
+
+- With the switch off, the smoke test (173 checks) passes: sign-up is answered 403 `signup_off`, and so is making an invitation.
+- With it on, by script, 29 checks: nothing before the owner's password; an invitation whose code is in no answer but the first and not in the database; a short password, a taken name, a wrong code and a request from another site's page each refused, the first two leaving the code open; the code typed in capitals with spaces making a reader with an empty library in `users/2`; that reader refused the invitations and the accounts; the code refused a second time; one taken back refused; the sixth wrong try answered 429 and the right code working after the wait.
+- In a browser: the main page at 1440 pixels wide, light and dark, and at 400 with no sideways scroll; a wrong password refused on the page; the owner signing in there and making an invitation; its link switching an open main page to Create account with the code filled in; two passwords that differ caught; the account made and landing in the library; that account's settings without Accounts and Invitations; the same link refused afterwards.
+- 75 unit tests, one of them this.
+
+Not checked: Windows and macOS were not run; nothing here is particular to a system. No proxy stood in front, so the per-caller wait behind one rests on the test of `caller`. Two callers spending one code at the same moment were not raced; that rests on the single statement that spends it.
 
 Checked by the smoke test on Linux and Windows, with two accounts on one store and one extension:
 

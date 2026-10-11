@@ -2,7 +2,7 @@
 //! Everything else the server is asked for is the web UI.
 
 use crate::{
-    auth::{self, Account, AccountChange, Auth, Who},
+    auth::{self, Account, AccountChange, Auth, Invite, Who},
     db::Db,
     downloads::{Downloads, QueueView},
     updates::{Status, Updates, UpdatesView},
@@ -78,6 +78,8 @@ pub fn router(state: Spaces) -> Router {
         .route("/settings", get(get_settings).put(put_settings))
         .route("/users", get(list_users).post(add_user))
         .route("/users/{id}", put(edit_user).delete(remove_user))
+        .route("/invites", get(list_invites).post(add_invite))
+        .route("/invites/{id}", delete(remove_invite))
         .route("/solver", get(get_solver).put(put_solver))
         .route("/stores", get(list_stores).post(add_store))
         .route("/stores/refresh", post(refresh_stores))
@@ -267,6 +269,34 @@ async fn remove_user(State(server): State<Spaces>, Me(app): Me, Path(id): Path<i
     }
     app.auth.remove(id).await?;
     server.close(id).await;
+    Ok(done())
+}
+
+// ---------- invitations ----------
+
+async fn list_invites(Me(app): Me) -> Result<Json<Value>> {
+    app.me.admin()?;
+    Ok(Json(json!({ "invites": app.auth.invites().await? })))
+}
+
+#[derive(Deserialize)]
+struct NewInvite {
+    /// Who it is for. Only admins see it.
+    #[serde(default)]
+    note: String,
+    /// How many days it holds. Left out, a week.
+    days: Option<i64>,
+}
+
+/// Makes an invitation. The answer carries its code, this once.
+async fn add_invite(Me(app): Me, Json(body): Json<NewInvite>) -> Result<Json<Invite>> {
+    app.me.admin()?;
+    Ok(Json(app.auth.invite(&body.note, body.days).await?))
+}
+
+async fn remove_invite(Me(app): Me, Path(id): Path<i64>) -> Result<Json<Value>> {
+    app.me.admin()?;
+    app.auth.uninvite(id).await?;
     Ok(done())
 }
 

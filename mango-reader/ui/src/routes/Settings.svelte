@@ -331,7 +331,60 @@
     if (tab.id !== 'account' || askedUsers || !session.login || !session.admin) return;
     askedUsers = true;
     withUsers(async () => {});
+    if (session.signup) withInvites(async () => {});
   });
+
+  // ---------- invitations, for an admin ----------
+
+  type Invite = { id: number; note: string; createdAt: number; expiresAt: number; usedAt: number | null; usedBy: string | null; code?: string };
+
+  let invites = $state<Invite[]>([]);
+  let invitesError = $state<string | null>(null);
+  let invitee = $state('');
+  /** The invitation just made: the one moment its code can be shown. */
+  let made = $state<Invite | null>(null);
+  let linkCopied = $state(false);
+  // The code stays after the #, which a browser sends to no server.
+  const inviteLink = $derived(made?.code ? `${location.origin}${location.pathname}#/join/${made.code}` : '');
+
+  async function withInvites(work: () => Promise<unknown>) {
+    invitesError = null;
+    try {
+      await work();
+      invites = (await get<{ invites: Invite[] }>('/invites')).invites;
+    } catch (e) {
+      invitesError = message(e);
+    }
+  }
+
+  function addInvite(event: SubmitEvent) {
+    event.preventDefault();
+    withInvites(async () => {
+      made = await send<Invite>('POST', '/invites', { note: invitee });
+      invitee = '';
+      linkCopied = false;
+    });
+  }
+
+  function removeInvite(id: number) {
+    if (made?.id === id) made = null;
+    withInvites(() => send('DELETE', `/invites/${id}`));
+  }
+
+  async function copyInvite() {
+    try {
+      await navigator.clipboard.writeText(inviteLink);
+      linkCopied = true;
+    } catch {
+      invitesError = 'The link could not be copied from here. Select it and copy it by hand.';
+    }
+  }
+
+  function inviteState(invite: Invite): string {
+    if (invite.usedAt) return `Used ${ago(invite.usedAt)}${invite.usedBy ? ` by ${invite.usedBy}` : ''}`;
+    if (invite.expiresAt * 1000 < Date.now()) return 'Ran out unused';
+    return `Open until ${new Date(invite.expiresAt * 1000).toLocaleDateString()}`;
+  }
 
   // ---------- the solver ----------
 
@@ -870,6 +923,56 @@
                 <div class="set stack"><Notice error={usersError} /></div>
               {/if}
             </section>
+
+            {#if session.signup}
+              <section class="card">
+                <h3>Invitations</h3>
+                <div class="set stack">
+                  <div class="what">
+                    <span>
+                      Whoever holds an invitation makes their own account on the main page, as a reader. Each one opens once and holds a
+                      week.
+                    </span>
+                  </div>
+                </div>
+                {#if made?.code}
+                  <div class="set stack">
+                    <div class="what">
+                      <strong>Send this link. It is shown this once.</strong>
+                      <span>Or the code alone, to type in: {made.code}</span>
+                    </div>
+                    <div class="how wide">
+                      <label class="field grow">
+                        <span class="sr">The invitation's link</span>
+                        <input type="text" value={inviteLink} readonly onfocus={(event) => event.currentTarget.select()} />
+                      </label>
+                      <button class="btn ink" onclick={copyInvite}>{linkCopied ? 'Copied' : 'Copy link'}</button>
+                    </div>
+                  </div>
+                {/if}
+                {#each invites as invite (invite.id)}
+                  <div class="set">
+                    <div class="what">
+                      <strong>{invite.note || 'No note'}</strong>
+                      <span>{inviteState(invite)}</span>
+                    </div>
+                    <div class="how">
+                      <button class="btn" onclick={() => removeInvite(invite.id)}>{invite.usedAt ? 'Forget' : 'Take back'}</button>
+                    </div>
+                  </div>
+                {/each}
+                <form class="set" onsubmit={addInvite}>
+                  <label class="field grow">
+                    <span class="sr">Who the invitation is for</span>
+                    <input type="text" bind:value={invitee} placeholder="Who it is for: only admins see this" autocomplete="off" maxlength="80" />
+                  </label>
+                  <button class="btn ink">Make an invitation</button>
+                </form>
+                {#if invitesError}
+                  <div class="set stack"><Notice error={invitesError} /></div>
+                {/if}
+              </section>
+            {/if}
           {/if}
         {:else}
           <p class="warn"><strong>Login is switched off.</strong> Anyone who can reach this address can use Mango. Take <code>MANGO_LOGIN=off</code> away to ask for a password.</p>
@@ -1057,6 +1160,11 @@
     flex-wrap: wrap;
     align-items: center;
     gap: 8px;
+  }
+
+  /* In a stacked row, as wide as the row: for a field that holds a whole address. */
+  .how.wide {
+    align-self: stretch;
   }
 
   /* ---------- controls ---------- */

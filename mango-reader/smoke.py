@@ -169,6 +169,13 @@ if who["login"]:
     check("its settings are its own", "smoke.kid" not in call("GET", "/settings")[0])
     if data_dir:
         check("and so is its database", os.path.isfile(os.path.join(data_dir, "users", str(kid["id"]), "mango.db")))
+    if not me["signup"]:
+        # Unless the owner switched it on, nobody makes an account for themselves, and there is nothing to invite to.
+        newcomer = {"name": "smoke-newcomer", "password": KID_PASSWORD, "code": "0000-0000-0000-0000"}
+        err, _ = call("POST", "/auth/signup", newcomer, expect=403)
+        check("nobody signs themselves up", err["error"]["code"] == "signup_off")
+        err, _ = call("POST", "/invites", {"note": "smoke"}, expect=403)
+        check("and no invitation is made", err["error"]["code"] == "signup_off" and call("GET", "/invites")[0]["invites"] == [])
 
 
 def as_kid(path):

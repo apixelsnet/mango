@@ -2,7 +2,7 @@
 
 import { gate, get, message, send } from './api';
 
-type Status = { login: boolean; setup: boolean; setupCode: boolean; signedIn: boolean; named: boolean; name: string | null; admin: boolean };
+type Status = { login: boolean; setup: boolean; setupCode: boolean; signup: boolean; signedIn: boolean; named: boolean; name: string | null; admin: boolean };
 
 export const session = $state({
   /** False until Mango has said who we are. */
@@ -14,6 +14,8 @@ export const session = $state({
   setup: false,
   /** Setting it takes the setup code too: this browser is not on Mango's own machine. */
   setupCode: false,
+  /** Whoever holds an admin's invitation can make an account: the main page is shown, and offers it. */
+  signup: false,
   signedIn: false,
   /** More than one account exists: signing in takes a name as well. */
   named: false,
@@ -40,6 +42,12 @@ gate.lost = (code) => {
 /** Signs in, or with `first` sets the password. The page starts over once it worked. */
 export async function signIn(password: string, first: boolean, name = '', code = '') {
   await send('POST', first ? '/auth/setup' : '/auth/login', { password, name, code });
+  location.reload();
+}
+
+/** Makes an account with an invitation's code and signs in to it. The page starts over, as after signing in. */
+export async function signUp(name: string, password: string, code: string) {
+  await send('POST', '/auth/signup', { name, password, code });
   location.reload();
 }
 
