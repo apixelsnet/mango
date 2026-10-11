@@ -1,0 +1,13 @@
+# Read by `cargo about` in the Dockerfile's `notices` stage, for the server and for
+# the desktop shell: the licences a crate may come under. A crate under anything
+# else stops the build, so a new dependency's licence gets looked at.
+accepted = [
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "MIT",
+    "BSD-3-Clause",
+    "ISC",
+    "Unicode-3.0",
+    "MPL-2.0",
+    "CDLA-Permissive-2.0",
+]

@@ -1,0 +1,29 @@
+# Mango, with everything it writes in one named volume.
+#
+#   docker compose up -d      then open http://localhost:8787 and set a password
+#
+# The image is built from this checkout. To run a published one instead, set
+# MANGO_IMAGE to its name and run `docker compose pull` before `up`.
+
+services:
+  mango:
+    image: ${MANGO_IMAGE:-mango:local}
+    build:
+      context: .
+      # The image that can give sources a web view. Larger; see the README.
+      # target: full
+    restart: unless-stopped
+    ports:
+      - "${MANGO_PORT:-8787}:8787"
+    volumes:
+      - mango-data:/data
+      # Your own files, for the local source: one folder per title.
+      # - /path/to/manga:/data/local:ro
+    # environment:
+    #   MANGO_PASSWORD: change-me        # the password on the first start; without it, the first visitor sets one
+    #   MANGO_RELEASES_TOKEN: github_pat # lets Mango see the releases of a repository that is not public
+    # Long enough for the extension host to stop cleanly.
+    stop_grace_period: 20s
+
+volumes:
+  mango-data:

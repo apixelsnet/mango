@@ -1,0 +1,80 @@
+name: CI
+
+# Checks every push to the main branch and every pull request: the UI type-checks
+# and builds, the core's tests pass with that UI built in, and the desktop shell
+# compiles.
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: UI and core
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          # Nothing after the checkout pushes with git; the token is not left in the folder.
+          persist-credentials: false
+
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: mango-reader/ui/package-lock.json
+
+      - name: Check and build the UI
+        working-directory: mango-reader/ui
+        run: |
+          npm ci --no-audit --no-fund
+          npm run check
+          npm run build
+
+      - uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            mango-reader/target
+          key: cargo-${{ runner.os }}-${{ hashFiles('mango-reader/Cargo.lock') }}
+          restore-keys: cargo-${{ runner.os }}-
+
+      - name: Test the core
+        working-directory: mango-reader
+        run: cargo test --release --locked
+
+  shell:
+    name: Desktop shell
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          # Nothing after the checkout pushes with git; the token is not left in the folder.
+          persist-credentials: false
+
+      - name: Install what the shell links
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends libwebkit2gtk-4.1-dev libgtk-3-dev libayatana-appindicator3-dev libxdo-dev
+
+      - uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            mango-desktop/target
+          key: shell-${{ runner.os }}-${{ hashFiles('mango-desktop/Cargo.lock') }}
+          restore-keys: shell-${{ runner.os }}-
+
+      - name: Check the shell
+        working-directory: mango-desktop
+        run: cargo check --locked

@@ -1,0 +1,29 @@
+Mango
+Copyright 2026 the Mango contributors
+
+Mango's own code is under the Apache License, Version 2.0; see LICENSE.
+
+Mango ships with other people's work.
+
+Suwayomi-Server
+  The extension host's `runtime.jar` (`host/runtime.jar` in a release archive,
+  `/opt/mango/host/runtime.jar` in the Docker image) is Suwayomi-Server's release
+  jar with files removed and nothing else changed. Suwayomi-Server is licensed
+  under the Mozilla Public License 2.0. Its source is at
+  https://github.com/Suwayomi/Suwayomi-Server, at the version Mango's `Dockerfile`
+  names as SUWAYOMI_VERSION; the same file lists what was removed. The jar carries
+  further libraries, each under its own licence.
+
+The programs and the web UI
+  `mango` and `mango-desktop` are built from Rust crates, and the web UI inside
+  `mango` carries Svelte and the two fonts below. The licence of each is in
+  THIRD-PARTY-LICENSES.txt: beside this file in a release archive, in
+  `/usr/share/doc/mango` in the Docker image, and built from a checkout by
+  `docker buildx build --target notices -o out .`
+
+In the Docker image only
+  A Java runtime linked from Eclipse Temurin (OpenJDK, GPL-2.0 with the Classpath
+  Exception), Debian's base system, and the DejaVu fonts.
+
+Fonts in the web UI
+  Dela Gothic One and Zen Kaku Gothic New, both under the SIL Open Font License 1.1.

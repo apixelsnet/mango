@@ -1,0 +1,13 @@
+# The build reads what is named here and nothing else.
+*
+!LICENSE
+!NOTICE
+!mango-reader
+!mango-desktop
+!mango-extension-host/src
+**/target
+**/node_modules
+**/dist
+**/__pycache__
+mango-reader/tests
+mango-reader/smoke.py

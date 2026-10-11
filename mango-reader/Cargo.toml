@@ -1,0 +1,37 @@
+[package]
+name = "mango-reader"
+version = "1.0.0"
+edition = "2021"
+description = "Self-hosted manga and manhwa reader"
+license = "Apache-2.0"
+
+[[bin]]
+name = "mango"
+path = "src/main.rs"
+
+[dependencies]
+axum = { version = "0.8", default-features = false, features = ["http1", "json", "original-uri", "query", "tokio"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "process", "io-util", "sync", "time", "signal"] }
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json", "gzip"] }
+rusqlite = { version = "0.32", features = ["bundled"] }
+rust-embed = "8"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+toml = "0.8"
+prost = "0.13"
+flate2 = "1"
+zip = { version = "2", default-features = false, features = ["deflate"] }
+sha2 = { version = "0.10", features = ["oid"] }
+argon2 = { version = "0.5", default-features = false, features = ["alloc", "password-hash"] }
+rsa = "0.9"
+cms = "0.2"
+der = { version = "0.7", features = ["oid", "std"] }
+base64 = "0.22"
+hex = "0.4"
+getrandom = "0.2"
+tracing = "0.1"
+tracing-subscriber = "0.3"
+
+[profile.release]
+lto = "thin"
+strip = true

@@ -1,0 +1,367 @@
+openapi: 3.1.0
+info:
+  title: Mango extension host
+  version: "4"
+  description: |
+    Contract between the Rust core and the extension host. Protocol version 4.
+
+    Version 4 differs from 3 in one place: `/extensions/install` takes the package
+    and the version the store lists, and refuses a file that is another extension
+    or an older version.
+
+    Version 3 differs from 2 in one place: `/sources/{id}/preferences` answers,
+    and takes a change. In version 2 it was reserved and answered 501.
+
+    Version 2 differs from 1 in one place: `/sources/{id}/image` takes a cover
+    address as well as a page. Version 1 had no way to ask for a cover, and a
+    cover fetched as a page fails on sources that build page requests their own way.
+
+    Rules that hold for every call:
+    - The host listens on loopback only.
+    - Every request carries `Authorization: Bearer <token>`. The core chooses the
+      token and hands it to the host when it starts it.
+    - Bodies are JSON. Source ids are 64-bit, so they travel as strings.
+    - Every response carries `X-Mango-Protocol: 3`.
+    - Failures return `{"error": {"code", "message"}}`.
+
+    Changing a field or a status code means a new protocol version.
+servers:
+  - url: http://127.0.0.1:{port}
+    variables:
+      port:
+        default: "0"
+security:
+  - token: []
+paths:
+  /health:
+    get:
+      summary: Liveness, versions, and what is loaded
+      responses:
+        "200":
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Health" }
+  /extensions:
+    get:
+      summary: Installed extensions. Does not load any of them.
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [extensions]
+                properties:
+                  extensions:
+                    type: array
+                    items: { $ref: "#/components/schemas/Extension" }
+  /extensions/install:
+    post:
+      summary: Download, verify and load an extension. Replaces an older version of the same package.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [url, sha256]
+              properties:
+                url: { type: string, description: "URL of the extension .jar" }
+                sha256: { type: string, description: "Expected hash, hex" }
+                pkg: { type: string, description: "The package asked for. A file that declares another is refused: bad_extension" }
+                versionCode: { type: integer, description: "The version the store lists. A file that declares a lower one is refused: bad_extension" }
+      responses:
+        "200":
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Extension" }
+        "422": { description: "sha256_mismatch or bad_extension" }
+        "501": { description: "apk_not_supported: only .jar in this host version" }
+        "502": { description: "download_failed" }
+  /extensions/{pkg}:
+    delete:
+      summary: Unload and delete an extension
+      parameters:
+        - { name: pkg, in: path, required: true, schema: { type: string } }
+      responses:
+        "200": { description: "Removed. Also returned when it was not installed." }
+  /sources/{id}/popular:
+    post:
+      summary: Popular titles
+      parameters: [{ $ref: "#/components/parameters/sourceId" }]
+      requestBody: { $ref: "#/components/requestBodies/Page" }
+      responses:
+        "200": { $ref: "#/components/responses/MangaPage" }
+  /sources/{id}/latest:
+    post:
+      summary: Latest updates. Only when the source reports supportsLatest.
+      parameters: [{ $ref: "#/components/parameters/sourceId" }]
+      requestBody: { $ref: "#/components/requestBodies/Page" }
+      responses:
+        "200": { $ref: "#/components/responses/MangaPage" }
+  /sources/{id}/search:
+    post:
+      summary: Search by text. Filters are reserved; host 0.1 ignores them.
+      parameters: [{ $ref: "#/components/parameters/sourceId" }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                page: { type: integer, default: 1 }
+                query: { type: string, default: "" }
+                filters: { type: array, items: {}, description: "Reserved" }
+      responses:
+        "200": { $ref: "#/components/responses/MangaPage" }
+  /sources/{id}/manga:
+    post:
+      summary: Refresh a title's details, its chapter list, or both
+      parameters: [{ $ref: "#/components/parameters/sourceId" }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [manga]
+              properties:
+                manga: { $ref: "#/components/schemas/Manga" }
+                chapters:
+                  type: array
+                  items: { $ref: "#/components/schemas/Chapter" }
+                  description: "Chapters the core already has"
+                fetchDetails: { type: boolean, default: true }
+                fetchChapters: { type: boolean, default: true }
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [manga, chapters]
+                properties:
+                  manga: { $ref: "#/components/schemas/Manga" }
+                  chapters:
+                    type: array
+                    items: { $ref: "#/components/schemas/Chapter" }
+  /sources/{id}/pages:
+    post:
+      summary: Pages of a chapter, in reading order
+      parameters: [{ $ref: "#/components/parameters/sourceId" }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [chapter]
+              properties:
+                chapter: { $ref: "#/components/schemas/Chapter" }
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [pages]
+                properties:
+                  pages:
+                    type: array
+                    items: { $ref: "#/components/schemas/Page" }
+  /sources/{id}/image:
+    post:
+      summary: Image bytes for a page or a cover, fetched through the extension's own HTTP client
+      description: |
+        Give exactly one of `page` and `cover`. A page goes through the source's
+        own page-image request. A cover is fetched with the source's client and
+        headers, which is how the cover addresses a source hands out are meant
+        to be used.
+      parameters: [{ $ref: "#/components/parameters/sourceId" }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                page: { $ref: "#/components/schemas/Page" }
+                cover: { type: string, description: "A title's thumbnailUrl. A path is taken as relative to the source's base URL." }
+      responses:
+        "200":
+          description: Raw image, streamed
+          content:
+            "image/*": {}
+  /sources/{id}/filters:
+    get:
+      summary: Reserved. Host 0.1 answers 501.
+      parameters: [{ $ref: "#/components/parameters/sourceId" }]
+      responses:
+        "501": { description: not_implemented }
+  /sources/{id}/preferences:
+    get:
+      summary: What the source lets its user set. An empty list when it has nothing.
+      parameters: [{ $ref: "#/components/parameters/sourceId" }]
+      responses:
+        "200": { $ref: "#/components/responses/Preferences" }
+    put:
+      summary: Change one preference. Answers with the list as it is afterwards.
+      description: |
+        The source hears of the change first and may refuse it; then the list comes
+        back unchanged. After a change the extension's sources are made anew at
+        their next call, because a source reads its preferences when it is made.
+      parameters: [{ $ref: "#/components/parameters/sourceId" }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [position, value]
+              properties:
+                position: { type: integer, description: "The entry's place in the list, as read" }
+                key: { type: [string, "null"], description: "The entry's key, as read. A change is refused when another entry is at that place by now." }
+                value: { description: "A boolean for a switch, a string for a list or a text, an array of strings for a multi" }
+      responses:
+        "200": { $ref: "#/components/responses/Preferences" }
+        "400": { description: "bad_request: no such entry, another entry at that place, an entry that is switched off, or a value of the wrong kind" }
+components:
+  securitySchemes:
+    token: { type: http, scheme: bearer }
+  parameters:
+    sourceId:
+      name: id
+      in: path
+      required: true
+      schema: { type: string, pattern: "^-?[0-9]+$" }
+  requestBodies:
+    Page:
+      required: true
+      content:
+        application/json:
+          schema:
+            type: object
+            properties:
+              page: { type: integer, default: 1 }
+  responses:
+    MangaPage:
+      description: One page of titles
+      content:
+        application/json:
+          schema:
+            type: object
+            required: [mangas, hasNextPage]
+            properties:
+              mangas:
+                type: array
+                items: { $ref: "#/components/schemas/Manga" }
+              hasNextPage: { type: boolean }
+    Preferences:
+      description: A source's preferences, in the order the source lists them
+      content:
+        application/json:
+          schema:
+            type: object
+            required: [preferences]
+            properties:
+              preferences:
+                type: array
+                items: { $ref: "#/components/schemas/Preference" }
+  schemas:
+    Preference:
+      type: object
+      required: [position, type, enabled, visible]
+      properties:
+        position: { type: integer }
+        type: { type: string, enum: [switch, list, multi, text, info], description: "info has nothing to set" }
+        key: { type: [string, "null"] }
+        title: { type: [string, "null"] }
+        summary: { type: [string, "null"], description: "For a list, `%s` stands for the entry picked" }
+        enabled: { type: boolean }
+        visible: { type: boolean }
+        value: { description: "switch: boolean. list: string or null. text: string. multi: array of strings. info: absent." }
+        entries: { type: array, items: { type: string }, description: "list and multi: the words to show" }
+        entryValues: { type: array, items: { type: string }, description: "list and multi: the values kept, in the order of entries" }
+        dialogTitle: { type: [string, "null"], description: "text only" }
+        dialogMessage: { type: [string, "null"], description: "text only" }
+    Health:
+      type: object
+      required: [protocol, host, runtime, loadedExtensions, loadedSources]
+      properties:
+        protocol: { type: integer }
+        host: { type: string }
+        runtime: { type: string, description: "Version of the bundled Suwayomi runtime" }
+        installedExtensions: { type: integer }
+        loadedExtensions: { type: integer }
+        loadedSources: { type: integer }
+        rssMb: { type: integer, description: "-1 when unknown" }
+    Extension:
+      type: object
+      required: [pkg, name, versionName, versionCode, lib, contentWarning, sources]
+      properties:
+        pkg: { type: string }
+        name: { type: string }
+        versionName: { type: string }
+        versionCode: { type: integer }
+        lib: { type: string, description: "Extension API version, for example 1.6" }
+        contentWarning: { type: integer, description: "0 or 1 safe, 2 mixed, 3 NSFW" }
+        sources:
+          type: array
+          items: { $ref: "#/components/schemas/Source" }
+    Source:
+      type: object
+      required: [id, name, lang, supportsLatest]
+      properties:
+        id: { type: string }
+        name: { type: string }
+        lang: { type: string }
+        baseUrl: { type: string }
+        supportsLatest: { type: boolean }
+    Manga:
+      type: object
+      required: [url, title]
+      properties:
+        url: { type: string, description: "Source-relative key. With the source id it identifies the title." }
+        title: { type: string }
+        artist: { type: [string, "null"] }
+        author: { type: [string, "null"] }
+        description: { type: [string, "null"] }
+        genre: { type: [string, "null"], description: "Comma separated" }
+        status: { type: integer, description: "0 unknown, 1 ongoing, 2 completed, 3 licensed, 4 finished, 5 cancelled, 6 hiatus" }
+        thumbnailUrl: { type: [string, "null"] }
+        updateStrategy: { type: string, enum: [ALWAYS_UPDATE, ONLY_FETCH_ONCE] }
+        initialized: { type: boolean }
+        memo: { type: object, description: "Opaque state owned by the extension. Store it and send it back unchanged." }
+    Chapter:
+      type: object
+      required: [url, name]
+      properties:
+        url: { type: string }
+        name: { type: string }
+        dateUpload: { type: integer, description: "Epoch milliseconds, 0 when unknown" }
+        chapterNumber: { type: number, description: "-1 when unknown" }
+        scanlator: { type: [string, "null"] }
+        memo: { type: object }
+    Page:
+      type: object
+      required: [index]
+      properties:
+        index: { type: integer }
+        url: { type: string }
+        imageUrl: { type: [string, "null"] }
+    Error:
+      type: object
+      required: [error]
+      properties:
+        error:
+          type: object
+          required: [code, message]
+          properties:
+            code:
+              type: string
+              description: |
+                bad_request (400), unauthorized (401), not_found, unknown_source (404),
+                sha256_mismatch, bad_extension (422), not_implemented, apk_not_supported,
+                needs_optional_module (501), source_error, download_failed (502), timeout (504).
+            message: { type: string }

@@ -1,0 +1,20 @@
+[package]
+name = "mango-desktop"
+version = "1.0.0"
+edition = "2021"
+description = "Mango in a window of its own, with a tray icon"
+license = "Apache-2.0"
+
+[[bin]]
+name = "mango-desktop"
+path = "src/main.rs"
+
+[dependencies]
+tao = "0.30"
+wry = "0.47"
+tray-icon = "0.19"
+
+[profile.release]
+opt-level = "s"
+lto = "thin"
+strip = true

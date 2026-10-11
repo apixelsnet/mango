@@ -1,0 +1,322 @@
+name: Release
+
+# Builds the main branch and publishes it as a version.
+#
+# Two ways in:
+#   - Actions > Release > Run workflow. Say how far to bump, or type a version. The
+#     workflow tags the tip of the main branch and builds that tag.
+#   - Push a tag yourself:  git tag v0.2.0 && git push origin v0.2.0
+#
+# Out come a release with one archive per platform (the binary, the desktop shell
+# and the extension host's jars beside it; Linux on arm64 goes without the shell)
+# and two images for amd64 and arm64 on ghcr.io: the plain one, and `-full` with
+# what a web view needs. The version is the tag: the build is told it, so Cargo.toml does not have to be edited first.
+
+on:
+  push:
+    tags: ['v[0-9]+.[0-9]+.[0-9]+*']
+  workflow_dispatch:
+    inputs:
+      bump:
+        description: How far to move on from the last release
+        type: choice
+        options: [patch, minor, major]
+        default: patch
+      version:
+        description: Or an exact version, such as 0.2.0 or 1.0.0-rc.1. Wins over the bump.
+        type: string
+        required: false
+
+# One release at a time, and none cut short half way.
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+  packages: write
+
+jobs:
+  version:
+    name: Pick the version
+    runs-on: ubuntu-24.04
+    outputs:
+      version: ${{ steps.pick.outputs.version }}
+      tag: ${{ steps.pick.outputs.tag }}
+      prerelease: ${{ steps.pick.outputs.prerelease }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          # Nothing after the checkout pushes with git; the token is not left in the folder.
+          persist-credentials: false
+          fetch-depth: 0
+
+      - name: Work out the version, and tag it
+        id: pick
+        env:
+          GH_TOKEN: ${{ github.token }}
+          WANTED: ${{ inputs.version }}
+          BUMP: ${{ inputs.bump }}
+          MAIN: ${{ github.event.repository.default_branch }}
+        run: |
+          set -euo pipefail
+          released='^[0-9]+\.[0-9]+\.[0-9]+$'
+          any='^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.]+)?$'
+
+          if [ "$GITHUB_REF_TYPE" = tag ]; then
+            version=${GITHUB_REF_NAME#v}
+          else
+            if [ "$GITHUB_REF_NAME" != "$MAIN" ]; then
+              echo "::error::Releases are cut from $MAIN, not from $GITHUB_REF_NAME."
+              exit 1
+            fi
+            version=${WANTED#v}
+            if [ -z "$version" ]; then
+              last=$(git tag --list 'v*' --sort=-v:refname | sed 's/^v//' | grep -E "$released" | head -n 1 || true)
+              if [ -z "$last" ]; then
+                # The first release takes the version Cargo.toml carries.
+                version=$(sed -n 's/^version = "\(.*\)"/\1/p' mango-reader/Cargo.toml | head -n 1)
+              else
+                IFS=. read -r major minor patch <<< "$last"
+                case "$BUMP" in
+                  major) version=$((major + 1)).0.0 ;;
+                  minor) version=$major.$((minor + 1)).0 ;;
+                  *) version=$major.$minor.$((patch + 1)) ;;
+                esac
+              fi
+            fi
+          fi
+          if ! [[ "$version" =~ $any ]]; then
+            echo "::error::'$version' does not read as a version like 1.2.3 or 1.2.3-rc.1."
+            exit 1
+          fi
+
+          tag=v$version
+          if [ "$GITHUB_REF_TYPE" != tag ]; then
+            at=$(git rev-list -n 1 "refs/tags/$tag" 2>/dev/null || true)
+            if [ -z "$at" ]; then
+              gh api "repos/$GITHUB_REPOSITORY/git/refs" -f "ref=refs/tags/$tag" -f "sha=$GITHUB_SHA" --silent
+            elif [ "$at" != "$GITHUB_SHA" ]; then
+              echo "::error::$tag exists already and names another commit."
+              exit 1
+            fi
+          fi
+
+          prerelease=false
+          case "$version" in *-*) prerelease=true ;; esac
+          {
+            echo "version=$version"
+            echo "tag=$tag"
+            echo "prerelease=$prerelease"
+          } >> "$GITHUB_OUTPUT"
+          echo "Releasing Mango $version from ${GITHUB_SHA::7}" >> "$GITHUB_STEP_SUMMARY"
+
+  linux:
+    name: Linux and the image
+    needs: version
+    runs-on: ubuntu-24.04
+    env:
+      VERSION: ${{ needs.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          # Nothing after the checkout pushes with git; the token is not left in the folder.
+          persist-credentials: false
+          ref: ${{ needs.version.outputs.tag }}
+
+      - name: Set up the builder
+        run: |
+          # arm64 is cross-compiled; emulation is only for the image's last, small steps.
+          docker run --privileged --rm tonistiigi/binfmt@sha256:400a4873b838d1b89194d982c45e5fb3cda4593fbfd7e08a02e76b03b21166f0 --install arm64
+          docker buildx create --name mango --use
+
+      - name: Build for amd64 and arm64
+        run: |
+          set -euo pipefail
+          args=(--build-arg "MANGO_VERSION=$VERSION" --build-arg "MANGO_COMMIT=$GITHUB_SHA" --build-arg "MANGO_REPO=$GITHUB_REPOSITORY")
+          docker buildx build --platform linux/amd64,linux/arm64 "${args[@]}" --target dist --output type=local,dest=out .
+          docker buildx build --platform linux/amd64 --target shell --output type=local,dest=out/linux_amd64 .
+          docker buildx build --platform linux/amd64 "${args[@]}" --tag mango:test --load .
+
+      - name: Try the image
+        run: |
+          set -euo pipefail
+          docker run -d --name mango -p 127.0.0.1:8787:8787 mango:test
+          for _ in $(seq 30); do
+            docker exec mango mango health 2>/dev/null && break
+            sleep 1
+          done
+          docker exec mango mango health
+          # It says the version it was built as, asks for a password, and serves its page.
+          docker exec mango mango version | grep -F "mango $VERSION "
+          curl -fsS http://127.0.0.1:8787/api/auth | grep -F '"setup":true'
+          curl -sS -o /dev/null -w '%{http_code}\n' http://127.0.0.1:8787/api/library | grep -x 401
+          curl -fsS http://127.0.0.1:8787/ | grep -cF '<title>Mango</title>'
+          # And it carries the licences.
+          docker exec mango test -s /usr/share/doc/mango/LICENSE -a -s /usr/share/doc/mango/THIRD-PARTY-LICENSES.txt
+          docker rm -f mango
+
+      - name: Pack
+        run: |
+          set -euo pipefail
+          mkdir -p pack dist
+          for pair in amd64:x86_64 arm64:aarch64; do
+            name=mango-$VERSION-linux-${pair#*:}
+            mkdir "pack/$name"
+            cp -r "out/linux_${pair%%:*}/." "pack/$name/"
+            cp README.md LICENSE NOTICE "pack/$name/"
+            chmod +x "pack/$name"/mango*
+            tar -C pack -czf "dist/$name.tar.gz" "$name"
+          done
+          ls -l dist
+
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: pkg-linux
+          path: dist/*
+          if-no-files-found: error
+
+      # The same jars and the same list of licences go into the macOS and Windows archives.
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: shared
+          path: |
+            out/linux_amd64/host
+            out/linux_amd64/THIRD-PARTY-LICENSES.txt
+          if-no-files-found: error
+          retention-days: 1
+
+      - name: Push the image
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          image=ghcr.io/${GITHUB_REPOSITORY,,}
+          echo "$GH_TOKEN" | docker login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
+          # The plain image, then the one with what a web view needs. They share every layer but the last.
+          for kind in mango full; do
+            tag=$VERSION
+            if [ "$kind" = full ]; then tag=$VERSION-full; fi
+            docker buildx build --platform linux/amd64,linux/arm64 --target "$kind" \
+              --build-arg "MANGO_VERSION=$VERSION" --build-arg "MANGO_COMMIT=$GITHUB_SHA" --build-arg "MANGO_REPO=$GITHUB_REPOSITORY" \
+              --label "org.opencontainers.image.title=Mango" \
+              --label "org.opencontainers.image.source=$GITHUB_SERVER_URL/$GITHUB_REPOSITORY" \
+              --label "org.opencontainers.image.version=$VERSION" \
+              --label "org.opencontainers.image.revision=$GITHUB_SHA" \
+              --tag "$image:$tag" --push .
+          done
+
+  desktop:
+    name: ${{ matrix.name }}
+    needs: [version, linux]
+    strategy:
+      matrix:
+        include:
+          - { name: macOS arm64, runner: macos-latest, target: aarch64-apple-darwin, file: macos-aarch64 }
+          - { name: macOS x86_64, runner: macos-latest, target: x86_64-apple-darwin, file: macos-x86_64 }
+          - { name: Windows x86_64, runner: windows-latest, target: x86_64-pc-windows-msvc, file: windows-x86_64 }
+    runs-on: ${{ matrix.runner }}
+    defaults:
+      run:
+        shell: bash
+    env:
+      MANGO_VERSION: ${{ needs.version.outputs.version }}
+      MANGO_COMMIT: ${{ github.sha }}
+      MANGO_REPO: ${{ github.repository }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          # Nothing after the checkout pushes with git; the token is not left in the folder.
+          persist-credentials: false
+          ref: ${{ needs.version.outputs.tag }}
+
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: mango-reader/ui/package-lock.json
+
+      - name: Build the UI
+        working-directory: mango-reader/ui
+        run: |
+          npm ci --no-audit --no-fund
+          npm run build
+
+      - name: Build the core
+        working-directory: mango-reader
+        run: |
+          rustup target add ${{ matrix.target }}
+          cargo build --release --locked --target ${{ matrix.target }}
+
+      - name: Build the desktop shell
+        working-directory: mango-desktop
+        run: cargo build --release --locked --target ${{ matrix.target }}
+
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: shared
+          path: shared
+
+      - name: Pack
+        run: |
+          set -euo pipefail
+          name=mango-$MANGO_VERSION-${{ matrix.file }}
+          built=mango-reader/target/${{ matrix.target }}/release
+          shell=mango-desktop/target/${{ matrix.target }}/release
+          mkdir -p "pack/$name" dist
+          cp -r shared/host "pack/$name/host"
+          cp README.md LICENSE NOTICE shared/THIRD-PARTY-LICENSES.txt "pack/$name/"
+          if [ "$RUNNER_OS" = Windows ]; then
+            cp "$built/mango.exe" "$shell/mango-desktop.exe" "pack/$name/"
+            (cd pack && 7z a -tzip "../dist/$name.zip" "$name" > /dev/null)
+          else
+            cp "$built/mango" "$shell/mango-desktop" "pack/$name/"
+            tar -C pack -czf "dist/$name.tar.gz" "$name"
+          fi
+          ls -l dist
+
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: pkg-${{ matrix.file }}
+          path: dist/*
+          if-no-files-found: error
+
+  publish:
+    name: Publish
+    needs: [version, linux, desktop]
+    runs-on: ubuntu-24.04
+    env:
+      GH_TOKEN: ${{ github.token }}
+      VERSION: ${{ needs.version.outputs.version }}
+      TAG: ${{ needs.version.outputs.tag }}
+      PRERELEASE: ${{ needs.version.outputs.prerelease }}
+    steps:
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          pattern: pkg-*
+          path: dist
+          merge-multiple: true
+
+      - name: Publish the release
+        working-directory: dist
+        run: |
+          set -euo pipefail
+          sha256sum mango-* > SHA256SUMS
+          cat SHA256SUMS
+          if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" > /dev/null 2>&1; then
+            # Run again for a release that is there already: put the new files in its place.
+            gh release upload "$TAG" ./* --clobber --repo "$GITHUB_REPOSITORY"
+          else
+            flags=(--title "Mango $VERSION" --generate-notes --verify-tag)
+            if [ "$PRERELEASE" = true ]; then flags+=(--prerelease); fi
+            gh release create "$TAG" ./* "${flags[@]}" --repo "$GITHUB_REPOSITORY"
+          fi
+
+      - name: Point the image's moving tags at it
+        if: needs.version.outputs.prerelease == 'false'
+        run: |
+          set -euo pipefail
+          image=ghcr.io/${GITHUB_REPOSITORY,,}
+          echo "$GH_TOKEN" | docker login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
+          docker buildx imagetools create --tag "$image:latest" --tag "$image:${VERSION%.*}" "$image:$VERSION"
+          docker buildx imagetools create --tag "$image:full" --tag "$image:${VERSION%.*}-full" "$image:$VERSION-full"
