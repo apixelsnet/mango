@@ -114,9 +114,22 @@ jobs:
   linux:
     name: Linux and the image
     needs: version
-    runs-on: ubuntu-24.04
+    # GitHub's machine, unless the repository's RELEASE_RUNNER variable names another:
+    # `self-hosted` sends this job, the long one, to a machine of the owner's, which
+    # keeps its build cache.
+    #
+    # Before setting it: a runner that a public repository may use is open to every
+    # workflow in it, and a pull request brings its own workflow files. So either the
+    # runner group is limited to this workflow, or every pull request from outside
+    # waits for approval. docs/features/09-packaging-auth.md has both.
+    runs-on: ${{ vars.RELEASE_RUNNER || 'ubuntu-24.04' }}
     env:
       VERSION: ${{ needs.version.outputs.version }}
+      # Every buildx call below goes to this builder, without making it the machine's default.
+      BUILDX_BUILDER: mango
+      # Names of this run's own, so that nothing on a machine that keeps state is in their way.
+      TEST_IMAGE: mango:release-test-${{ github.run_id }}
+      TEST_NAME: mango-release-test-${{ github.run_id }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
@@ -126,9 +139,15 @@ jobs:
 
       - name: Set up the builder
         run: |
+          set -euo pipefail
+          if ! { docker info && docker buildx version; } > /dev/null 2>&1; then
+            echo "::error::This machine needs Docker with buildx, and a user who may run it without sudo."
+            exit 1
+          fi
           # arm64 is cross-compiled; emulation is only for the image's last, small steps.
           docker run --privileged --rm tonistiigi/binfmt@sha256:400a4873b838d1b89194d982c45e5fb3cda4593fbfd7e08a02e76b03b21166f0 --install arm64
-          docker buildx create --name mango --use
+          # A machine that made a release before has the builder already, and its cache.
+          docker buildx inspect mango > /dev/null 2>&1 || docker buildx create --name mango
 
       - name: Build for amd64 and arm64
         run: |
@@ -136,25 +155,26 @@ jobs:
           args=(--build-arg "MANGO_VERSION=$VERSION" --build-arg "MANGO_COMMIT=$GITHUB_SHA" --build-arg "MANGO_REPO=$GITHUB_REPOSITORY")
           docker buildx build --platform linux/amd64,linux/arm64 "${args[@]}" --target dist --output type=local,dest=out .
           docker buildx build --platform linux/amd64 --target shell --output type=local,dest=out/linux_amd64 .
-          docker buildx build --platform linux/amd64 "${args[@]}" --tag mango:test --load .
+          docker buildx build --platform linux/amd64 "${args[@]}" --tag "$TEST_IMAGE" --load .
 
       - name: Try the image
         run: |
           set -euo pipefail
-          docker run -d --name mango -p 127.0.0.1:8787:8787 mango:test
+          # On whichever port of this machine is free.
+          docker run -d --name "$TEST_NAME" -p 127.0.0.1::8787 "$TEST_IMAGE"
           for _ in $(seq 30); do
-            docker exec mango mango health 2>/dev/null && break
+            docker exec "$TEST_NAME" mango health 2>/dev/null && break
             sleep 1
           done
-          docker exec mango mango health
+          docker exec "$TEST_NAME" mango health
+          at=http://$(docker port "$TEST_NAME" 8787/tcp | head -n 1)
           # It says the version it was built as, asks for a password, and serves its page.
-          docker exec mango mango version | grep -F "mango $VERSION "
-          curl -fsS http://127.0.0.1:8787/api/auth | grep -F '"setup":true'
-          curl -sS -o /dev/null -w '%{http_code}\n' http://127.0.0.1:8787/api/library | grep -x 401
-          curl -fsS http://127.0.0.1:8787/ | grep -cF '<title>Mango</title>'
+          docker exec "$TEST_NAME" mango version | grep -F "mango $VERSION "
+          curl -fsS "$at/api/auth" | grep -F '"setup":true'
+          curl -sS -o /dev/null -w '%{http_code}\n' "$at/api/library" | grep -x 401
+          curl -fsS "$at/" | grep -cF '<title>Mango</title>'
           # And it carries the licences.
-          docker exec mango test -s /usr/share/doc/mango/LICENSE -a -s /usr/share/doc/mango/THIRD-PARTY-LICENSES.txt
-          docker rm -f mango
+          docker exec "$TEST_NAME" test -s /usr/share/doc/mango/LICENSE -a -s /usr/share/doc/mango/THIRD-PARTY-LICENSES.txt
 
       - name: Pack
         run: |
@@ -205,6 +225,16 @@ jobs:
               --label "org.opencontainers.image.revision=$GITHUB_SHA" \
               --tag "$image:$tag" --push .
           done
+
+      # GitHub's machine is thrown away. One of the owner's is left as it was found, but
+      # for the build cache, and what no build used for two weeks goes from that too.
+      - name: Clean up
+        if: always()
+        run: |
+          docker rm -f "$TEST_NAME" > /dev/null 2>&1 || true
+          docker rmi "$TEST_IMAGE" > /dev/null 2>&1 || true
+          docker logout ghcr.io > /dev/null 2>&1 || true
+          docker buildx prune --builder mango --filter until=336h -f > /dev/null 2>&1 || true
 
   desktop:
     name: ${{ matrix.name }}
