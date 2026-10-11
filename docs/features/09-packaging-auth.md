@@ -145,7 +145,9 @@ The `full` image (`--target full`, published as `<version>-full` and `full`) is 
 
 Checked on Linux: the image built with the new `.dockerignore`; the three files are in it, and `--target dist` gives the same licence file (764 KB: 557 crate entries under seven licences, then Svelte and the fonts). The core's 74 unit tests pass, its smoke test passed against that image (171 checks) and the host's against the same jars. `actionlint` passes on both workflows.
 
-Not checked: the release workflow's changed steps (the licence file handed to the macOS and Windows jobs, the files in each archive) have not run. Windows was not run: nothing a program does changed. What `runtime.jar` carries is not in the licence file.
+Checked with release 1.0.3: the release workflow's changed steps ran, on GitHub's machines. The Windows archive holds the three files beside the two programs and `host/`, its checksum matches `SHA256SUMS`, and every tag of the image pulls without a login; the pulled image has the three files too.
+
+Not checked: the other four archives were not opened. The release's Linux job has not run on a machine of the owner's yet. Windows was not run: nothing a program does changed. What `runtime.jar` carries is not in the licence file.
 
 ## Build rules
 
