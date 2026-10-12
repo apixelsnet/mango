@@ -27,7 +27,7 @@ use tokio::{
     sync::{oneshot, watch, Mutex, OwnedSemaphorePermit, Semaphore},
 };
 
-const PROTOCOL: u32 = 4;
+const PROTOCOL: u32 = 5;
 /// Cap on one image from a source.
 const MAX_IMAGE: usize = 64 << 20;
 const PING_EVERY: Duration = Duration::from_secs(15);
@@ -605,9 +605,9 @@ mod tests {
 
     #[test]
     fn ready_line() {
-        assert_eq!(parse_ready("MANGO_HOST_READY port=41233 protocol=4"), Some(Ok(41233)));
+        assert_eq!(parse_ready("MANGO_HOST_READY port=41233 protocol=5"), Some(Ok(41233)));
         assert!(matches!(parse_ready("MANGO_HOST_READY port=41233 protocol=1"), Some(Err(why)) if why.contains("protocol 1")));
-        assert!(matches!(parse_ready("MANGO_HOST_READY port=0 protocol=4"), Some(Err(_))));
+        assert!(matches!(parse_ready("MANGO_HOST_READY port=0 protocol=5"), Some(Err(_))));
         assert_eq!(parse_ready("some log line"), None);
     }
 

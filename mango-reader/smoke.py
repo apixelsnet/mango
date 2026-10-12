@@ -36,6 +36,7 @@ import sys
 import threading
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 import xml.etree.ElementTree
 import zipfile
@@ -169,6 +170,13 @@ if who["login"]:
     check("its settings are its own", "smoke.kid" not in call("GET", "/settings")[0])
     if data_dir:
         check("and so is its database", os.path.isfile(os.path.join(data_dir, "users", str(kid["id"]), "mango.db")))
+    if not me["signup"]:
+        # Unless the owner switched it on, nobody makes an account for themselves, and there is nothing to invite to.
+        newcomer = {"name": "smoke-newcomer", "password": KID_PASSWORD, "code": "0000-0000-0000-0000"}
+        err, _ = call("POST", "/auth/signup", newcomer, expect=403)
+        check("nobody signs themselves up", err["error"]["code"] == "signup_off")
+        err, _ = call("POST", "/invites", {"note": "smoke"}, expect=403)
+        check("and no invitation is made", err["error"]["code"] == "signup_off" and call("GET", "/invites")[0]["invites"] == [])
 
 
 def as_kid(path):
@@ -274,6 +282,36 @@ check("popular lists titles with covers", len(popular["items"]) > 5 and all(i["c
 found, ms = call("GET", f"/sources/{sid}/search?q=one")
 print(f"  search: {len(found['items'])} titles in {ms} ms")
 check("search finds titles", len(found["items"]) > 0)
+filters, ms = call("GET", f"/sources/{sid}/filters")
+filters = filters["filters"]
+print(f"  filters: {len(filters)} in {ms} ms")
+
+
+def first_change(items):
+    """A change to the first switch among a source's filters, in the shape a search takes."""
+    for position, f in enumerate(items):
+        if f["type"] == "checkbox":
+            return {"position": position, "state": not f["state"]}
+        if f["type"] == "tristate":
+            return {"position": position, "state": 1}
+        if f["type"] == "group" and first_change(f["filters"]):
+            return {"position": position, "state": [first_change(f["filters"])]}
+    return None
+
+
+def by_filters(changes):
+    return f"/sources/{sid}/search?filters=" + urllib.parse.quote(json.dumps(changes))
+
+
+change = first_change(filters)
+check("a source says what its search can be narrowed by", change is not None)
+if change:
+    narrowed, ms = call("GET", by_filters([change]))
+    print(f"  search by a filter: {len(narrowed['items'])} titles in {ms} ms")
+err, _ = call("GET", by_filters([{"position": len(filters), "state": True}]), expect=400)
+check("a filter that is not there is refused", err["error"]["code"] == "bad_request")
+call("GET", f"/sources/{sid}/search?filters=nonsense", expect=400)
+check("the local source has no filters", call("GET", "/sources/0/filters")[0]["filters"] == [])
 call("GET", f"/sources/{sid}/sideways", expect=404)
 card = popular["items"][0]
 status, got, cover, ms = raw("GET", f"{site}/{card['cover']}")

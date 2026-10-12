@@ -5,6 +5,9 @@
 
   const SHORTEST = 8;
 
+  // On the main page the form stands alone: that page has the logo and the frame.
+  let { inside = false }: { inside?: boolean } = $props();
+
   let name = $state('');
   let password = $state('');
   let again = $state('');
@@ -33,13 +36,15 @@
   }
 </script>
 
-<main class="door">
+<svelte:element this={inside ? 'div' : 'main'} class:door={!inside}>
   <form class="panel" onsubmit={submit}>
-    <div class="logo">
-      <span class="dot"></span>
-      <span class="display word">MANGO</span>
-    </div>
-    <h1 class="display">{first ? 'SET A PASSWORD' : 'SIGN IN'}</h1>
+    {#if !inside}
+      <div class="logo">
+        <span class="dot"></span>
+        <span class="display word">MANGO</span>
+      </div>
+    {/if}
+    <svelte:element this={inside ? 'h2' : 'h1'} class="display title">{first ? 'SET A PASSWORD' : 'SIGN IN'}</svelte:element>
     {#if first}
       <p>This Mango is new. Pick the password that will open it from now on: {SHORTEST} characters or more.</p>
     {/if}
@@ -48,7 +53,7 @@
       <label class="field">
         <span class="sr">Name</span>
         <!-- svelte-ignore a11y_autofocus -->
-        <input type="text" name="username" bind:value={name} placeholder="Name" autocomplete="username" autocapitalize="none" required autofocus />
+        <input type="text" name="username" bind:value={name} placeholder="Name" autocomplete="username" autocapitalize="none" required autofocus={!inside} />
       </label>
     {:else}
       <!-- Password managers file the password under this name. -->
@@ -65,7 +70,7 @@
         autocomplete={first ? 'new-password' : 'current-password'}
         minlength={first ? SHORTEST : undefined}
         required
-        autofocus={!named}
+        autofocus={!named && !inside}
       />
     </label>
     {#if first}
@@ -88,7 +93,7 @@
     <Notice {error} />
     <button class="btn big ink" disabled={busy}>{first ? 'Set it and enter' : 'Sign in'}</button>
   </form>
-</main>
+</svelte:element>
 
 <style>
   .door {
@@ -129,7 +134,7 @@
     line-height: 1;
   }
 
-  h1 {
+  .title {
     font-size: 30px;
   }
 </style>

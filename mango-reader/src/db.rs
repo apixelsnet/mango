@@ -21,6 +21,7 @@ const MIGRATIONS: &[&str] = &[
     include_str!("../migrations/008_users.sql"),
     include_str!("../migrations/009_reader.sql"),
     include_str!("../migrations/010_versions.sql"),
+    include_str!("../migrations/011_invites.sql"),
 ];
 
 

@@ -4,7 +4,9 @@
 //! token in a cookie; the database holds only the token's hash. The first account
 //! is the owner's: until it has a password, the API answers nothing but the call
 //! that sets one. Reading apps that cannot keep a cookie send name and password
-//! with every call instead; see `basic`.
+//! with every call instead; see `basic`. Other accounts are an admin's to add,
+//! or, where the owner switched that on, their holders' to make with an admin's
+//! invitation; see `join`.
 
 use crate::{
     db::{self, Db},
@@ -54,6 +56,10 @@ const FREE_TRIES: u32 = 5;
 const LONGEST_WAIT: i64 = 300;
 /// A name and password sent with a call are checked again after this long.
 const BASIC_SECS: i64 = 600;
+/// An invitation holds this many days unless its maker says otherwise, and never more than the second.
+const INVITE_DAYS: i64 = 7;
+const MAX_INVITE_DAYS: i64 = 90;
+const MAX_NOTE: usize = 80;
 /// Where the highest number an account ever had is kept. A number is not given out
 /// twice: it names the account's folder, which may outlive the account for a moment.
 const LAST_ID: &str = "users.last_id";
@@ -97,13 +103,32 @@ pub struct AccountChange {
     admin: Option<bool>,
 }
 
-/// How Mango is reached, as the owner described it.
+/// What lets one person make one account.
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Invite {
+    pub id: i64,
+    /// Who it is for, in the words of the admin who made it.
+    note: String,
+    created_at: i64,
+    expires_at: i64,
+    used_at: Option<i64>,
+    /// The account made with it, while there is one.
+    used_by: Option<String>,
+    /// The code. Only the answer that makes the invitation carries it: Mango keeps its hash.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    code: Option<String>,
+}
+
+/// How Mango is reached and who may come in, as the owner described it.
 #[derive(Clone, Default)]
 pub struct Front {
     /// Names Mango goes by; see `Auth::answers`.
     pub hosts: Vec<String>,
     /// A proxy stands in front and writes each caller's address into `X-Forwarded-For`.
     pub proxied: bool,
+    /// Whoever holds an admin's invitation may make an account; see `Auth::join`.
+    pub signup: bool,
 }
 
 pub struct Auth {
@@ -139,6 +164,8 @@ pub struct Status {
     setup: bool,
     /// Setting it takes the setup code as well: the caller is not on Mango's own machine.
     setup_code: bool,
+    /// Whoever holds an invitation can make an account here: the page offers it.
+    signup: bool,
     signed_in: bool,
     /// More than one account exists, so signing in takes a name.
     named: bool,
@@ -169,11 +196,15 @@ fn new_code() -> Result<String> {
     Ok(format!("{}-{}-{}-{}", &text[..4], &text[4..8], &text[8..12], &text[12..]))
 }
 
+/// A code as it is compared: its letters and digits, however it was typed.
+fn plain_code(text: &str) -> String {
+    text.chars().filter(char::is_ascii_alphanumeric).map(|c| c.to_ascii_lowercase()).collect()
+}
+
 /// Whether two setup codes are the same, however they were typed. They are compared by
 /// hash, so the time it takes says nothing about where they differ.
 fn same_code(given: &str, code: &str) -> bool {
-    let plain = |text: &str| text.chars().filter(char::is_ascii_alphanumeric).map(|c| c.to_ascii_lowercase()).collect::<String>();
-    token_hash(&plain(given)) == token_hash(&plain(code))
+    token_hash(&plain_code(given)) == token_hash(&plain_code(code))
 }
 
 /// What the Mango that keeps `instance` answers to `challenge`.
@@ -224,6 +255,17 @@ fn accounts(conn: &Connection) -> Result<Vec<Account>> {
     Ok(rows.collect::<rusqlite::Result<_>>()?)
 }
 
+/// Adds an account under a number no account had before. The caller commits.
+fn insert_account(tx: &Connection, name: &str, hash: &str, admin: bool) -> Result<i64> {
+    let last: i64 = db::state(tx, LAST_ID)?.and_then(|text| text.parse().ok()).unwrap_or(0);
+    // The owner's place is kept, even before the owner exists.
+    let id: i64 = tx.query_row("SELECT max(1, ?1, coalesce(max(id), 0)) + 1 FROM users", [last], |r| r.get(0))?;
+    tx.execute("INSERT INTO users (id, name, password, admin, created_at) VALUES (?1, ?2, ?3, ?4, ?5)", params![id, name, hash, admin, db::now()])
+        .map_err(name_taken)?;
+    db::set_state(tx, LAST_ID, &id.to_string())?;
+    Ok(id)
+}
+
 /// Removes the owner's password and signs the owner out. For `mango reset-password`.
 pub fn reset(conn: &Connection) -> Result<()> {
     conn.execute("UPDATE users SET password = NULL WHERE id = ?1", [OWNER])?;
@@ -237,6 +279,7 @@ impl Auth {
         let (accounts, sessions) = db
             .call(|conn| {
                 conn.execute("DELETE FROM sessions WHERE expires_at <= ?1 OR user_id NOT IN (SELECT id FROM users)", [db::now()])?;
+                conn.execute("DELETE FROM invites WHERE used_at IS NULL AND expires_at <= ?1", [db::now()])?;
                 let mut stmt = conn.prepare("SELECT token_hash, user_id, expires_at FROM sessions")?;
                 let sessions = stmt.query_map([], |r| Ok((r.get(0)?, (r.get(1)?, r.get(2)?))))?.collect::<rusqlite::Result<HashMap<String, (i64, i64)>>>()?;
                 Ok((accounts(conn)?, sessions))
@@ -339,6 +382,7 @@ impl Auth {
             login: self.on,
             setup,
             setup_code: setup && !local,
+            signup: self.signup() && !setup,
             proof: challenge.and_then(|challenge| self.proof(challenge)),
             signed_in: who.is_some(),
             named: self.on && locked(&self.accounts).len() > 1,
@@ -407,12 +451,7 @@ impl Auth {
             .db
             .call(move |conn| {
                 let tx = conn.transaction()?;
-                let last: i64 = db::state(&tx, LAST_ID)?.and_then(|text| text.parse().ok()).unwrap_or(0);
-                // The owner's place is kept, even before the owner exists.
-                let id: i64 = tx.query_row("SELECT max(1, ?1, coalesce(max(id), 0)) + 1 FROM users", [last], |r| r.get(0))?;
-                tx.execute("INSERT INTO users (id, name, password, admin, created_at) VALUES (?1, ?2, ?3, ?4, ?5)", params![id, name, hash, admin, db::now()])
-                    .map_err(name_taken)?;
-                db::set_state(&tx, LAST_ID, &id.to_string())?;
+                let id = insert_account(&tx, &name, &hash, admin)?;
                 tx.commit()?;
                 Ok(id)
             })
@@ -456,6 +495,112 @@ impl Auth {
         self.db.call(move |conn| Ok(conn.execute("DELETE FROM users WHERE id = ?1", [id])?)).await?;
         self.sign_out(id, None).await?;
         self.reload().await
+    }
+
+    // ---------- invitations ----------
+
+    /// Whether whoever holds an invitation may make an account here.
+    pub fn signup(&self) -> bool {
+        self.on && self.front.signup
+    }
+
+    /// Every invitation, the newest first. None of them carries its code.
+    pub async fn invites(&self) -> Result<Vec<Invite>> {
+        self.db
+            .call(|conn| {
+                let list = "SELECT i.id, i.note, i.created_at, i.expires_at, i.used_at, u.name
+                            FROM invites i LEFT JOIN users u ON u.id = i.user_id ORDER BY i.id DESC";
+                let mut stmt = conn.prepare(list)?;
+                let rows = stmt.query_map([], |r| {
+                    Ok(Invite { id: r.get(0)?, note: r.get(1)?, created_at: r.get(2)?, expires_at: r.get(3)?, used_at: r.get(4)?, used_by: r.get(5)?, code: None })
+                })?;
+                Ok(rows.collect::<rusqlite::Result<_>>()?)
+            })
+            .await
+    }
+
+    /// Makes an invitation. Its code is in this answer and nowhere else.
+    pub async fn invite(&self, note: &str, days: Option<i64>) -> Result<Invite> {
+        if !self.signup() {
+            return Err(signup_off());
+        }
+        let note: String = note.trim().chars().filter(|c| !c.is_control()).take(MAX_NOTE).collect();
+        let code = new_code()?;
+        let (key, now) = (token_hash(&plain_code(&code)), db::now());
+        let ends = now + days.unwrap_or(INVITE_DAYS).clamp(1, MAX_INVITE_DAYS) * 86_400;
+        let kept = note.clone();
+        let id = self
+            .db
+            .call(move |conn| {
+                conn.execute("INSERT INTO invites (code_hash, note, created_at, expires_at) VALUES (?1, ?2, ?3, ?4)", params![key, kept, now, ends])?;
+                Ok(conn.last_insert_rowid())
+            })
+            .await?;
+        Ok(Invite { id, note, created_at: now, expires_at: ends, used_at: None, used_by: None, code: Some(code) })
+    }
+
+    /// Takes an invitation back. An account that was made with it stays.
+    pub async fn uninvite(&self, id: i64) -> Result<()> {
+        let gone = self.db.call(move |conn| Ok(conn.execute("DELETE FROM invites WHERE id = ?1", [id])?)).await?;
+        if gone == 0 {
+            return Err(AppError::not_found("No such invitation"));
+        }
+        Ok(())
+    }
+
+    /// Makes a reader's account for whoever holds an open invitation, and spends it.
+    /// A wrong code counts against its sender as a wrong password does.
+    pub async fn join(&self, from: IpAddr, name: &str, password: String, code: &str) -> Result<Account> {
+        if !self.signup() {
+            return Err(signup_off());
+        }
+        if !self.has_password() {
+            return Err(setup_required());
+        }
+        let from = bucket(from);
+        let wait = self.wait(from);
+        if wait > 0 {
+            return Err(AppError::new(429, "too_many_tries", format!("Too many wrong tries. Try again in {wait} seconds.")));
+        }
+        let name = clean_name(name)?;
+        check_length(&password)?;
+        let (key, now) = (token_hash(&plain_code(code)), db::now());
+        let asked = key.clone();
+        let open = self
+            .db
+            .call(move |conn| {
+                let open = "SELECT 1 FROM invites WHERE code_hash = ?1 AND used_at IS NULL AND expires_at > ?2";
+                Ok(conn.query_row(open, params![asked, now], |_| Ok(())).optional()?.is_some())
+            })
+            .await?;
+        if !open {
+            self.strike(from);
+            return Err(bad_invite());
+        }
+        let hash = self.hash(password).await?;
+        let id = self
+            .db
+            .call(move |conn| {
+                let tx = conn.transaction()?;
+                let id = insert_account(&tx, &name, &hash, false)?;
+                // Spent in the step that makes the account: two callers with one code make one account.
+                let spend = "UPDATE invites SET used_at = ?1, user_id = ?2 WHERE code_hash = ?3 AND used_at IS NULL AND expires_at > ?1";
+                if tx.execute(spend, params![now, id, key])? != 1 {
+                    return Err(bad_invite());
+                }
+                tx.commit()?;
+                Ok(id)
+            })
+            .await?;
+        locked(&self.strikes).remove(&from);
+        self.reload().await?;
+        self.account(id)
+    }
+
+    /// Opens an invitation again when the account made with it could not be kept.
+    async fn unspend(&self, user: i64) -> Result<()> {
+        self.db.call(move |conn| Ok(conn.execute("UPDATE invites SET used_at = NULL, user_id = NULL WHERE user_id = ?1", [user])?)).await?;
+        Ok(())
     }
 
     fn account(&self, id: i64) -> Result<Account> {
@@ -712,6 +857,15 @@ pub fn signed_out() -> AppError {
     AppError::new(401, "signed_out", "Sign in first")
 }
 
+fn signup_off() -> AppError {
+    AppError::new(403, "signup_off", "This Mango does not take new accounts by invitation")
+}
+
+/// One answer for a code that never was, one that was used and one that ran out.
+fn bad_invite() -> AppError {
+    AppError::new(403, "invite_code", "That invitation does not open: its code is mistyped, used already or too old.")
+}
+
 /// Lets a request through to the API only from a signed-in browser, and hands it
 /// the library of the account that browser belongs to.
 pub async fn require(State(server): State<Spaces>, mut request: Request, next: Next) -> Response {
@@ -734,6 +888,7 @@ pub fn routes() -> Router<Spaces> {
         .route("/", get(status))
         .route("/setup", post(setup))
         .route("/login", post(login))
+        .route("/signup", post(signup))
         .route("/logout", post(logout))
         .route("/password", put(change))
 }
@@ -741,13 +896,14 @@ pub fn routes() -> Router<Spaces> {
 #[derive(Deserialize)]
 struct Password {
     password: String,
-    /// The account. Only signing in reads it, and only when there are several.
+    /// The account. Signing in reads it when there are several; making an account always does.
     #[serde(default)]
     name: String,
     /// The password in use now. Only a change asks for it.
     #[serde(default)]
     current: String,
-    /// The setup code. Only setting the first password from another machine asks for it.
+    /// The setup code, which setting the first password from another machine asks for,
+    /// or an invitation's, which making an account asks for.
     #[serde(default)]
     code: String,
 }
@@ -795,6 +951,25 @@ async fn login(
     let from = server.auth.caller(peer.ip(), &headers);
     let token = server.auth.login(from, &body.name, body.password, agent(&headers)).await?;
     Ok(with_cookie(&server.auth, &token, &headers))
+}
+
+/// Makes an account for the holder of an invitation and signs them in.
+async fn signup(
+    State(server): State<Spaces>,
+    ConnectInfo(peer): ConnectInfo<SocketAddr>,
+    headers: HeaderMap,
+    Json(body): Json<Password>,
+) -> Result<Response> {
+    let auth = &server.auth;
+    let account = auth.join(auth.caller(peer.ip(), &headers), &body.name, body.password, &body.code).await?;
+    // A new account starts with an empty library and no stores.
+    if let Err(why) = server.create(account.id) {
+        let _ = auth.unspend(account.id).await;
+        let _ = auth.remove(account.id).await;
+        return Err(why);
+    }
+    let token = auth.start_session(account.id, agent(&headers)).await?;
+    Ok(with_cookie(auth, &token, &headers))
 }
 
 async fn logout(State(server): State<Spaces>, headers: HeaderMap) -> Result<Response> {
@@ -846,7 +1021,7 @@ mod tests {
         let written: HeaderMap = [(header::HeaderName::from_static("x-forwarded-for"), "198.51.100.7, 203.0.113.9".parse().unwrap())].into_iter().collect();
         let direct = Auth::open(Db::open(Path::new(":memory:")).unwrap(), true, 8787, None, Front::default()).await.unwrap();
         assert_eq!(direct.caller(peer, &written), peer, "what a caller writes about itself counts for nothing");
-        let front = Front { hosts: Vec::new(), proxied: true };
+        let front = Front { proxied: true, ..Front::default() };
         let proxied = Auth::open(Db::open(Path::new(":memory:")).unwrap(), true, 8787, None, front).await.unwrap();
         assert_eq!(proxied.caller(peer, &written), "203.0.113.9".parse::<IpAddr>().unwrap(), "the proxy's own entry is the last");
         assert_eq!(proxied.caller(peer, &HeaderMap::new()), peer);
@@ -972,7 +1147,7 @@ mod tests {
         }
 
         // With login switched off every request is the owner's, so the name always counts.
-        let front = Front { hosts: hosts.clone(), proxied: false };
+        let front = Front { hosts: hosts.clone(), ..Front::default() };
         let open = Auth::open(Db::open(Path::new(":memory:")).unwrap(), false, 8787, None, front).await.unwrap();
         assert!(open.answers(&named("10.0.0.1:8787")) && open.answers(&named("mango.example.org")) && open.answers(&HeaderMap::new()));
         assert!(!open.answers(&named("rebind.example.org:8787")));
@@ -999,6 +1174,54 @@ mod tests {
         // Even the right password waits now, but only from that address.
         assert_eq!(auth.login(here, "", "correct horse".into(), String::new()).await.unwrap_err().code, "too_many_tries");
         assert!(auth.login(there, "", "correct horse".into(), String::new()).await.is_ok());
+    }
+
+    #[tokio::test]
+    async fn an_invitation_makes_one_account() {
+        let here: IpAddr = [10, 0, 0, 1].into();
+        let closed = Auth::open(Db::open(Path::new(":memory:")).unwrap(), true, 8787, Some("correct horse".into()), Front::default()).await.unwrap();
+        assert!(!closed.status(&HeaderMap::new(), true, None).signup, "nobody makes an account unless the owner said so");
+        assert_eq!(closed.invite("", None).await.unwrap_err().code, "signup_off");
+        assert_eq!(closed.join(here, "kid", "battery staple".into(), "0000-0000-0000-0000").await.unwrap_err().code, "signup_off");
+
+        let front = Front { signup: true, ..Front::default() };
+        let auth = Auth::open(Db::open(Path::new(":memory:")).unwrap(), true, 8787, Some("correct horse".into()), front).await.unwrap();
+        assert!(auth.status(&HeaderMap::new(), true, None).signup);
+        let invite = auth.invite("  for the kid ", Some(1000)).await.unwrap();
+        let code = invite.code.clone().expect("a new invitation shows its code");
+        assert_eq!((invite.note.as_str(), invite.expires_at - invite.created_at), ("for the kid", MAX_INVITE_DAYS * 86_400));
+        assert!(auth.invites().await.unwrap().iter().all(|kept| kept.code.is_none()), "the code is not kept");
+
+        // A wrong code makes nothing; a short password or a taken name leaves the invitation open.
+        assert_eq!(auth.join(here, "kid", "battery staple".into(), "0000-0000-0000-0000").await.unwrap_err().code, "invite_code");
+        assert!(auth.join(here, "kid", "short".into(), &code).await.is_err());
+        assert_eq!(auth.join(here, "OWNER", "battery staple".into(), &code).await.unwrap_err().code, "name_taken");
+        assert_eq!(auth.ids(), [OWNER]);
+
+        let kid = auth.join(here, " kid ", "battery staple".into(), &code.replace('-', " ").to_uppercase()).await.unwrap();
+        assert_eq!((kid.id, kid.name.as_str(), kid.admin), (2, "kid", false), "an invited account is a reader");
+        assert!(auth.login(here, "kid", "battery staple".into(), String::new()).await.is_ok());
+        let kept = auth.invites().await.unwrap();
+        assert!(kept[0].used_at.is_some() && kept[0].used_by.as_deref() == Some("kid"));
+        assert_eq!(auth.join(here, "sis", "battery staple".into(), &code).await.unwrap_err().code, "invite_code", "a code opens once");
+
+        // One that was taken back opens nothing, and wrong codes make their sender wait as wrong passwords do.
+        let second = auth.invite("", None).await.unwrap();
+        auth.uninvite(second.id).await.unwrap();
+        assert!(auth.uninvite(second.id).await.is_err());
+        let (taken_back, there): (String, IpAddr) = (second.code.unwrap(), [10, 0, 0, 2].into());
+        for _ in 0..FREE_TRIES {
+            assert_eq!(auth.join(there, "sis", "battery staple".into(), &taken_back).await.unwrap_err().code, "invite_code");
+        }
+        let third = auth.invite("", None).await.unwrap().code.unwrap();
+        assert_eq!(auth.join(there, "sis", "battery staple".into(), &third).await.unwrap_err().code, "too_many_tries");
+        assert_eq!(auth.list().len(), 2);
+
+        // Until the owner has a password there is nobody to invite anyone.
+        let front = Front { signup: true, ..Front::default() };
+        let new = Auth::open(Db::open(Path::new(":memory:")).unwrap(), true, 8787, None, front).await.unwrap();
+        assert!(!new.status(&HeaderMap::new(), true, None).signup);
+        assert_eq!(new.join(here, "kid", "battery staple".into(), "0000-0000-0000-0000").await.unwrap_err().code, "setup_required");
     }
 
     #[tokio::test]

@@ -262,6 +262,12 @@ sign-ins and settings: a new account starts empty and adds its own stores. With
 more than one account, signing in asks for a name too; the first account's is
 `owner`. Removing an account deletes everything it had.
 
+With `MANGO_SIGNUP=on`, a browser that is not signed in sees a main page that
+says what Mango does, with Sign in and Create account beside it. Making an
+account there takes an invitation: an admin makes one under Settings, Account,
+and sends its link. Each invitation makes one account, a reader's, and holds a
+week.
+
 Extensions are code that runs on the server, so bringing one in is for an
 admin. Other accounts add stores and install what an admin already has;
 `MANGO_ANYONE_INSTALLS=on` lets them install anything; then give accounts only
@@ -335,6 +341,7 @@ win. The full list is in
 | `MANGO_PROXIED` | `on` when a reverse proxy stands in front and writes each visitor's address into `X-Forwarded-For`. Wrong passwords are then counted per visitor, not for the proxy. |
 | `MANGO_STORES_LOCAL` | `on` lets an extension store be on this machine or its network, and be fetched over plain HTTP. Otherwise stores are fetched over HTTPS from public addresses. |
 | `MANGO_ANYONE_INSTALLS` | `on` lets every account bring extensions into Mango. Otherwise only an admin does, and other accounts install what an admin already has. |
+| `MANGO_SIGNUP` | `on` shows a main page with what Mango does to whoever is not signed in, and lets the holder of an admin's invitation make their own account there. Otherwise only an admin adds accounts. |
 | `MANGO_WEBVIEW` | `off` keeps sources from opening a web view, and the browser from being downloaded. |
 | `MANGO_RELEASES_TOKEN` | A token that may read the repository, when its releases are not public. |
 

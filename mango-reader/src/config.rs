@@ -32,6 +32,9 @@ pub struct Config {
     /// A proxy stands in front of Mango and writes each caller's address into
     /// `X-Forwarded-For`. Wrong passwords are then counted by that address. `MANGO_PROXIED`
     pub proxied: bool,
+    /// Let whoever holds an admin's invitation make an account, and show the main page
+    /// to a browser that is not signed in. `MANGO_SIGNUP`
+    pub signup: bool,
     pub host: HostConfig,
     pub stores: StoresConfig,
     pub releases: ReleasesConfig,
@@ -95,6 +98,7 @@ impl Default for Config {
             first_password: None,
             hosts: Vec::new(),
             proxied: false,
+            signup: false,
             host: HostConfig::default(),
             stores: StoresConfig::default(),
             releases: ReleasesConfig::default(),
@@ -195,6 +199,9 @@ impl Config {
         if let Some(v) = switch("MANGO_PROXIED")? {
             self.proxied = v;
         }
+        if let Some(v) = switch("MANGO_SIGNUP")? {
+            self.signup = v;
+        }
         if let Some(v) = switch("MANGO_STORES_LOCAL")? {
             self.stores.local = v;
         }
@@ -283,9 +290,9 @@ mod tests {
         cfg.apply_env(|name| (name == "MANGO_WEBVIEW").then(|| "off".into())).unwrap();
         assert!(!cfg.host.webview);
         assert!(cfg.apply_env(|name| (name == "MANGO_LOGIN").then(|| "maybe".into())).is_err());
-        assert!(!cfg.proxied && !cfg.stores.local && !cfg.stores.anyone_installs, "what widens Mango is off unless switched on");
-        cfg.apply_env(|name| matches!(name, "MANGO_PROXIED" | "MANGO_STORES_LOCAL" | "MANGO_ANYONE_INSTALLS").then(|| "on".into())).unwrap();
-        assert!(cfg.proxied && cfg.stores.local && cfg.stores.anyone_installs);
+        assert!(!cfg.proxied && !cfg.signup && !cfg.stores.local && !cfg.stores.anyone_installs, "what widens Mango is off unless switched on");
+        cfg.apply_env(|name| matches!(name, "MANGO_PROXIED" | "MANGO_SIGNUP" | "MANGO_STORES_LOCAL" | "MANGO_ANYONE_INSTALLS").then(|| "on".into())).unwrap();
+        assert!(cfg.proxied && cfg.signup && cfg.stores.local && cfg.stores.anyone_installs);
         assert!(cfg.hosts.is_empty());
         cfg.apply_env(|name| (name == "MANGO_HOSTS").then(|| "mango.example.org, read.example.org,".into())).unwrap();
         assert_eq!(cfg.hosts, ["mango.example.org", "read.example.org"]);

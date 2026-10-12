@@ -217,7 +217,8 @@ impl Titles {
     }
 
     /// One page of a source's popular, latest or search list. The titles are stored on the way.
-    pub async fn browse(&self, source: i64, kind: Browse, page: i64, query: &str) -> Result<Listing> {
+    /// `filters` are the changes a search makes to the source's own list; only a search reads them.
+    pub async fn browse(&self, source: i64, kind: Browse, page: i64, query: &str, filters: &[Value]) -> Result<Listing> {
         if source == local::SOURCE {
             let (local, latest, query) = (self.local.clone(), matches!(kind, Browse::Latest), query.to_owned());
             let (mangas, has_next_page) = local::blocking(move || local.browse(latest, &query, page)).await?;
@@ -231,12 +232,22 @@ impl Titles {
             #[serde(default)]
             has_next_page: bool,
         }
-        let body = json!({ "page": page.max(1), "query": query });
+        let body = json!({ "page": page.max(1), "query": query, "filters": filters });
         let opts = Call { source: Some(source), ..Call::default() };
         let found: Found = self.host.call(Method::POST, &format!("/sources/{source}/{}", kind.path()), Some(&body), opts).await?;
         let has_next_page = found.has_next_page;
         let items = self.db.call(move |conn| save_listing(conn, source, &found.mangas)).await?;
         Ok(Listing { items, has_next_page })
+    }
+
+    /// What a source's search can be narrowed by, as the host lists it. The source makes
+    /// the list anew each time, so nothing here is any account's own.
+    pub async fn filters(&self, source: i64) -> Result<Value> {
+        if source == local::SOURCE {
+            return Ok(json!({ "filters": [] }));
+        }
+        let opts = Call { source: Some(source), ..Call::default() };
+        self.host.call(Method::GET, &format!("/sources/{source}/filters"), None, opts).await
     }
 
     /// A title and its chapters, from the database.

@@ -2,7 +2,7 @@
 //! Everything else the server is asked for is the web UI.
 
 use crate::{
-    auth::{self, Account, AccountChange, Auth, Who},
+    auth::{self, Account, AccountChange, Auth, Invite, Who},
     db::Db,
     downloads::{Downloads, QueueView},
     updates::{Status, Updates, UpdatesView},
@@ -78,6 +78,8 @@ pub fn router(state: Spaces) -> Router {
         .route("/settings", get(get_settings).put(put_settings))
         .route("/users", get(list_users).post(add_user))
         .route("/users/{id}", put(edit_user).delete(remove_user))
+        .route("/invites", get(list_invites).post(add_invite))
+        .route("/invites/{id}", delete(remove_invite))
         .route("/solver", get(get_solver).put(put_solver))
         .route("/stores", get(list_stores).post(add_store))
         .route("/stores/refresh", post(refresh_stores))
@@ -93,6 +95,7 @@ pub fn router(state: Spaces) -> Router {
         .route("/sources", get(sources))
         .route("/sources/{id}", put(change_source))
         .route("/sources/{id}/preferences", get(source_preferences).put(set_source_preference))
+        .route("/sources/{id}/filters", get(source_filters))
         .route("/sources/{id}/{kind}", get(browse))
         .route("/manga/{id}", get(title))
         .route("/manga/{id}/refresh", post(refresh_title))
@@ -270,6 +273,34 @@ async fn remove_user(State(server): State<Spaces>, Me(app): Me, Path(id): Path<i
     Ok(done())
 }
 
+// ---------- invitations ----------
+
+async fn list_invites(Me(app): Me) -> Result<Json<Value>> {
+    app.me.admin()?;
+    Ok(Json(json!({ "invites": app.auth.invites().await? })))
+}
+
+#[derive(Deserialize)]
+struct NewInvite {
+    /// Who it is for. Only admins see it.
+    #[serde(default)]
+    note: String,
+    /// How many days it holds. Left out, a week.
+    days: Option<i64>,
+}
+
+/// Makes an invitation. The answer carries its code, this once.
+async fn add_invite(Me(app): Me, Json(body): Json<NewInvite>) -> Result<Json<Invite>> {
+    app.me.admin()?;
+    Ok(Json(app.auth.invite(&body.note, body.days).await?))
+}
+
+async fn remove_invite(Me(app): Me, Path(id): Path<i64>) -> Result<Json<Value>> {
+    app.me.admin()?;
+    app.auth.uninvite(id).await?;
+    Ok(done())
+}
+
 // ---------- the solver ----------
 
 async fn get_solver(Me(app): Me) -> Result<Json<Solver>> {
@@ -436,12 +467,24 @@ struct BrowseParams {
     page: Option<i64>,
     /// The search text. Only `search` reads it.
     q: String,
+    /// The filters set to something else than the source starts them at: a JSON list of
+    /// `{position, state}`. Only `search` reads it.
+    filters: Option<String>,
 }
 
 /// `kind` is popular, latest or search.
 async fn browse(Me(app): Me, Path((id, kind)): Path<(i64, String)>, Query(params): Query<BrowseParams>) -> Result<Json<Listing>> {
     let kind = Browse::parse(&kind).ok_or_else(|| AppError::not_found("No such endpoint"))?;
-    Ok(Json(app.titles.browse(id, kind, params.page.unwrap_or(1), &params.q).await?))
+    let filters: Vec<Value> = match params.filters.as_deref() {
+        Some(text) if !text.is_empty() => serde_json::from_str(text).map_err(|_| AppError::bad_request("filters is not a JSON list"))?,
+        _ => Vec::new(),
+    };
+    Ok(Json(app.titles.browse(id, kind, params.page.unwrap_or(1), &params.q, &filters).await?))
+}
+
+/// What a source's search can be narrowed by: `{filters}`, each named by its place in the list.
+async fn source_filters(Me(app): Me, Path(id): Path<i64>) -> Result<Json<Value>> {
+    Ok(Json(app.titles.filters(id).await?))
 }
 
 async fn title(Me(app): Me, Path(id): Path<i64>) -> Result<Json<TitleView>> {
