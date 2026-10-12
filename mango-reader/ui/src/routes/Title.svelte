@@ -21,6 +21,15 @@
   ];
   const DEFAULT: View = { sort: 'source', down: true };
 
+  type Show = 'all' | 'unread' | 'downloaded' | 'bookmarked';
+
+  const SHOWS: [Show, string][] = [
+    ['all', 'All chapters'],
+    ['unread', 'Unread'],
+    ['downloaded', 'Downloaded'],
+    ['bookmarked', 'Bookmarked'],
+  ];
+
   let { id }: { id: number } = $props();
 
   /** The title last open, if it is this one: come back to from the reader, it shows at once. */
@@ -38,8 +47,10 @@
   let menu = $state(false);
   let wholeText = $state(false);
   let filters = $state(false);
+  // The chapter whose own menu is open.
+  let opened = $state<number | null>(null);
   // What the list is narrowed to lasts as long as the page: the next title opened shows whole.
-  let only = $state({ unread: false, downloaded: false, bookmarked: false });
+  let show = $state<Show>('all');
   let group = $state('');
 
   const chapters = $derived(title?.chapters ?? []);
@@ -50,11 +61,10 @@
   const groups = $derived([...new Set(chapters.map((c) => c.scanlator ?? '').filter(Boolean))].sort((a, b) => a.localeCompare(b)));
   // A group a refresh took away narrows nothing.
   const from = $derived(groups.includes(group) ? group : '');
-  const filtering = $derived(only.unread || only.downloaded || only.bookmarked || from !== '');
+  const filtering = $derived(show !== 'all' || from !== '');
   const listed = $derived.by(() => {
-    const list = chapters.filter(
-      (c) => (!only.unread || !c.read) && (!only.downloaded || c.downloaded) && (!only.bookmarked || c.bookmark) && (!from || c.scanlator === from),
-    );
+    const shown: Record<Show, (c: Chapter) => boolean> = { all: () => true, unread: (c) => !c.read, downloaded: (c) => c.downloaded, bookmarked: (c) => c.bookmark };
+    const list = chapters.filter((c) => shown[show](c) && (!from || c.scanlator === from));
     // Sources list the newest first, and so does every order here until it is turned round.
     if (view.sort !== 'source') {
       const key = view.sort === 'number' ? (c: Chapter) => c.number : (c: Chapter) => c.dateUpload || c.fetchedAt * 1000;
@@ -63,7 +73,7 @@
     return view.down ? list : list.reverse();
   });
   const nothing = $derived(
-    !chapters.length ? 'No chapters yet.' : only.unread && !only.downloaded && !only.bookmarked && !from ? 'Every chapter is read.' : 'No chapter fits the filter.',
+    !chapters.length ? 'No chapters yet.' : show === 'unread' && !from ? 'Every chapter is read.' : 'No chapter fits the filter.',
   );
   // Reading goes from the bottom of the list up: the next one to read is the last unread.
   const resume = $derived(chapters.findLast((c) => !c.read) ?? null);
@@ -132,6 +142,7 @@
 
   async function change(work: () => Promise<unknown>, keepMenu = false) {
     menu = keepMenu && menu;
+    opened = null;
     refreshError = null;
     try {
       await work();
@@ -186,6 +197,9 @@
     return !chapter.read && chapter.lastPageRead === 0 && !!title?.addedAt && chapter.fetchedAt > title.addedAt && Date.now() / 1000 - chapter.fetchedAt < WEEK;
   }
 </script>
+
+<!-- A chapter's menu closes when anything else is pressed. -->
+<svelte:window onclick={(e) => opened !== null && !(e.target as Element).closest?.('.own') && (opened = null)} />
 
 <div class="page">
   <Notice {loading} {error} retry={load} />
@@ -277,19 +291,9 @@
         <div class="section-head">
           <h2 class="display">CHAPTERS</h2>
           <div class="tools">
-            <!-- On a narrow screen the order waits behind the filter button, to keep this to one line. -->
-            <div class="view" class:open={filters}>
-              <label class="sorter">
-                <span class="sr">Sort by</span>
-                <select class="btn" value={view.sort} onchange={(e) => setView({ sort: e.currentTarget.value as Sort })}>
-                  {#each SORTS as [value, label] (value)}<option {value}>{label}</option>{/each}
-                </select>
-              </label>
-              <button class="btn icon" aria-label={view.down ? 'Sorted downwards. Sort upwards' : 'Sorted upwards. Sort downwards'} onclick={() => setView({ down: !view.down })}>
-                <Icon name={view.down ? 'down' : 'up'} />
-              </button>
-            </div>
-            <button class="btn" aria-expanded={filters} onclick={() => (filters = !filters)}><Icon name="filter" size={18} />Filter{filtering ? ' on' : ''}</button>
+            <button class="btn" aria-expanded={filters} onclick={() => (filters = !filters)}>
+              <Icon name="filter" size={18} />Sort &amp; filter{filtering ? ' · on' : ''}
+            </button>
             <button
               class="btn icon"
               aria-label="Download the unread chapters"
@@ -303,10 +307,22 @@
         </div>
 
         {#if filters}
-          <div class="tools" role="group" aria-label="Show only">
-            <button class="btn pill" aria-pressed={only.unread} onclick={() => (only.unread = !only.unread)}>Unread</button>
-            <button class="btn pill" aria-pressed={only.downloaded} onclick={() => (only.downloaded = !only.downloaded)}>Downloaded</button>
-            <button class="btn pill" aria-pressed={only.bookmarked} onclick={() => (only.bookmarked = !only.bookmarked)}>Bookmarked</button>
+          <div class="tools" role="group" aria-label="Sort and filter">
+            <label class="sorter">
+              <span class="sr">Sort by</span>
+              <select class="btn" value={view.sort} onchange={(e) => setView({ sort: e.currentTarget.value as Sort })}>
+                {#each SORTS as [value, label] (value)}<option {value}>{label}</option>{/each}
+              </select>
+            </label>
+            <button class="btn icon" aria-label={view.down ? 'Sorted downwards. Sort upwards' : 'Sorted upwards. Sort downwards'} onclick={() => setView({ down: !view.down })}>
+              <Icon name={view.down ? 'down' : 'up'} />
+            </button>
+            <label class="sorter">
+              <span class="sr">Show</span>
+              <select class="btn" bind:value={show}>
+                {#each SHOWS as [value, label] (value)}<option {value}>{label}</option>{/each}
+              </select>
+            </label>
             {#if groups.length > 1}
               <label class="sorter">
                 <span class="sr">Translated by</span>
@@ -326,7 +342,10 @@
           {#each listed as chapter (chapter.id)}
             <li class:done={chapter.read}>
               <a class="main" href="#/read/{chapter.id}">
-                <strong>{chapter.name}</strong>
+                <strong>
+                  {#if chapter.bookmark}<span class="kept"><Icon name="bookmark" size={14} fill /><span class="sr">Bookmarked.</span></span>{/if}
+                  {chapter.name}
+                </strong>
                 <span>{about(chapter)}</span>
               </a>
               {#if isNew(chapter)}
@@ -334,27 +353,27 @@
               {:else if !chapter.read && chapter.lastPageRead > 0 && chapter.pageCount}
                 <span class="meter" aria-hidden="true"><span style:width="{Math.round(((chapter.lastPageRead + 1) / chapter.pageCount) * 100)}%"></span></span>
               {/if}
-              <button
-                class="btn icon"
-                aria-pressed={chapter.bookmark}
-                aria-label={chapter.bookmark ? `Take the bookmark off ${chapter.name}` : `Bookmark ${chapter.name}`}
-                onclick={() => bookmark(chapter)}
-              >
-                <Icon name="bookmark" fill={chapter.bookmark} />
-              </button>
               {#if chapter.downloaded}
                 <button class="btn icon" aria-label="Delete the saved file of {chapter.name}" onclick={() => deleteFile(chapter)}><Icon name="trash" /></button>
               {:else}
                 <button class="btn icon" aria-label="Download {chapter.name}" onclick={() => download([chapter])}><Icon name="download" /></button>
               {/if}
-              <button
-                class="btn icon"
-                aria-pressed={chapter.read}
-                aria-label={chapter.read ? `Mark ${chapter.name} unread` : `Mark ${chapter.name} read`}
-                onclick={() => mark([chapter], !chapter.read)}
-              >
-                <Icon name="check" stroke={3} />
-              </button>
+              <!-- What is seldom wanted waits behind one button, so a row keeps to two. -->
+              <div class="menu own">
+                <button class="btn icon" aria-label="More for {chapter.name}" aria-expanded={opened === chapter.id} onclick={() => (opened = opened === chapter.id ? null : chapter.id)}>
+                  <Icon name="more" fill />
+                </button>
+                {#if opened === chapter.id}
+                  <div class="panel sheet">
+                    <button class="btn" onclick={() => mark([chapter], !chapter.read)}>
+                      <Icon name="check" size={18} stroke={3} />{chapter.read ? 'Mark unread' : 'Mark read'}
+                    </button>
+                    <button class="btn" onclick={() => bookmark(chapter)}>
+                      <Icon name="bookmark" size={18} fill={chapter.bookmark} />{chapter.bookmark ? 'Take the bookmark off' : 'Bookmark'}
+                    </button>
+                  </div>
+                {/if}
+              </div>
             </li>
           {/each}
         </ul>
@@ -586,49 +605,18 @@
     flex: 0 0 56px;
   }
 
-  /* Beside the other tools on a wide screen. */
-  .view {
-    display: contents;
-  }
-
   .sorter select {
     max-width: 220px;
   }
 
-  @media (max-width: 640px) {
-    .section-head .tools {
-      flex: 1 1 100%;
-      justify-content: flex-end;
-    }
+  .own .sheet {
+    min-width: 200px;
+  }
 
-    .view {
-      display: none;
-    }
-
-    .view.open {
-      display: flex;
-      flex-basis: 100%;
-      gap: 8px;
-      order: 1;
-    }
-
-    .view .sorter {
-      flex: 1;
-    }
-
-    .view .sorter select {
-      width: 100%;
-      max-width: none;
-    }
-
-    /* Three buttons to a row leave the name little room: the words under it say the page already. */
-    .meter {
-      display: none;
-    }
-
-    .rows > li {
-      gap: 6px;
-    }
+  .kept {
+    display: inline-flex;
+    margin-right: 4px;
+    vertical-align: -1px;
   }
 
   .dock {
