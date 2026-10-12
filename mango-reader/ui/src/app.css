@@ -80,6 +80,15 @@ html {
   -webkit-tap-highlight-color: transparent;
 }
 
+/* On a home screen iOS measures the page as if the clock still took its own room, then draws
+   it from the very top: on a short page, what is held to the bottom stops short by the clock's
+   height. A page as tall as the screen is measured against all of it. */
+@media (display-mode: standalone) {
+  html {
+    min-height: max(100vh, calc(100% + env(safe-area-inset-top, 0px)));
+  }
+}
+
 body {
   margin: 0;
   /* Opened from a phone's home screen, the page reaches up under the clock. */
