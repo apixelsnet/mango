@@ -7,6 +7,8 @@ Mango on a narrow screen, and as an app on a phone's home screen. All of it is i
 - `public/manifest.webmanifest` and the icons in `public/icons` make it installable. Addresses in the manifest are relative, so it works under a sub-path.
 - On iOS it is added from the share menu. It then opens without the address bar, and the page reaches up under the clock, which iOS draws in white. A band in the darker of paper and ink (`--bar`) sits behind it. In a browser the band has no height.
 - Every bar that touches an edge keeps clear of the notch and the home bar (`--safe-*` in `app.css`). The reader starts below the clock.
+- On a home screen iOS measures the page as if the clock still took its room, so on a short page the tabs stopped short of the bottom by the clock's height. `html` is made as tall as the screen there (`display-mode: standalone` in `app.css`).
+- A phone fetches the icon and the manifest without cookies. Behind a proxy that asks for a sign-in first, `/icons/`, `/manifest.webmanifest` and `/apple-touch-icon.png` have to be let through, or the home screen shows a letter instead of the mark.
 - There is no service worker: Mango needs its server for everything it shows.
 
 ## Getting around
