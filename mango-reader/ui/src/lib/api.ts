@@ -285,6 +285,20 @@ export type SourcePref = {
   dialogMessage?: string | null;
 };
 
+/** One thing a source's search can be narrowed by. Its place in the list names it. */
+export type SourceFilter =
+  | { type: 'header' | 'separator'; name: string }
+  | { type: 'select'; name: string; state: number; values: string[] }
+  | { type: 'text'; name: string; state: string }
+  | { type: 'checkbox'; name: string; state: boolean }
+  /** 0 either way, 1 with it, 2 without it. */
+  | { type: 'tristate'; name: string; state: number }
+  | { type: 'sort'; name: string; state: { index: number; ascending: boolean } | null; values: string[] }
+  | { type: 'group'; name: string; filters: SourceFilter[] };
+
+/** A filter set to something else than the source starts it at. A group's state is the changes inside it. */
+export type FilterChange = { position: number; state: unknown };
+
 export type Store = {
   id: number;
   url: string;

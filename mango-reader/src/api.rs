@@ -95,6 +95,7 @@ pub fn router(state: Spaces) -> Router {
         .route("/sources", get(sources))
         .route("/sources/{id}", put(change_source))
         .route("/sources/{id}/preferences", get(source_preferences).put(set_source_preference))
+        .route("/sources/{id}/filters", get(source_filters))
         .route("/sources/{id}/{kind}", get(browse))
         .route("/manga/{id}", get(title))
         .route("/manga/{id}/refresh", post(refresh_title))
@@ -466,12 +467,24 @@ struct BrowseParams {
     page: Option<i64>,
     /// The search text. Only `search` reads it.
     q: String,
+    /// The filters set to something else than the source starts them at: a JSON list of
+    /// `{position, state}`. Only `search` reads it.
+    filters: Option<String>,
 }
 
 /// `kind` is popular, latest or search.
 async fn browse(Me(app): Me, Path((id, kind)): Path<(i64, String)>, Query(params): Query<BrowseParams>) -> Result<Json<Listing>> {
     let kind = Browse::parse(&kind).ok_or_else(|| AppError::not_found("No such endpoint"))?;
-    Ok(Json(app.titles.browse(id, kind, params.page.unwrap_or(1), &params.q).await?))
+    let filters: Vec<Value> = match params.filters.as_deref() {
+        Some(text) if !text.is_empty() => serde_json::from_str(text).map_err(|_| AppError::bad_request("filters is not a JSON list"))?,
+        _ => Vec::new(),
+    };
+    Ok(Json(app.titles.browse(id, kind, params.page.unwrap_or(1), &params.q, &filters).await?))
+}
+
+/// What a source's search can be narrowed by: `{filters}`, each named by its place in the list.
+async fn source_filters(Me(app): Me, Path(id): Path<i64>) -> Result<Json<Value>> {
+    Ok(Json(app.titles.filters(id).await?))
 }
 
 async fn title(Me(app): Me, Path(id): Path<i64>) -> Result<Json<TitleView>> {

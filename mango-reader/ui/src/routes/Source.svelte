@@ -1,7 +1,8 @@
 <script lang="ts">
-  import { get, message, send, type Card, type Listing, type Source } from '../lib/api';
+  import { get, message, send, type Card, type FilterChange, type Listing, type Source } from '../lib/api';
   import Icon from '../lib/Icon.svelte';
   import Notice from '../lib/Notice.svelte';
+  import SourceFilters from '../lib/SourceFilters.svelte';
   import TitleCard from '../lib/TitleCard.svelte';
   import { langName, whenVisible } from '../lib/util';
 
@@ -13,6 +14,11 @@
   let tab = $state<Tab>('popular');
   let typed = $state('');
   let query = $state('');
+  // The source's filters that are set to something else, as the last search sent them.
+  let changes = $state<FilterChange[]>([]);
+  // The filters are asked for when they are first opened, and kept while the page stays.
+  let filtering = $state(false);
+  let filtersSeen = $state(false);
   let items = $state<Card[]>([]);
   let page = 0;
   let more = $state(false);
@@ -31,7 +37,8 @@
     loading = true;
     error = null;
     try {
-      const search = tab === 'search' ? `&q=${encodeURIComponent(query)}` : '';
+      const narrowed = changes.length ? `&filters=${encodeURIComponent(JSON.stringify(changes))}` : '';
+      const search = tab === 'search' ? `&q=${encodeURIComponent(query)}${narrowed}` : '';
       const list = await get<Listing>(`/sources/${id}/${tab}?page=${page + 1}${search}`);
       if (mine !== current) return;
       const seen = new Set(items.map((card) => card.id));
@@ -53,7 +60,19 @@
   function search(event: SubmitEvent) {
     event.preventDefault();
     query = typed.trim();
-    if (query) open('search');
+    if (query || changes.length) open('search');
+  }
+
+  /** A search by the filters, with the words typed if there are any. */
+  function narrow(next: FilterChange[]) {
+    changes = next;
+    query = typed.trim();
+    open(query || changes.length ? 'search' : 'popular');
+  }
+
+  function toggleFilters() {
+    filtering = !filtering;
+    filtersSeen = true;
   }
 
   async function toggle(card: Card) {
@@ -92,11 +111,22 @@
         <button class="btn pill" aria-pressed={tab === 'latest'} onclick={() => open('latest')}>Latest</button>
       {/if}
       {#if tab === 'search'}
-        <button class="btn pill" aria-pressed="true" onclick={() => open('search')}>“{query}”</button>
+        <button class="btn pill" aria-pressed="true" onclick={() => open('search')}>{query ? `“${query}”` : 'Filtered'}</button>
       {/if}
     </div>
-    <button class="btn icon" aria-label="Load this list again" onclick={() => load(true)}><Icon name="refresh" /></button>
+    <div class="tools">
+      {#if id !== '0'}
+        <button class="btn" aria-expanded={filtering} onclick={toggleFilters}>
+          <Icon name="filter" size={18} />Filter{tab === 'search' && changes.length ? ' on' : ''}
+        </button>
+      {/if}
+      <button class="btn icon" aria-label="Load this list again" onclick={() => load(true)}><Icon name="refresh" /></button>
+    </div>
   </div>
+
+  {#if filtersSeen}
+    <div hidden={!filtering}><SourceFilters {id} onapply={narrow} /></div>
+  {/if}
 
   <div class="grid">
     {#each items as card (card.id)}

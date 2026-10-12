@@ -50,7 +50,7 @@ The contract is `mango-extension-host/protocol/openapi.yaml`. Changing a field o
 
 Local HTTP, loopback only. The core passes a bearer token when it starts the host. JSON bodies; images are streamed raw. Source ids travel as strings.
 
-The host implements everything below except filters, which answer 501. APK-only extensions answer 501 too.
+The host implements everything below. APK-only extensions answer 501.
 
 - `GET /health` — host version, protocol version, loaded sources
 - `POST /extensions/install` `{jarUrl | apkUrl, sha256}` · `DELETE /extensions/{pkg}`
@@ -184,6 +184,18 @@ Not checked: an extension whose screen changes between calls, and one that refus
 ## Install says what was asked for (2026-10-11, host 0.6.0, protocol 4)
 
 `POST /extensions/install` takes `pkg` and `versionCode` beside `url` and `sha256`: the package the core asked the store for and the version the store lists. The host reads both from the file's manifest before it unloads anything, and answers 422 `bad_extension` when the file is another package or an older version. Both fields may be left out, as the host's own smoke test does.
+
+## Filters (2026-10-12, host 0.7.0, protocol 5)
+
+`GET /sources/{id}/filters` lists what a source's search can be narrowed by; `POST /sources/{id}/search` takes `filters`, a list of `{position, state}`.
+
+- The kinds are Mihon's: `header`, `separator`, `select`, `text`, `checkbox`, `tristate` (0 either way, 1 with it, 2 without it), `sort` (`{index, ascending}` or null) and `group`, which holds filters of its own.
+- Nothing is kept between the read and the search, as Suwayomi does it now: the source makes its list anew for each search, and the changes are set on that. A filter is named by its place; a group's state is the changes inside it. A place that is not there, or a state of the wrong kind, is refused with 400.
+- A search without `filters` carries the source's list as the source makes it, where it carried an empty one. That is what Mihon hands a source, and what extensions are written against.
+
+Checked on Linux with `smoke.py` against a real extension: 12 filters read in 4 ms, one of each kind it has set (checkbox, select, sort, tri-state) and searched by, with another list than without them; a change for a place that is not there was refused. Then one source from each of 19 extensions: 9 list filters, of every kind, and 10 have none. A search by filters answered on all but two, and those two are sources for a server of the reader's own, with no address set.
+
+Not checked: a source whose list changes between the read and the search.
 
 ## Done when
 

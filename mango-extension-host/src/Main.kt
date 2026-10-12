@@ -26,6 +26,7 @@ import eu.kanade.tachiyomi.network.NetworkHelper
 import eu.kanade.tachiyomi.source.ConfigurableSource
 import eu.kanade.tachiyomi.source.Source
 import eu.kanade.tachiyomi.source.SourceFactory
+import eu.kanade.tachiyomi.source.model.Filter
 import eu.kanade.tachiyomi.source.model.FilterList
 import eu.kanade.tachiyomi.source.model.MangasPage
 import eu.kanade.tachiyomi.source.model.Page
@@ -40,6 +41,7 @@ import kotlinx.coroutines.withTimeout
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonElement
+import kotlinx.serialization.json.JsonNull
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.booleanOrNull
@@ -97,8 +99,8 @@ import kotlin.concurrent.thread
 import kotlin.io.path.absolutePathString
 import kotlin.system.exitProcess
 
-private const val PROTOCOL = 4
-private const val HOST_VERSION = "0.6.0"
+private const val PROTOCOL = 5
+private const val HOST_VERSION = "0.7.0"
 private val PKG_NAME = Regex("[A-Za-z0-9_.]+")
 
 private class ApiError(
@@ -618,6 +620,127 @@ private fun setPreference(
     }
 }
 
+// ---------- filters ----------
+
+/** One of the things a source's search can be narrowed by. Its place in the list names it. */
+private fun filterJson(f: Filter<*>): JsonObject =
+    buildJsonObject {
+        put("name", f.name)
+        when (f) {
+            is Filter.Select<*> -> {
+                put("type", "select")
+                put("state", f.state)
+                put("values", JsonArray(f.values.map { JsonPrimitive(it.toString()) }))
+            }
+
+            is Filter.Text -> {
+                put("type", "text")
+                put("state", f.state)
+            }
+
+            is Filter.CheckBox -> {
+                put("type", "checkbox")
+                put("state", f.state)
+            }
+
+            is Filter.TriState -> {
+                put("type", "tristate")
+                put("state", f.state)
+            }
+
+            is Filter.Sort -> {
+                put("type", "sort")
+                put("values", JsonArray(f.values.map { JsonPrimitive(it) }))
+                val picked = f.state
+                put(
+                    "state",
+                    if (picked == null) {
+                        JsonNull
+                    } else {
+                        buildJsonObject {
+                            put("index", picked.index)
+                            put("ascending", picked.ascending)
+                        }
+                    },
+                )
+            }
+
+            is Filter.Group<*> -> {
+                put("type", "group")
+                put("filters", JsonArray(f.state.map { inner -> (inner as? Filter<*>)?.let(::filterJson) ?: headerJson(inner.toString()) }))
+            }
+
+            is Filter.Separator -> {
+                put("type", "separator")
+            }
+
+            else -> {
+                put("type", "header")
+            }
+        }
+    }
+
+private fun headerJson(name: String): JsonObject =
+    buildJsonObject {
+        put("name", name)
+        put("type", "header")
+    }
+
+/**
+ * Sets the filters a search names, `[{position, state}]`, on a list the source has just made.
+ * A group's state is such a list again, for the filters inside it.
+ */
+private fun applyFilters(
+    list: List<*>,
+    changes: List<JsonElement>,
+) {
+    for (change in changes) {
+        val o = change as? JsonObject ?: bad("filters")
+        val at = o.int("position", -1)
+        val filter = list.getOrNull(at) as? Filter<*> ?: bad("filters: nothing at $at, read the filters again")
+        val given = o["state"]
+        val plain = given as? JsonPrimitive
+
+        fun wrong(): Nothing = bad("filters: the state for \"${filter.name}\" at $at is not one it takes, read the filters again")
+        when (filter) {
+            is Filter.Select<*> -> {
+                filter.state = plain?.intOrNull?.takeIf { it in filter.values.indices } ?: wrong()
+            }
+
+            is Filter.Text -> {
+                filter.state = plain?.takeIf { it.isString }?.content ?: wrong()
+            }
+
+            is Filter.CheckBox -> {
+                filter.state = plain?.takeUnless { it.isString }?.booleanOrNull ?: wrong()
+            }
+
+            is Filter.TriState -> {
+                filter.state = plain?.intOrNull?.takeIf { it in 0..2 } ?: wrong()
+            }
+
+            is Filter.Sort -> {
+                filter.state =
+                    if (given == null || given is JsonNull) {
+                        null
+                    } else {
+                        val picked = given as? JsonObject ?: wrong()
+                        val index = picked.int("index", -1).takeIf { it in filter.values.indices } ?: wrong()
+                        Filter.Sort.Selection(index, picked.bool("ascending", false))
+                    }
+            }
+
+            is Filter.Group<*> -> {
+                applyFilters(filter.state, given as? JsonArray ?: wrong())
+            }
+
+            else -> {
+                wrong()
+            }
+        }
+    }
+}
+
 private fun rssMb(): Long =
     try {
         Files
@@ -700,8 +823,10 @@ private fun routeSource(
     id: Long,
     action: String,
 ) {
-    if (action == "filters") {
-        throw ApiError(501, "not_implemented", "$action is reserved in protocol $PROTOCOL and not implemented by host $HOST_VERSION")
+    if (action == "filters" && method == "GET") {
+        val src = source(id)
+        send(ex, 200, buildJsonObject { put("filters", JsonArray(call { src.getFilterList() }.map(::filterJson))) })
+        return
     }
     if (action == "preferences" && (method == "GET" || method == "PUT")) {
         if (method == "PUT") setPreference(source(id), readBody(ex))
@@ -724,7 +849,16 @@ private fun routeSource(
         }
 
         "search" -> {
-            send(ex, 200, mangasPageJson(call { src.getSearchManga(page, body.str("query") ?: "", FilterList()) }))
+            val changes = body["filters"]?.let { it as? JsonArray ?: bad("filters") }.orEmpty()
+            val found =
+                call {
+                    // As on a phone: a search carries the source's own list, changed or not.
+                    // A source that cannot make its list is searched without one, as before.
+                    val filters = runCatching { src.getFilterList() }.getOrElse { if (changes.isEmpty()) FilterList() else throw it }
+                    applyFilters(filters, changes)
+                    src.getSearchManga(page, body.str("query") ?: "", filters)
+                }
+            send(ex, 200, mangasPageJson(found))
         }
 
         "manga" -> {

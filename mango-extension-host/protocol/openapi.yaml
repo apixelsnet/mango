@@ -1,9 +1,14 @@
 openapi: 3.1.0
 info:
   title: Mango extension host
-  version: "4"
+  version: "5"
   description: |
-    Contract between the Rust core and the extension host. Protocol version 4.
+    Contract between the Rust core and the extension host. Protocol version 5.
+
+    Version 5 differs from 4 in two places: `/sources/{id}/filters` answers, where
+    it was reserved and answered 501, and `/sources/{id}/search` reads `filters`,
+    which it ignored. A search without them now carries the source's own list as
+    the source makes it, where it carried an empty one.
 
     Version 4 differs from 3 in one place: `/extensions/install` takes the package
     and the version the store lists, and refuses a file that is another extension
@@ -21,7 +26,7 @@ info:
     - Every request carries `Authorization: Bearer <token>`. The core chooses the
       token and hands it to the host when it starts it.
     - Bodies are JSON. Source ids are 64-bit, so they travel as strings.
-    - Every response carries `X-Mango-Protocol: 3`.
+    - Every response carries `X-Mango-Protocol: 5`.
     - Failures return `{"error": {"code", "message"}}`.
 
     Changing a field or a status code means a new protocol version.
@@ -101,7 +106,11 @@ paths:
         "200": { $ref: "#/components/responses/MangaPage" }
   /sources/{id}/search:
     post:
-      summary: Search by text. Filters are reserved; host 0.1 ignores them.
+      summary: Search by text, by filters, or both
+      description: |
+        The source makes its filter list anew for each search, and `filters` says
+        which of them to set to something else. Left out or empty, the search
+        carries the list as the source makes it.
       parameters: [{ $ref: "#/components/parameters/sourceId" }]
       requestBody:
         required: true
@@ -112,9 +121,12 @@ paths:
               properties:
                 page: { type: integer, default: 1 }
                 query: { type: string, default: "" }
-                filters: { type: array, items: {}, description: "Reserved" }
+                filters:
+                  type: array
+                  items: { $ref: "#/components/schemas/FilterChange" }
       responses:
         "200": { $ref: "#/components/responses/MangaPage" }
+        "400": { description: "bad_request: no filter at that place, one with nothing to set, or a state of the wrong kind" }
   /sources/{id}/manga:
     post:
       summary: Refresh a title's details, its chapter list, or both
@@ -195,10 +207,19 @@ paths:
             "image/*": {}
   /sources/{id}/filters:
     get:
-      summary: Reserved. Host 0.1 answers 501.
+      summary: What the source's search can be narrowed by, as the source makes the list now. An empty list when it has nothing.
       parameters: [{ $ref: "#/components/parameters/sourceId" }]
       responses:
-        "501": { description: not_implemented }
+        "200":
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [filters]
+                properties:
+                  filters:
+                    type: array
+                    items: { $ref: "#/components/schemas/Filter" }
   /sources/{id}/preferences:
     get:
       summary: What the source lets its user set. An empty list when it has nothing.
@@ -269,6 +290,22 @@ components:
                 type: array
                 items: { $ref: "#/components/schemas/Preference" }
   schemas:
+    Filter:
+      type: object
+      required: [type, name]
+      description: "A filter has no id: its place in the list names it."
+      properties:
+        type: { type: string, enum: [header, separator, select, text, checkbox, tristate, sort, group], description: "header and separator have nothing to set" }
+        name: { type: string }
+        state: { description: "select: the place in values. text: string. checkbox: boolean. tristate: 0 either way, 1 with it, 2 without it. sort: {index, ascending} or null. Absent for the rest." }
+        values: { type: array, items: { type: string }, description: "select and sort: the words to pick from" }
+        filters: { type: array, items: { $ref: "#/components/schemas/Filter" }, description: "group only: the filters inside it" }
+    FilterChange:
+      type: object
+      required: [position, state]
+      properties:
+        position: { type: integer, description: "The filter's place in the list, as read" }
+        state: { description: "As in Filter. For a group, an array of FilterChange for the filters inside it." }
     Preference:
       type: object
       required: [position, type, enabled, visible]

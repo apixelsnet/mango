@@ -101,6 +101,54 @@ if pages:
 found, ms = call("POST", f"/sources/{sid}/search", {"page": 1, "query": "one"})
 print(f"search: {len(found['mangas'])} titles in {ms} ms")
 
+# What the search can be narrowed by: read the list, set one filter of each kind it has,
+# search by them alone, and see that a change for a place that is not there is refused.
+filters, ms = call("GET", f"/sources/{sid}/filters")
+filters = filters["filters"]
+
+
+def kinds(items):
+    return {f["type"] for f in items} | {k for f in items if f["type"] == "group" for k in kinds(f["filters"])}
+
+
+def changes(items, done):
+    out = []
+    for position, f in enumerate(items):
+        kind = f["type"]
+        if kind == "group":
+            inner = changes(f["filters"], done)
+            if inner:
+                out.append({"position": position, "state": inner})
+            continue
+        if kind in done or kind in ("header", "separator") or (kind in ("select", "sort") and len(f["values"]) < 2):
+            continue
+        done.add(kind)
+        state = {
+            "checkbox": lambda: not f["state"],
+            "tristate": lambda: 1,
+            "text": lambda: "",
+            "select": lambda: (f["state"] + 1) % len(f["values"]),
+            "sort": lambda: {"index": len(f["values"]) - 1, "ascending": not (f["state"] or {}).get("ascending", False)},
+        }[kind]()
+        out.append({"position": position, "state": state})
+    return out
+
+
+print(f"filters: {len(filters)} in {ms} ms ({', '.join(sorted(kinds(filters)))})")
+if filters:
+    tried = set()
+    narrowed, ms = call("POST", f"/sources/{sid}/search", {"page": 1, "query": "", "filters": changes(filters, tried)})
+    plain, _ = call("POST", f"/sources/{sid}/search", {"page": 1, "query": ""})
+    same = [m["url"] for m in narrowed["mangas"]] == [m["url"] for m in plain["mangas"]]
+    print(f"search by filters ({', '.join(sorted(tried))}): {len(narrowed['mangas'])} titles in {ms} ms, {'the same list as' if same else 'another list than'} without them")
+    try:
+        call("POST", f"/sources/{sid}/search", {"page": 1, "query": "", "filters": [{"position": len(filters), "state": True}]})
+        sys.exit("FAIL: a filter that is not there was taken")
+    except urllib.error.HTTPError:
+        print("a filter that is not there is refused, as expected")
+else:
+    print("no filters on this source to try")
+
 health("after one full read")
 
 # An update replaces an extension that is loaded. Its sources must answer afterwards.
@@ -205,8 +253,3 @@ print(f"registry lists {len(listed['extensions'])} extensions")
 
 call("DELETE", f"/extensions/{TEST_PKG}")
 health("after removing one")
-
-try:
-    call("GET", f"/sources/{sid}/filters")
-except Exception:
-    print("filters: reserved, as expected")
