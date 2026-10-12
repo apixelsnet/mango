@@ -1,6 +1,7 @@
 import './app.css';
 import { mount } from 'svelte';
 import App from './App.svelte';
+import { initDisplay } from './lib/display.svelte';
 import { loadPrefs } from './lib/prefs.svelte';
 import { loadSession, session } from './lib/session.svelte';
 import { adoptServerTheme, initTheme } from './lib/theme.svelte';
@@ -20,6 +21,7 @@ if (answer.has('code') && answer.has('state')) {
 // before the server has answered. The server's copy then takes over, once Mango
 // has said this browser is signed in.
 initTheme();
+initDisplay();
 loadSession().then(() => {
   if (session.signedIn) loadPrefs().then(adoptServerTheme);
 });

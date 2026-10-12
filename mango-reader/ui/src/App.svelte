@@ -1,8 +1,9 @@
 <script lang="ts">
   import { get, type Updates } from './lib/api';
-  import Icon from './lib/Icon.svelte';
+  import { display } from './lib/display.svelte';
+  import Icon, { type IconName } from './lib/Icon.svelte';
   import Notice from './lib/Notice.svelte';
-  import { go, route } from './lib/router.svelte';
+  import { back, go, route } from './lib/router.svelte';
   import { loadSession, session } from './lib/session.svelte';
   import { loadVersion, version } from './lib/version.svelte';
   import SignIn from './routes/SignIn.svelte';
@@ -23,16 +24,22 @@
   import Welcome from './routes/Welcome.svelte';
 
   // `under` lists the first path segments that light the entry up.
-  const NAV = [
-    { to: '/', label: 'Library', under: [''] },
-    { to: '/updates', label: 'Updates', under: ['updates'] },
-    { to: '/browse', label: 'Browse', under: ['browse', 'source', 'search', 'extensions', 'extension'] },
-    { to: '/downloads', label: 'Downloads', under: ['downloads'] },
-    { to: '/history', label: 'History', under: ['history'] },
+  const NAV: { to: string; label: string; icon: IconName; under: string[] }[] = [
+    { to: '/', label: 'Library', icon: 'book', under: [''] },
+    { to: '/updates', label: 'Updates', icon: 'refresh', under: ['updates'] },
+    { to: '/browse', label: 'Browse', icon: 'globe', under: ['browse', 'source', 'search', 'extensions', 'extension'] },
+    { to: '/downloads', label: 'Downloads', icon: 'download', under: ['downloads'] },
+    { to: '/history', label: 'History', icon: 'clock', under: ['history'] },
   ];
 
   const parts = $derived(route.path.split('/').filter(Boolean));
   const area = $derived(parts[0] ?? '');
+  // On a narrow screen the menu is a row of tabs along the bottom, under the thumb.
+  const tabbed = $derived(display.tabs);
+  // There a title is a screen of its own: it brings its own way back, and the menu makes room for its buttons.
+  const pushed = $derived(tabbed && area === 'title');
+  // Any other screen that is not one of the menu's gets a way back: an app on a phone's home screen has no other.
+  const deep = $derived(tabbed && !NAV.some((item) => item.to === route.path));
   let query = $state('');
   // Unread chapters found lately, shown beside Updates. Looked up again on each change of screen.
   let fresh = $state(0);
@@ -61,7 +68,18 @@
     const text = query.trim();
     if (text) go('/search?q=' + encodeURIComponent(text));
   }
+
+  /** A press on the tab already open goes back to its top, as in a phone's own apps. */
+  function again(event: MouseEvent, to: string) {
+    if (route.path !== to) return;
+    event.preventDefault();
+    scrollTo({ top: 0, behavior: 'smooth' });
+  }
 </script>
+
+{#snippet badge()}
+  {#if fresh > 0}<span class="badge"><span class="sr">New chapters: </span>{fresh > 99 ? '99+' : fresh}</span>{/if}
+{/snippet}
 
 {#if !session.known}
   {#if session.error}
@@ -78,77 +96,112 @@
     <Reader id={Number(parts[1])} />
   {/key}
 {:else}
-  <header class="top">
-    <a class="logo" href="#/" aria-label="Mango home">
-      <span class="dot"></span>
-      <span class="display word">MANGO</span>
-      <span class="kana" aria-hidden="true">マンゴー</span>
-    </a>
-    <nav aria-label="Primary">
-      {#each NAV as item (item.to)}
-        <a href="#{item.to}" aria-current={item.under.includes(area) ? 'page' : undefined}>
-          {item.label}
-          {#if item.to === '/updates' && fresh > 0}<span class="badge"><span class="sr">New chapters: </span>{fresh > 99 ? '99+' : fresh}</span>{/if}
+  <div class="shell" class:tabbed={tabbed && !pushed}>
+    {#if !pushed}
+      <header class="top">
+        {#if deep}
+          <button class="btn icon" aria-label="Back" onclick={() => back()}><Icon name="back" stroke={3} /></button>
+        {/if}
+        <a class="logo" class:alone={deep} href="#/" aria-label="Mango home">
+          <span class="dot"></span>
+          <span class="display word">MANGO</span>
+          <span class="kana" aria-hidden="true">マンゴー</span>
         </a>
-      {/each}
-    </nav>
-    <form class="field" role="search" onsubmit={search}>
-      <Icon name="search" size={18} stroke={3} />
-      <input type="search" bind:value={query} placeholder="Search all sources" aria-label="Search all sources" />
-    </form>
-    <a class="btn icon settings" href="#/settings" aria-label={news ? 'Settings: a newer Mango is out' : 'Settings'} aria-current={area === 'settings' ? 'page' : undefined}>
-      <Icon name="sliders" />
-      {#if news}<span class="news" aria-hidden="true"></span>{/if}
-    </a>
-  </header>
-
-  <main>
-    {#if area === ''}
-      <Library />
-    {:else if area === 'browse'}
-      <Browse />
-    {:else if area === 'updates'}
-      <UpdatesScreen />
-    {:else if area === 'downloads'}
-      <Downloads />
-    {:else if area === 'history'}
-      <History />
-    {:else if area === 'settings'}
-      <Settings />
-    {:else if area === 'import'}
-      <Import />
-    {:else if area === 'search'}
-      {#key route.query.toString()}
-        <Search q={route.query.get('q') ?? ''} from={Number(route.query.get('for')) || null} />
-      {/key}
-    {:else if area === 'migrate' && parts[1] && parts[2]}
-      {#key route.path}
-        <Migrate from={Number(parts[1])} to={Number(parts[2])} />
-      {/key}
-    {:else if area === 'source' && parts[1]}
-      {#key parts[1]}
-        <Source id={parts[1]} />
-      {/key}
-    {:else if area === 'extensions'}
-      <Extensions />
-    {:else if area === 'extension' && parts[1]}
-      {#key parts[1]}
-        <Extension pkg={parts[1]} />
-      {/key}
-    {:else if area === 'title' && parts[1]}
-      {#key parts[1]}
-        <Title id={Number(parts[1])} />
-      {/key}
-    {:else}
-      <div class="page">
-        <h1 class="display">Nothing here</h1>
-        <p><a class="btn" href="#/">Back to the start</a></p>
-      </div>
+        {#if !tabbed}
+          <nav aria-label="Primary">
+            {#each NAV as item (item.to)}
+              <a href="#{item.to}" aria-current={item.under.includes(area) ? 'page' : undefined}>
+                {item.label}
+                {#if item.to === '/updates'}{@render badge()}{/if}
+              </a>
+            {/each}
+          </nav>
+        {/if}
+        <form class="field" role="search" onsubmit={search}>
+          <Icon name="search" size={18} stroke={3} />
+          <input type="search" bind:value={query} placeholder={tabbed ? 'Search' : 'Search all sources'} aria-label="Search all sources" enterkeyhint="search" />
+        </form>
+        <a class="btn icon settings" href="#/settings" aria-label={news ? 'Settings: a newer Mango is out' : 'Settings'} aria-current={area === 'settings' ? 'page' : undefined}>
+          <Icon name="sliders" />
+          {#if news}<span class="news" aria-hidden="true"></span>{/if}
+        </a>
+      </header>
     {/if}
-  </main>
+
+    <main>
+      {#if area === ''}
+        <Library />
+      {:else if area === 'browse'}
+        <Browse />
+      {:else if area === 'updates'}
+        <UpdatesScreen />
+      {:else if area === 'downloads'}
+        <Downloads />
+      {:else if area === 'history'}
+        <History />
+      {:else if area === 'settings'}
+        <Settings />
+      {:else if area === 'import'}
+        <Import />
+      {:else if area === 'search'}
+        {#key route.query.toString()}
+          <Search q={route.query.get('q') ?? ''} from={Number(route.query.get('for')) || null} />
+        {/key}
+      {:else if area === 'migrate' && parts[1] && parts[2]}
+        {#key route.path}
+          <Migrate from={Number(parts[1])} to={Number(parts[2])} />
+        {/key}
+      {:else if area === 'source' && parts[1]}
+        {#key parts[1]}
+          <Source id={parts[1]} />
+        {/key}
+      {:else if area === 'extensions'}
+        <Extensions />
+      {:else if area === 'extension' && parts[1]}
+        {#key parts[1]}
+          <Extension pkg={parts[1]} />
+        {/key}
+      {:else if area === 'title' && parts[1]}
+        {#key parts[1]}
+          <Title id={Number(parts[1])} />
+        {/key}
+      {:else}
+        <div class="page">
+          <h1 class="display">Nothing here</h1>
+          <p><a class="btn" href="#/">Back to the start</a></p>
+        </div>
+      {/if}
+    </main>
+
+    {#if tabbed && !pushed}
+      <nav class="tabs" aria-label="Primary">
+        {#each NAV as item (item.to)}
+          <a href="#{item.to}" aria-current={item.under.includes(area) ? 'page' : undefined} onclick={(e) => again(e, item.to)}>
+            <Icon name={item.icon} size={22} />
+            <span class="label">{item.label}</span>
+            {#if item.to === '/updates'}{@render badge()}{/if}
+          </a>
+        {/each}
+      </nav>
+    {/if}
+  </div>
 {/if}
 
 <style>
+  /* Everything but the reader. The size picked for this device scales it whole. */
+  .shell {
+    zoom: var(--zoom);
+    padding: 0 var(--safe-right) 0 var(--safe-left);
+  }
+
+  .shell.tabbed {
+    --tabs: calc(59px + var(--safe-bottom));
+  }
+
+  main {
+    padding-bottom: var(--tabs);
+  }
+
   .top {
     display: flex;
     flex-wrap: wrap;
@@ -166,6 +219,7 @@
   }
 
   .dot {
+    flex: none;
     width: 30px;
     height: 30px;
     border: 3px solid var(--ink);
@@ -248,5 +302,95 @@
     form {
       flex: 1 1 160px;
     }
+  }
+
+  /* ---------- the menu along the bottom ---------- */
+
+  /* With it there, the top is one line: the way back or the name, the search, the settings. */
+  .tabbed .top {
+    flex-wrap: nowrap;
+    gap: 10px;
+    padding: 10px var(--gutter);
+  }
+
+  .tabbed .logo {
+    gap: 8px;
+  }
+
+  .tabbed .dot {
+    width: 26px;
+    height: 26px;
+  }
+
+  .tabbed .word {
+    font-size: 20px;
+  }
+
+  .tabbed .kana,
+  .tabbed .alone .word {
+    display: none;
+  }
+
+  .tabbed form {
+    flex: 1 1 0;
+    min-width: 0;
+    box-shadow: none;
+  }
+
+  @media (max-width: 359px) {
+    .tabbed .word {
+      display: none;
+    }
+  }
+
+  .tabs {
+    position: fixed;
+    right: 0;
+    bottom: 0;
+    left: 0;
+    z-index: 6;
+    display: grid;
+    grid-auto-columns: minmax(0, 1fr);
+    grid-auto-flow: column;
+    gap: 0;
+    padding: 0 var(--safe-right) var(--safe-bottom) var(--safe-left);
+    overflow: visible;
+    border-top: 3px solid var(--ink);
+    background: var(--paper);
+    user-select: none;
+    -webkit-touch-callout: none;
+  }
+
+  .tabs a {
+    position: relative;
+    flex-direction: column;
+    justify-content: center;
+    gap: 3px;
+    min-height: 56px;
+    padding: 0 2px;
+    /* The names keep to their tabs: on a small screen at a large size they stop growing. */
+    font-size: min(10px, calc(2.6vw / var(--zoom)));
+    letter-spacing: 0.04em;
+  }
+
+  .tabs a:focus-visible {
+    outline-offset: -5px;
+  }
+
+  .label {
+    max-width: 100%;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .tabs .badge {
+    position: absolute;
+    top: 3px;
+    left: calc(50% + 4px);
+    min-width: 20px;
+    height: 20px;
+    padding: 0 5px;
+    font-size: 11px;
   }
 </style>

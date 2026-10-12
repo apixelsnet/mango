@@ -2,6 +2,7 @@
   import { get, message, send, type Library, type LibraryItem } from '../lib/api';
   import Cover from '../lib/Cover.svelte';
   import Icon from '../lib/Icon.svelte';
+  import { keep, recall } from '../lib/keep';
   import Notice from '../lib/Notice.svelte';
   import { pref, setPref } from '../lib/prefs.svelte';
   import TitleCard from '../lib/TitleCard.svelte';
@@ -25,8 +26,10 @@
   };
   const DEFAULT: View = { layout: 'grid', sort: 'lastRead', down: true, unread: false, downloaded: false, completed: false };
 
-  let data = $state<Library | null>(null);
-  let loading = $state(true);
+  // What was here last time shows at once; the library is then asked for again.
+  const kept = recall<Library>('library');
+  let data = $state<Library | null>(kept);
+  let loading = $state(!kept);
   let error = $state<string | null>(null);
   // null is "All".
   let category = $state<number | null>(null);
@@ -61,7 +64,9 @@
   async function load() {
     error = null;
     try {
-      data = await get<Library>('/library');
+      const fresh = await get<Library>('/library');
+      keep('library', fresh);
+      data = fresh;
       if (category !== null && !data.categories.some((c) => c.id === category)) category = null;
     } catch (e) {
       error = message(e);
@@ -120,7 +125,7 @@
       {/if}
     </div>
     {#if data?.categories.length}
-      <div class="tools" role="group" aria-label="Category">
+      <div class="tools slide" role="group" aria-label="Category">
         <button class="btn pill" aria-pressed={category === null} onclick={() => (category = null)}>All</button>
         {#each data.categories as c (c.id)}
           <button class="btn pill" aria-pressed={category === c.id} onclick={() => (category = c.id)}>{c.name}</button>
@@ -170,21 +175,24 @@
               <Icon name="search" size={18} stroke={3} />
               <input type="search" bind:value={text} placeholder="Search the library" />
             </label>
-            <label class="sorter">
-              <span class="sr">Sort by</span>
-              <select class="btn" value={view.sort} onchange={(e) => setSort(e.currentTarget.value as Sort)}>
-                {#each SORTS as [value, label] (value)}<option {value}>{label}</option>{/each}
-              </select>
-            </label>
-            <button class="btn icon" aria-label={view.down ? 'Sorted downwards. Sort upwards' : 'Sorted upwards. Sort downwards'} onclick={() => setView({ down: !view.down })}>
-              <Icon name={view.down ? 'down' : 'up'} />
-            </button>
+            <!-- On a narrow screen the order and the layout wait behind the filter button, to keep this to one line. -->
+            <div class="view" class:open={filters}>
+              <label class="sorter">
+                <span class="sr">Sort by</span>
+                <select class="btn" value={view.sort} onchange={(e) => setSort(e.currentTarget.value as Sort)}>
+                  {#each SORTS as [value, label] (value)}<option {value}>{label}</option>{/each}
+                </select>
+              </label>
+              <button class="btn icon" aria-label={view.down ? 'Sorted downwards. Sort upwards' : 'Sorted upwards. Sort downwards'} onclick={() => setView({ down: !view.down })}>
+                <Icon name={view.down ? 'down' : 'up'} />
+              </button>
+              <button class="btn icon late" aria-label="Grid view" aria-pressed={view.layout === 'grid'} onclick={() => setView({ layout: 'grid' })}><Icon name="grid" size={18} /></button>
+              <button class="btn icon late" aria-label="List view" aria-pressed={view.layout === 'list'} onclick={() => setView({ layout: 'list' })}><Icon name="list" size={18} /></button>
+            </div>
             <button class="btn" aria-expanded={filters} onclick={() => (filters = !filters)}>
               <Icon name="filter" size={18} />Filter{filtering ? ' on' : ''}
             </button>
-            <button class="btn icon" aria-label="Grid view" aria-pressed={view.layout === 'grid'} onclick={() => setView({ layout: 'grid' })}><Icon name="grid" size={18} /></button>
-            <button class="btn icon" aria-label="List view" aria-pressed={view.layout === 'list'} onclick={() => setView({ layout: 'list' })}><Icon name="list" size={18} /></button>
-            <button class="btn" aria-pressed={picking} onclick={() => (picking ? stopPicking() : (picking = true))}>Select</button>
+            <button class="btn last" aria-pressed={picking} onclick={() => (picking ? stopPicking() : (picking = true))}>Select</button>
           </div>
         </div>
 
@@ -341,7 +349,85 @@
     box-shadow: none;
   }
 
+  /* Beside each other on a wide screen, in the order they have always had. */
+  .view {
+    display: contents;
+  }
+
+  .late {
+    order: 1;
+  }
+
+  .last {
+    order: 2;
+  }
+
+  @media (max-width: 640px) {
+    .section-head .tools {
+      flex: 1 1 100%;
+    }
+
+    .find {
+      flex-basis: 80px;
+    }
+
+    .view {
+      display: none;
+    }
+
+    .view.open {
+      display: flex;
+      flex-basis: 100%;
+      gap: 8px;
+      order: 3;
+    }
+
+    .sorter {
+      flex: 1;
+    }
+
+    .sorter select {
+      width: 100%;
+    }
+
+    .late,
+    .last {
+      order: 0;
+    }
+
+    .resume {
+      gap: 16px;
+      padding: 16px;
+    }
+
+    .corner {
+      width: 120px;
+      height: 120px;
+    }
+
+    .art {
+      flex-basis: 96px;
+    }
+
+    .words {
+      flex-basis: 170px;
+      gap: 10px;
+    }
+
+    .words .tools {
+      align-self: stretch;
+    }
+
+    .words .btn {
+      flex: 1;
+    }
+  }
+
+  /* Stays in reach while titles far down the shelf are picked. */
   .bulk {
+    position: sticky;
+    top: calc(var(--safe-top) + 8px);
+    z-index: 3;
     display: flex;
     flex-wrap: wrap;
     align-items: center;

@@ -99,7 +99,7 @@
   .door {
     display: grid;
     place-items: center;
-    min-height: 100dvh;
+    min-height: calc(100dvh - env(safe-area-inset-top, 0px));
     padding: 24px var(--gutter);
   }
 

@@ -1,11 +1,14 @@
 <script lang="ts">
   import { get, message, send, type UpdateItem, type Updates } from '../lib/api';
   import Icon from '../lib/Icon.svelte';
+  import { keep, recall } from '../lib/keep';
   import Notice from '../lib/Notice.svelte';
   import { ago, dayKey, dayLabel } from '../lib/util';
 
-  let data = $state<Updates | null>(null);
-  let loading = $state(true);
+  // What was here last time shows at once; the list is then asked for again.
+  const kept = recall<Updates>('updates');
+  let data = $state<Updates | null>(kept);
+  let loading = $state(!kept);
   let error = $state<string | null>(null);
   let note = $state('');
   let showErrors = $state(false);
@@ -23,7 +26,9 @@
 
   async function load() {
     try {
-      data = await get<Updates>('/updates');
+      const fresh = await get<Updates>('/updates');
+      keep('updates', fresh);
+      data = fresh;
       error = null;
     } catch (e) {
       error = message(e);

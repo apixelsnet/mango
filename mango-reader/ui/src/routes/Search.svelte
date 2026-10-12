@@ -1,9 +1,11 @@
 <script lang="ts">
   import { get, message, send, type Card, type Listing, type Source } from '../lib/api';
+  import { onDestroy } from 'svelte';
   import Icon from '../lib/Icon.svelte';
+  import { keep, recall } from '../lib/keep';
   import Notice from '../lib/Notice.svelte';
   import { browseLangs } from '../lib/prefs.svelte';
-  import { go } from '../lib/router.svelte';
+  import { go, route } from '../lib/router.svelte';
   import TitleCard from '../lib/TitleCard.svelte';
   import { langName } from '../lib/util';
 
@@ -19,10 +21,19 @@
   // comparison of the two, and the title itself is left out of what is found.
   let { q, from = null }: { q: string; from?: number | null } = $props();
 
-  let rows = $state<Row[]>([]);
-  let scope = $state('');
+  type Kept = { key: string; rows: Row[]; scope: string; left: number };
+
+  /** Come back to, a search shows what it found, instead of asking every source again. */
+  function before(): Kept | null {
+    const was = route.returned ? recall<Kept>('search') : null;
+    return was?.key === `${q}|${from}` ? was : null;
+  }
+  const kept = before();
+
+  let rows = $state<Row[]>(kept?.rows ?? []);
+  let scope = $state(kept?.scope ?? '');
   let error = $state<string | null>(null);
-  let left = $state(0);
+  let left = $state(kept?.left ?? 0);
 
   async function ask(row: Row) {
     row.state = 'searching';
@@ -40,26 +51,31 @@
 
   async function run() {
     if (!q) return;
-    try {
-      const all = (await get<{ sources: Source[] }>('/sources')).sources.filter((s) => !s.hidden);
-      const langs = browseLangs(all);
-      const pinned = all.filter((s) => s.pinned);
-      // Pinned sources if there are any; otherwise those in the languages picked on Browse.
-      const pool = pinned.length ? pinned : all.filter((s) => langs.length === 0 || langs.includes(s.lang));
-      scope = pinned.length ? 'your pinned sources' : langs.length ? 'sources in your languages' : 'your sources';
-      left = Math.max(0, pool.length - MOST);
-      rows = pool.slice(0, MOST).map((source) => ({ source, state: 'waiting', items: [], error: '' }));
-    } catch (e) {
-      error = message(e);
-      return;
+    if (!kept) {
+      try {
+        const all = (await get<{ sources: Source[] }>('/sources')).sources.filter((s) => !s.hidden);
+        const langs = browseLangs(all);
+        const pinned = all.filter((s) => s.pinned);
+        // Pinned sources if there are any; otherwise those in the languages picked on Browse.
+        const pool = pinned.length ? pinned : all.filter((s) => langs.length === 0 || langs.includes(s.lang));
+        scope = pinned.length ? 'your pinned sources' : langs.length ? 'sources in your languages' : 'your sources';
+        left = Math.max(0, pool.length - MOST);
+        rows = pool.slice(0, MOST).map((source) => ({ source, state: 'waiting', items: [], error: '' }));
+      } catch (e) {
+        error = message(e);
+        return;
+      }
     }
+    // A search left before every source had answered asks the rest now.
+    const due = rows.filter((row) => row.state === 'waiting' || row.state === 'searching');
     let next = 0;
     const worker = async () => {
-      while (next < rows.length) await ask(rows[next++]);
+      while (next < due.length) await ask(due[next++]);
     };
-    await Promise.all(Array.from({ length: Math.min(AT_ONCE, rows.length) }, worker));
+    await Promise.all(Array.from({ length: Math.min(AT_ONCE, due.length) }, worker));
   }
   run();
+  onDestroy(() => keep('search', $state.snapshot({ key: `${q}|${from}`, rows, scope, left })));
 
   async function toggle(card: Card) {
     card.inLibrary = !card.inLibrary;
@@ -163,10 +179,19 @@
   /* One row per source, scrolled sideways. */
   .strip {
     display: grid;
-    grid-auto-columns: minmax(130px, 150px);
+    grid-auto-columns: minmax(min(130px, var(--cover)), min(150px, var(--cover)));
     grid-auto-flow: column;
     gap: 24px;
     overflow-x: auto;
     padding: 14px 12px 14px 2px;
+  }
+
+  /* On a phone the row runs out to the screen's edges, with the next cover showing that there is more. */
+  @media (max-width: 640px) {
+    .strip {
+      gap: 16px;
+      margin: 0 calc(-1 * var(--gutter));
+      padding: 14px var(--gutter);
+    }
   }
 </style>

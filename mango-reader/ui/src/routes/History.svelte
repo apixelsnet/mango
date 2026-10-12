@@ -1,13 +1,18 @@
 <script lang="ts">
   import { get, message, send, type HistoryEntry } from '../lib/api';
   import Icon from '../lib/Icon.svelte';
+  import { keep, recall } from '../lib/keep';
   import Notice from '../lib/Notice.svelte';
   import { dayKey, dayLabel, whenVisible } from '../lib/util';
 
   const PAGE = 100;
+  // The most the server gives in one answer.
+  const MOST = 500;
 
-  let entries = $state<HistoryEntry[]>([]);
-  let more = $state(false);
+  // What was here last time shows at once; the list is then asked for again.
+  const kept = recall<{ entries: HistoryEntry[]; more: boolean }>('history');
+  let entries = $state<HistoryEntry[]>(kept?.entries ?? []);
+  let more = $state(kept?.more ?? false);
   let loading = $state(true);
   let error = $state<string | null>(null);
   let sure = $state(false);
@@ -27,9 +32,12 @@
     loading = true;
     error = null;
     try {
-      const page = (await get<{ entries: HistoryEntry[] }>(`/history?limit=${PAGE}&offset=${fresh ? 0 : entries.length}`)).entries;
+      // Asked for afresh, the list comes back as long as it was, so the place in it holds.
+      const limit = fresh ? Math.min(MOST, Math.max(PAGE, entries.length)) : PAGE;
+      const page = (await get<{ entries: HistoryEntry[] }>(`/history?limit=${limit}&offset=${fresh ? 0 : entries.length}`)).entries;
       entries = fresh ? page : [...entries, ...page];
-      more = page.length === PAGE;
+      more = page.length === limit;
+      keep('history', { entries: $state.snapshot(entries), more });
     } catch (e) {
       error = message(e);
     }
@@ -57,6 +65,7 @@
       await send('DELETE', '/history');
       entries = [];
       more = false;
+      keep('history', { entries, more });
     } catch (e) {
       error = message(e);
     }

@@ -20,6 +20,19 @@
   --sh-8: 8px 8px 0 var(--ink);
   --dots: radial-gradient(var(--ink) 1.6px, transparent 2px);
   --gutter: clamp(16px, 4vw, 40px);
+  /* Behind a phone's own clock; lib/theme.svelte.ts keeps it the darker of paper and ink. */
+  --bar: #111111;
+  /* What lib/display.svelte.ts sets for this device: the size of everything, and of a cover. */
+  --zoom: 1;
+  --cover: 150px;
+  --cover-most: 42%;
+  /* The room the menu takes along the bottom, when it is there. */
+  --tabs: 0px;
+  /* A device's own edges: a notch, a home bar. The app's frame is scaled by the size, so these are scaled back. */
+  --safe-top: calc(env(safe-area-inset-top, 0px) / var(--zoom));
+  --safe-right: calc(env(safe-area-inset-right, 0px) / var(--zoom));
+  --safe-bottom: calc(env(safe-area-inset-bottom, 0px) / var(--zoom));
+  --safe-left: calc(env(safe-area-inset-left, 0px) / var(--zoom));
   color-scheme: light;
 }
 
@@ -29,8 +42,20 @@
     --paper: #151513;
     --ink: #f1f1ec;
     --surface: #232320;
+    --bar: #151513;
     color-scheme: dark;
   }
+}
+
+/* Small covers go three across a phone, the others two. */
+:root[data-covers='small'] {
+  --cover: 108px;
+  --cover-most: 29%;
+}
+
+:root[data-covers='large'] {
+  --cover: 200px;
+  --cover-most: 46%;
 }
 
 :root[data-shadows='off'] {
@@ -48,12 +73,30 @@
   box-sizing: border-box;
 }
 
+html {
+  /* Also what shows when a phone lets the page be pulled past its end. */
+  background: var(--paper);
+  -webkit-text-size-adjust: 100%;
+  -webkit-tap-highlight-color: transparent;
+}
+
 body {
   margin: 0;
+  /* Opened from a phone's home screen, the page reaches up under the clock. */
+  padding-top: env(safe-area-inset-top, 0px);
   background: var(--paper);
   color: var(--ink);
   font: 500 15px/1.4 'Zen Kaku Gothic New', 'Hiragino Sans', 'Yu Gothic', system-ui, sans-serif;
-  -webkit-text-size-adjust: 100%;
+}
+
+/* The band the clock is read against. No height in a browser, where the page starts below it. */
+body::before {
+  content: '';
+  position: fixed;
+  inset: 0 0 auto;
+  z-index: 20;
+  height: env(safe-area-inset-top, 0px);
+  background: var(--bar);
 }
 
 a {
@@ -66,6 +109,25 @@ input,
 select {
   font: inherit;
   color: inherit;
+}
+
+/* A tap is a tap at once: no wait to see whether a second one makes it a zoom. */
+a,
+button,
+input,
+select,
+label {
+  touch-action: manipulation;
+}
+
+/* A phone zooms the whole page in on a field whose text is under 16px. */
+@media (pointer: coarse) {
+  input,
+  textarea,
+  select,
+  select.btn {
+    font-size: max(16px, calc(16px / var(--zoom)));
+  }
 }
 
 button {
@@ -172,6 +234,7 @@ p {
   display: flex;
   align-items: center;
   gap: 10px;
+  min-width: 0;
   min-height: 44px;
   padding: 0 14px;
   border: 2px solid var(--ink);
@@ -307,7 +370,7 @@ select.btn {
 
 .grid {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(min(150px, 42%), 1fr));
+  grid-template-columns: repeat(auto-fill, minmax(min(var(--cover), var(--cover-most)), 1fr));
   gap: 30px 24px;
   padding-top: 8px;
 }
@@ -337,6 +400,57 @@ select.btn {
 
 .rows .main span {
   font-size: 12.5px;
+}
+
+/* ---------- a phone ---------- */
+
+@media (max-width: 640px) {
+  .page {
+    gap: 22px;
+    padding-top: 18px;
+    padding-bottom: 48px;
+  }
+
+  .page-head {
+    gap: 12px 20px;
+  }
+
+  /* As large as the size setting asks, but never wider than the screen. */
+  .page-head h1 {
+    font-size: min(36px, calc(9vw / var(--zoom)));
+    overflow-wrap: anywhere;
+  }
+
+  .section-head .tools {
+    min-width: 0;
+  }
+
+  .section-head h2 {
+    font-size: 20px;
+  }
+
+  .grid {
+    gap: 26px 16px;
+  }
+
+  /* One line that slides sideways under a thumb, out to both edges of the screen. */
+  .slide {
+    flex: none;
+    flex-wrap: nowrap;
+    width: calc(100% + 2 * var(--gutter));
+    margin: -6px calc(-1 * var(--gutter));
+    padding: 6px var(--gutter);
+    overflow-x: auto;
+    scrollbar-width: none;
+  }
+
+  .slide::-webkit-scrollbar {
+    display: none;
+  }
+
+  .slide > * {
+    flex: none;
+  }
 }
 
 /* ---------- covers ---------- */

@@ -121,6 +121,9 @@ export function apply(t: Theme = theme.value) {
   root.style.setProperty('--spot', t.spot);
   // Text on the spot colour is whichever of dark and light reads better.
   root.style.setProperty('--on-spot', contrast(t.spot, '#111111') >= contrast(t.spot, '#FFFFFF') ? '#111111' : '#FFFFFF');
+  // A phone draws its own clock in white over an app opened from its home screen: the band behind it is the darker of the two.
+  root.style.setProperty('--bar', luminance(colours.paper) < luminance(colours.ink) ? colours.paper : colours.ink);
+  for (const meta of document.querySelectorAll('meta[name="theme-color"]')) meta.setAttribute('content', colours.paper);
   root.style.colorScheme = luminance(colours.paper) < 0.4 ? 'dark' : 'light';
   root.dataset.themed = 'yes';
   root.dataset.shadows = t.shadows ? 'on' : 'off';

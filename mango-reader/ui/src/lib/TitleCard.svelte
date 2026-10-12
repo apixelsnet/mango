@@ -68,6 +68,7 @@
 
   .art {
     position: relative;
+    container-type: inline-size;
   }
 
   .face {
@@ -134,9 +135,35 @@
 
   .meta {
     display: flex;
+    flex-wrap: wrap;
     justify-content: space-between;
-    gap: 8px;
+    gap: 0 8px;
     font-size: 12.5px;
     font-weight: 700;
+  }
+
+  /* A small cover, three across a phone: the name and the count take less of it. */
+  @container (max-width: 125px) {
+    .name {
+      right: 4px;
+      bottom: 4px;
+      left: 4px;
+      padding: 4px 5px;
+      font-size: 11px;
+    }
+
+    .unread {
+      top: -10px;
+      right: -8px;
+      min-width: 30px;
+      height: 30px;
+      padding: 0 6px;
+      font-size: 12px;
+    }
+
+    .mark {
+      top: 0;
+      left: 0;
+    }
   }
 </style>

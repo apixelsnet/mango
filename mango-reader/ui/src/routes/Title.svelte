@@ -2,7 +2,9 @@
   import { get, message, send, type Category, type Chapter, type Title } from '../lib/api';
   import Cover from '../lib/Cover.svelte';
   import Icon from '../lib/Icon.svelte';
+  import { keep, recall } from '../lib/keep';
   import Notice from '../lib/Notice.svelte';
+  import { back } from '../lib/router.svelte';
   import Tracking from '../lib/Tracking.svelte';
   import { ago, chapterShort, langName, STATUS } from '../lib/util';
 
@@ -10,7 +12,13 @@
 
   let { id }: { id: number } = $props();
 
-  let title = $state<Title | null>(null);
+  /** The title last open, if it is this one: come back to from the reader, it shows at once. */
+  function before(): Title | null {
+    const was = recall<Title>('title');
+    return was?.id === id ? was : null;
+  }
+
+  let title = $state<Title | null>(before());
   let loading = $state(true);
   let error = $state<string | null>(null);
   // A failed refresh keeps what is on screen and says so, instead of replacing it.
@@ -29,10 +37,12 @@
   const started = $derived(chapters.some((c) => c.read || c.lastPageRead > 0));
 
   async function load() {
-    loading = true;
+    loading = !title;
     error = null;
     try {
-      title = await get<Title>(`/manga/${id}`);
+      const fresh = await get<Title>(`/manga/${id}`);
+      keep('title', fresh);
+      title = fresh;
       // A title only seen in a list has no details or chapters yet.
       if (!title.initialized || title.chapters.length === 0) refresh();
     } catch (e) {
@@ -135,7 +145,7 @@
 
   {#if title}
     <div class="bar">
-      <a class="btn icon lift" href="#/" aria-label="Back" onclick={(e) => history.length > 1 && (e.preventDefault(), history.back())}>
+      <a class="btn icon lift" href="#/" aria-label="Back" onclick={(e) => (e.preventDefault(), back())}>
         <Icon name="back" stroke={3} />
       </a>
       <div class="tools">
@@ -287,7 +297,7 @@
 <style>
   .page {
     gap: 20px;
-    padding-bottom: 120px;
+    padding-bottom: calc(120px + var(--safe-bottom));
   }
 
   .bar {
@@ -295,6 +305,21 @@
     align-items: center;
     justify-content: space-between;
     gap: 12px;
+  }
+
+  /* With the menu along the bottom this screen stands alone, and its bar is the top of it: always there, for the way back. */
+  :global(:root[data-nav='tabs']) .page {
+    padding-top: 0;
+  }
+
+  :global(:root[data-nav='tabs']) .bar {
+    position: sticky;
+    top: var(--safe-top);
+    z-index: 5;
+    margin: 0 calc(-1 * var(--gutter));
+    padding: 10px var(--gutter);
+    border-bottom: 3px solid var(--ink);
+    background: var(--paper);
   }
 
   .menu {
@@ -309,6 +334,8 @@
     display: flex;
     flex-direction: column;
     min-width: 240px;
+    max-height: 70vh;
+    overflow-y: auto;
   }
 
   .sheet .btn {
@@ -475,12 +502,13 @@
   .dock {
     position: fixed;
     right: 0;
-    bottom: 0;
+    bottom: var(--tabs);
     left: 0;
+    z-index: 4;
     display: flex;
     justify-content: center;
     gap: 14px;
-    padding: 14px var(--gutter) calc(14px + env(safe-area-inset-bottom));
+    padding: 14px max(var(--gutter), var(--safe-right)) calc(14px + var(--safe-bottom)) max(var(--gutter), var(--safe-left));
     border-top: 3px solid var(--ink);
     background: var(--paper);
   }

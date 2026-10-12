@@ -9,7 +9,7 @@
   import Icon from '../lib/Icon.svelte';
   import ReaderPrefs from '../lib/ReaderPrefs.svelte';
   import { filterOf, FITS, KINDS, merge, MODES, owned, profile, setProfile, zone, type Kind, type Mode, type Own, type Prefs } from '../lib/reader';
-  import { go, route } from '../lib/router.svelte';
+  import { go, route, up } from '../lib/router.svelte';
 
   let { id }: { id: number } = $props();
 
@@ -456,7 +456,7 @@
     if (event.key === 'Escape') {
       if (panel) panel = false;
       else if (overlay) overlay = false;
-      else if (info) go(`/title/${info.mangaId}`);
+      else if (info) up(`/title/${info.mangaId}`);
       event.preventDefault();
       return;
     }
@@ -647,7 +647,10 @@
 
   {#if overlay && info && ready}
     <div class="bar top">
-      <a class="btn icon" href="#/title/{info.mangaId}" aria-label="Back to the title"><Icon name="back" stroke={3} /></a>
+      <!-- Back to the title this was opened from, not on to a second copy of it: or its own way back would lead here again. -->
+      <a class="btn icon" href="#/title/{info.mangaId}" aria-label="Back to the title" onclick={(e) => (e.preventDefault(), up(`/title/${info?.mangaId}`))}>
+        <Icon name="back" stroke={3} />
+      </a>
       <div class="what">
         <strong>{info.title}</strong>
         <span>{info.chapter.name}</span>
@@ -724,9 +727,10 @@
 
 <style>
   /* The reader keeps a dark ground of its own unless told otherwise: pages are what is lit. */
+  /* Opened from a phone's home screen it starts below the clock, which would lie over the page. */
   .reader {
     position: fixed;
-    inset: 0;
+    inset: env(safe-area-inset-top, 0px) 0 0;
     background: #111111;
     color: #f1f1ec;
   }
@@ -800,7 +804,7 @@
 
   .stage[data-fit='height'] img {
     max-width: none;
-    height: calc(100dvh * var(--z));
+    height: calc((100dvh - env(safe-area-inset-top, 0px)) * var(--z));
   }
 
   .stage[data-fit='width'] .leaf {
@@ -936,7 +940,7 @@
   }
 
   .flash {
-    top: calc(16px + env(safe-area-inset-top));
+    top: 16px;
     padding: 8px 16px;
     font-size: 14px;
   }

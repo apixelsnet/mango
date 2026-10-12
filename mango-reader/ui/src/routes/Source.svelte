@@ -1,27 +1,38 @@
 <script lang="ts">
   import { get, message, send, type Card, type FilterChange, type Listing, type Source } from '../lib/api';
+  import { onDestroy } from 'svelte';
   import Icon from '../lib/Icon.svelte';
+  import { keep, recall } from '../lib/keep';
   import Notice from '../lib/Notice.svelte';
+  import { route } from '../lib/router.svelte';
   import SourceFilters from '../lib/SourceFilters.svelte';
   import TitleCard from '../lib/TitleCard.svelte';
   import { langName, whenVisible } from '../lib/util';
 
   type Tab = 'popular' | 'latest' | 'search';
+  type Kept = { id: string; tab: Tab; typed: string; query: string; changes: FilterChange[]; items: Card[]; page: number; more: boolean };
 
   let { id }: { id: string } = $props();
 
+  /** Come back to, the list is as it was left: the same search, as many pages down. Opened anew, it starts over. */
+  function before(): Kept | null {
+    const was = route.returned ? recall<Kept>('source') : null;
+    return was?.id === id ? was : null;
+  }
+  const kept = before();
+
   let source = $state<Source | null>(null);
-  let tab = $state<Tab>('popular');
-  let typed = $state('');
-  let query = $state('');
+  let tab = $state<Tab>(kept?.tab ?? 'popular');
+  let typed = $state(kept?.typed ?? '');
+  let query = $state(kept?.query ?? '');
   // The source's filters that are set to something else, as the last search sent them.
-  let changes = $state<FilterChange[]>([]);
+  let changes = $state<FilterChange[]>(kept?.changes ?? []);
   // The filters are asked for when they are first opened, and kept while the page stays.
   let filtering = $state(false);
   let filtersSeen = $state(false);
-  let items = $state<Card[]>([]);
-  let page = 0;
-  let more = $state(false);
+  let items = $state<Card[]>(kept?.items ?? []);
+  let page = kept?.page ?? 0;
+  let more = $state(kept?.more ?? false);
   let loading = $state(false);
   let error = $state<string | null>(null);
   // Answers to a list the user has already left are dropped.
@@ -88,7 +99,8 @@
   get<{ sources: Source[] }>('/sources')
     .then((all) => (source = all.sources.find((s) => s.id === id) ?? null))
     .catch(() => {});
-  load(true);
+  if (!kept) load(true);
+  onDestroy(() => keep('source', $state.snapshot({ id, tab, typed, query, changes, items, page, more })));
 </script>
 
 <div class="page">
@@ -105,7 +117,7 @@
   </div>
 
   <div class="section-head">
-    <div class="tools" role="group" aria-label="List">
+    <div class="tools slide" role="group" aria-label="List">
       <button class="btn pill" aria-pressed={tab === 'popular'} onclick={() => open('popular')}>Popular</button>
       {#if source?.supportsLatest}
         <button class="btn pill" aria-pressed={tab === 'latest'} onclick={() => open('latest')}>Latest</button>

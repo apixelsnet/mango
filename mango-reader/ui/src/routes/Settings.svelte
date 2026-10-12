@@ -1,5 +1,6 @@
 <script lang="ts">
   import { get, message, send, type Category, type Tracker } from '../lib/api';
+  import { COVERS, display, MENUS, setDisplay, SIZES } from '../lib/display.svelte';
   import Icon, { type IconName } from '../lib/Icon.svelte';
   import Notice from '../lib/Notice.svelte';
   import { pref, setPref } from '../lib/prefs.svelte';
@@ -46,6 +47,7 @@
   let version = $state('');
 
   const t = $derived(theme.value);
+  const d = $derived(display.value);
   const names = [...Object.keys(PRESETS), 'Custom'];
 
   function change(patch: Partial<Theme>) {
@@ -551,6 +553,46 @@
           <div class="set">
             <div class="what"><strong>Halftone dots</strong><span>The dotted screen behind covers and empty spaces.</span></div>
             <div class="how">{@render toggle(t.dots, 'Halftone dots', () => change({ dots: !t.dots }))}</div>
+          </div>
+        </section>
+
+        <section class="card">
+          <h3>This device</h3>
+          <div class="set">
+            <div class="what"><strong>Size</strong><span>Text and controls together. Like the two below, kept on this device alone: a phone and a desk want different answers.</span></div>
+            <div class="how">
+              <div class="seg" role="group" aria-label="Size of text and controls">
+                {#each SIZES as [value, label] (value)}
+                  <button aria-pressed={d.size === value} onclick={() => setDisplay({ size: value })}>{label}</button>
+                {/each}
+              </div>
+            </div>
+          </div>
+          <div class="set">
+            <div class="what"><strong>Covers</strong><span>Small puts three across a phone's screen, the others two.</span></div>
+            <div class="how">
+              <div class="seg" role="group" aria-label="Size of covers">
+                {#each COVERS as [value, label] (value)}
+                  <button aria-pressed={d.covers === value} onclick={() => setDisplay({ covers: value })}>{label}</button>
+                {/each}
+              </div>
+            </div>
+          </div>
+          <div class="set">
+            <div class="what"><strong>Menu</strong><span>Along the bottom it is under the thumb. Automatic puts it there on a narrow screen.</span></div>
+            <div class="how">
+              <div class="seg" role="group" aria-label="Where the menu sits">
+                {#each MENUS as [value, label] (value)}
+                  <button aria-pressed={d.tabs === value} onclick={() => setDisplay({ tabs: value })}>{label}</button>
+                {/each}
+              </div>
+            </div>
+          </div>
+          <div class="set">
+            <div class="what">
+              <strong>On a phone's home screen</strong>
+              <span>Add Mango to it from the browser's share menu, and it opens as an app of its own, without the address bar.</span>
+            </div>
           </div>
         </section>
 
@@ -1376,11 +1418,31 @@
     }
 
     .rail {
-      top: 0;
+      top: var(--safe-top);
       z-index: 2;
       flex-direction: row;
       overflow-x: auto;
       box-shadow: none;
+      scrollbar-width: none;
+    }
+
+    /* A row of choices takes the whole line, each choice an equal share of it. */
+    .how:has(> .seg) {
+      flex: 1 1 100%;
+    }
+
+    /* The lines between them are the ink showing through, so they hold when the row has to wrap. */
+    .seg {
+      flex: 1;
+      flex-wrap: wrap;
+      gap: 2px;
+      background: var(--ink);
+    }
+
+    .seg button {
+      flex: 1 0 auto;
+      padding: 0 6px;
+      border-right: 0;
     }
 
     .rail a {
