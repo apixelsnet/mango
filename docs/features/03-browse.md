@@ -45,6 +45,19 @@ Checked on Linux and Windows by `smoke.py`, and by hand in a browser against a r
 
 Not checked: a text filter in a browser, and a source whose list changes between the read and the search. Such a search is refused when a place no longer holds a filter of that kind; Reset reads the list again.
 
+## Chapter list (2026-10-12)
+
+The title page's list can be put in order, narrowed and bookmarked. Code: `routes/Title.svelte`; `Titles::bookmark` in `titles.rs`.
+
+- One button over the list, "Sort & filter", opens both; the list's head keeps to three controls. What it opens is drop-downs, not a row of buttons.
+- Order: the source's own, by chapter number, or by upload date, each either way round. It is one setting for every title, kept on the server (`title.view`) like the library's.
+- Filter: all chapters, or only the unread, the downloaded or the bookmarked, one at a time; and one scanlation group when the title has more than one. It lasts as long as the page is open.
+- A row keeps to two buttons: download, and one that opens the chapter's own menu, where it is marked read or unread and bookmarked. A bookmarked chapter carries a small mark before its name.
+- A bookmark is `PUT /api/manga/{id}/chapters` with `{ids, bookmark}`, the address that marks chapters read. Bookmarks already came in with a backup and went out with one; now they show.
+- The order and the filter are for looking. Reading goes on in the source's order: Resume and the reader's next chapter do not follow them.
+
+Checked on Linux and Windows by `smoke.py`, and by hand in a browser at a desk's width and a phone's.
+
 ## Done when
 
 A title can be found by global search, opened, and added to the library.

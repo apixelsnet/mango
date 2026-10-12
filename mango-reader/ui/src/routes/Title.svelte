@@ -4,11 +4,31 @@
   import Icon from '../lib/Icon.svelte';
   import { keep, recall } from '../lib/keep';
   import Notice from '../lib/Notice.svelte';
+  import { pref, setPref } from '../lib/prefs.svelte';
   import { back } from '../lib/router.svelte';
   import Tracking from '../lib/Tracking.svelte';
   import { ago, chapterShort, langName, STATUS } from '../lib/util';
 
   const WEEK = 7 * 86400;
+
+  type Sort = 'source' | 'number' | 'date';
+  type View = { sort: Sort; down: boolean };
+
+  const SORTS: [Sort, string][] = [
+    ['source', 'Source order'],
+    ['number', 'Number'],
+    ['date', 'Date'],
+  ];
+  const DEFAULT: View = { sort: 'source', down: true };
+
+  type Show = 'all' | 'unread' | 'downloaded' | 'bookmarked';
+
+  const SHOWS: [Show, string][] = [
+    ['all', 'All chapters'],
+    ['unread', 'Unread'],
+    ['downloaded', 'Downloaded'],
+    ['bookmarked', 'Bookmarked'],
+  ];
 
   let { id }: { id: number } = $props();
 
@@ -24,14 +44,37 @@
   // A failed refresh keeps what is on screen and says so, instead of replacing it.
   let refreshing = $state(false);
   let refreshError = $state<string | null>(null);
-  let unreadOnly = $state(false);
   let menu = $state(false);
   let wholeText = $state(false);
+  let filters = $state(false);
+  // The chapter whose own menu is open.
+  let opened = $state<number | null>(null);
+  // What the list is narrowed to lasts as long as the page: the next title opened shows whole.
+  let show = $state<Show>('all');
+  let group = $state('');
 
   const chapters = $derived(title?.chapters ?? []);
   const unread = $derived(chapters.filter((c) => !c.read).length);
   const saved = $derived(chapters.filter((c) => c.downloaded).length);
-  const listed = $derived(unreadOnly ? chapters.filter((c) => !c.read) : chapters);
+  // The order is kept for every title, on the server like the library's.
+  const view = $derived<View>({ ...DEFAULT, ...pref<Partial<View>>('title.view', {}) });
+  const groups = $derived([...new Set(chapters.map((c) => c.scanlator ?? '').filter(Boolean))].sort((a, b) => a.localeCompare(b)));
+  // A group a refresh took away narrows nothing.
+  const from = $derived(groups.includes(group) ? group : '');
+  const filtering = $derived(show !== 'all' || from !== '');
+  const listed = $derived.by(() => {
+    const shown: Record<Show, (c: Chapter) => boolean> = { all: () => true, unread: (c) => !c.read, downloaded: (c) => c.downloaded, bookmarked: (c) => c.bookmark };
+    const list = chapters.filter((c) => shown[show](c) && (!from || c.scanlator === from));
+    // Sources list the newest first, and so does every order here until it is turned round.
+    if (view.sort !== 'source') {
+      const key = view.sort === 'number' ? (c: Chapter) => c.number : (c: Chapter) => c.dateUpload || c.fetchedAt * 1000;
+      list.sort((a, b) => key(b) - key(a));
+    }
+    return view.down ? list : list.reverse();
+  });
+  const nothing = $derived(
+    !chapters.length ? 'No chapters yet.' : show === 'unread' && !from ? 'Every chapter is read.' : 'No chapter fits the filter.',
+  );
   // Reading goes from the bottom of the list up: the next one to read is the last unread.
   const resume = $derived(chapters.findLast((c) => !c.read) ?? null);
   const started = $derived(chapters.some((c) => c.read || c.lastPageRead > 0));
@@ -99,6 +142,7 @@
 
   async function change(work: () => Promise<unknown>, keepMenu = false) {
     menu = keepMenu && menu;
+    opened = null;
     refreshError = null;
     try {
       await work();
@@ -123,6 +167,20 @@
     change(() => send('PUT', `/manga/${id}/chapters`, { ids: list.map((c) => c.id), read }));
   }
 
+  function bookmark(chapter: Chapter) {
+    chapter.bookmark = !chapter.bookmark;
+    change(() => send('PUT', `/manga/${id}/chapters`, { ids: [chapter.id], bookmark: chapter.bookmark }));
+  }
+
+  function setView(patch: Partial<View>) {
+    setPref('title.view', { ...view, ...patch }).catch((e) => (refreshError = message(e)));
+  }
+
+  /** "Weekly", from the days a title usually leaves between two chapters. */
+  function pace(days: number): string {
+    return days === 1 ? 'Daily' : days === 7 ? 'Weekly' : days >= 28 ? 'Monthly or slower' : `Every ${days} days`;
+  }
+
   function about(chapter: Chapter): string {
     const when = chapter.dateUpload > 0 ? ago(chapter.dateUpload / 1000) : chapter.fetchedAt > 0 ? `found ${ago(chapter.fetchedAt)}` : '';
     const where = chapter.read
@@ -139,6 +197,9 @@
     return !chapter.read && chapter.lastPageRead === 0 && !!title?.addedAt && chapter.fetchedAt > title.addedAt && Date.now() / 1000 - chapter.fetchedAt < WEEK;
   }
 </script>
+
+<!-- A chapter's menu closes when anything else is pressed. -->
+<svelte:window onclick={(e) => opened !== null && !(e.target as Element).closest?.('.own') && (opened = null)} />
 
 <div class="page">
   <Notice {loading} {error} retry={load} />
@@ -194,6 +255,9 @@
             <div class="tools">
               <span class="tag ink">{STATUS[title.status] ?? 'Unknown'}</span>
               {#if title.sourceLang}<span class="tag">{langName(title.sourceLang)}</span>{/if}
+              {#if title.releaseDays && title.status !== 2 && title.status !== 4}
+                <span class="tag" title="How often it gets a chapter, going by the source's dates">{pace(title.releaseDays)}</span>
+              {/if}
             </div>
             <h1 class="display">{title.title}</h1>
             <strong>{title.sourceName ?? 'Its extension is not installed'}</strong>
@@ -227,7 +291,9 @@
         <div class="section-head">
           <h2 class="display">CHAPTERS</h2>
           <div class="tools">
-            <button class="btn" aria-pressed={unreadOnly} onclick={() => (unreadOnly = !unreadOnly)}><Icon name="filter" size={18} />Unread</button>
+            <button class="btn" aria-expanded={filters} onclick={() => (filters = !filters)}>
+              <Icon name="filter" size={18} />Sort &amp; filter{filtering ? ' · on' : ''}
+            </button>
             <button
               class="btn icon"
               aria-label="Download the unread chapters"
@@ -240,6 +306,35 @@
           </div>
         </div>
 
+        {#if filters}
+          <div class="tools" role="group" aria-label="Sort and filter">
+            <label class="sorter">
+              <span class="sr">Sort by</span>
+              <select class="btn" value={view.sort} onchange={(e) => setView({ sort: e.currentTarget.value as Sort })}>
+                {#each SORTS as [value, label] (value)}<option {value}>{label}</option>{/each}
+              </select>
+            </label>
+            <button class="btn icon" aria-label={view.down ? 'Sorted downwards. Sort upwards' : 'Sorted upwards. Sort downwards'} onclick={() => setView({ down: !view.down })}>
+              <Icon name={view.down ? 'down' : 'up'} />
+            </button>
+            <label class="sorter">
+              <span class="sr">Show</span>
+              <select class="btn" bind:value={show}>
+                {#each SHOWS as [value, label] (value)}<option {value}>{label}</option>{/each}
+              </select>
+            </label>
+            {#if groups.length > 1}
+              <label class="sorter">
+                <span class="sr">Translated by</span>
+                <select class="btn" value={from} onchange={(e) => (group = e.currentTarget.value)}>
+                  <option value="">Every group</option>
+                  {#each groups as name (name)}<option value={name}>{name}</option>{/each}
+                </select>
+              </label>
+            {/if}
+          </div>
+        {/if}
+
         <Notice loading={refreshing} error={refreshError} retry={refresh} />
         {#if note}<p role="status"><strong>{note}</strong> <a class="link" href="#/downloads">See downloads</a></p>{/if}
 
@@ -247,7 +342,10 @@
           {#each listed as chapter (chapter.id)}
             <li class:done={chapter.read}>
               <a class="main" href="#/read/{chapter.id}">
-                <strong>{chapter.name}</strong>
+                <strong>
+                  {#if chapter.bookmark}<span class="kept"><Icon name="bookmark" size={14} fill /><span class="sr">Bookmarked.</span></span>{/if}
+                  {chapter.name}
+                </strong>
                 <span>{about(chapter)}</span>
               </a>
               {#if isNew(chapter)}
@@ -260,19 +358,27 @@
               {:else}
                 <button class="btn icon" aria-label="Download {chapter.name}" onclick={() => download([chapter])}><Icon name="download" /></button>
               {/if}
-              <button
-                class="btn icon"
-                aria-pressed={chapter.read}
-                aria-label={chapter.read ? `Mark ${chapter.name} unread` : `Mark ${chapter.name} read`}
-                onclick={() => mark([chapter], !chapter.read)}
-              >
-                <Icon name="check" stroke={3} />
-              </button>
+              <!-- What is seldom wanted waits behind one button, so a row keeps to two. -->
+              <div class="menu own">
+                <button class="btn icon" aria-label="More for {chapter.name}" aria-expanded={opened === chapter.id} onclick={() => (opened = opened === chapter.id ? null : chapter.id)}>
+                  <Icon name="more" fill />
+                </button>
+                {#if opened === chapter.id}
+                  <div class="panel sheet">
+                    <button class="btn" onclick={() => mark([chapter], !chapter.read)}>
+                      <Icon name="check" size={18} stroke={3} />{chapter.read ? 'Mark unread' : 'Mark read'}
+                    </button>
+                    <button class="btn" onclick={() => bookmark(chapter)}>
+                      <Icon name="bookmark" size={18} fill={chapter.bookmark} />{chapter.bookmark ? 'Take the bookmark off' : 'Bookmark'}
+                    </button>
+                  </div>
+                {/if}
+              </div>
             </li>
           {/each}
         </ul>
         {#if !refreshing && listed.length === 0}
-          <Notice>{chapters.length ? 'Every chapter is read.' : 'No chapters yet.'}</Notice>
+          <Notice>{nothing}</Notice>
         {/if}
       </div>
     </div>
@@ -497,6 +603,20 @@
 
   .meter {
     flex: 0 0 56px;
+  }
+
+  .sorter select {
+    max-width: 220px;
+  }
+
+  .own .sheet {
+    min-width: 200px;
+  }
+
+  .kept {
+    display: inline-flex;
+    margin-right: 4px;
+    vertical-align: -1px;
   }
 
   .dock {

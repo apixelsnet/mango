@@ -21,7 +21,11 @@ pub const READER_FITS: [&str; 4] = ["width", "height", "screen", "original"];
 const MAX_READER_PREFS: usize = 4 * 1024;
 
 const CHAPTER_COLUMNS: &str =
-    "id, name, chapter_number, scanlator, date_upload, fetched_at, read, last_page_read, page_count, download_path IS NOT NULL";
+    "id, name, chapter_number, scanlator, date_upload, fetched_at, read, last_page_read, page_count, download_path IS NOT NULL, bookmark";
+
+const DAY_MS: i64 = 86_400_000;
+/// The longest a title is taken to wait between two chapters, in days.
+pub const MAX_RELEASE_DAYS: i64 = 28;
 
 // ---------- protocol v1 shapes ----------
 
@@ -123,6 +127,7 @@ pub struct ChapterView {
     pub last_page_read: i64,
     pub page_count: Option<i64>,
     pub downloaded: bool,
+    pub bookmark: bool,
 }
 
 #[derive(Serialize)]
@@ -148,6 +153,8 @@ pub struct TitleView {
     pub reader_fit: Option<String>,
     pub auto_download: bool,
     pub chapters_at: Option<i64>,
+    /// How many days usually pass between two chapters, when the source's dates say.
+    pub release_days: Option<i64>,
     /// The library categories it is in.
     pub categories: Vec<i64>,
     /// In the source's order: the first is usually the newest.
@@ -320,15 +327,22 @@ impl Titles {
         self.change(move |conn| Ok(conn.execute("UPDATE manga SET auto_download = ?2 WHERE id = ?1", params![id, on])?)).await
     }
 
+    /// Bookmarks chapters of a title, or takes their bookmarks away. Without ids, all of them.
+    pub async fn bookmark(&self, manga: i64, chapters: Option<Vec<i64>>, on: bool) -> Result<()> {
+        self.db
+            .call(move |conn| {
+                let Some(only) = among(&chapters) else { return Ok(()) };
+                conn.execute(&format!("UPDATE chapters SET bookmark = ?2 WHERE manga_id = ?1{only}"), params![manga, on])?;
+                Ok(())
+            })
+            .await
+    }
+
     /// Marks chapters of a title read or unread. Without ids, all of them.
     pub async fn mark(&self, manga: i64, chapters: Option<Vec<i64>>, read: bool) -> Result<()> {
         self.db
             .call(move |conn| {
-                let only = match &chapters {
-                    Some(ids) if ids.is_empty() => return Ok(()),
-                    Some(ids) => format!(" AND id IN ({})", ids.iter().map(i64::to_string).collect::<Vec<_>>().join(",")),
-                    None => String::new(),
-                };
+                let Some(only) = among(&chapters) else { return Ok(()) };
                 conn.execute(
                     &format!(
                         "UPDATE chapters SET read = ?2, last_page_read = 0, read_at = CASE WHEN ?2 THEN ?3 ELSE read_at END
@@ -425,6 +439,31 @@ fn number_from_name(name: &str) -> f64 {
     -1.0
 }
 
+/// What keeps a statement to the chapters named: nothing for all of them, None when none is named.
+fn among(chapters: &Option<Vec<i64>>) -> Option<String> {
+    match chapters {
+        Some(ids) if ids.is_empty() => None,
+        Some(ids) => Some(format!(" AND id IN ({})", ids.iter().map(i64::to_string).collect::<Vec<_>>().join(","))),
+        None => Some(String::new()),
+    }
+}
+
+/// How a title gets its chapters, read from the days they came out on, counted from the
+/// epoch: the usual number of days between two, and the day of the latest. The middle one
+/// of the last few gaps, so one long break or one double release does not sway it.
+/// None when fewer than three days are known: too little to tell.
+pub(crate) fn rhythm(mut days: Vec<i64>) -> Option<(i64, i64)> {
+    days.sort_unstable_by(|a, b| b.cmp(a));
+    days.dedup();
+    days.truncate(10);
+    if days.len() < 3 {
+        return None;
+    }
+    let mut gaps: Vec<i64> = days.windows(2).map(|pair| pair[0] - pair[1]).collect();
+    gaps.sort_unstable();
+    Some((gaps[(gaps.len() - 1) / 2].clamp(1, MAX_RELEASE_DAYS), days[0]))
+}
+
 fn chapter_row(r: &Row) -> rusqlite::Result<ChapterView> {
     Ok(ChapterView {
         id: r.get(0)?,
@@ -437,6 +476,7 @@ fn chapter_row(r: &Row) -> rusqlite::Result<ChapterView> {
         last_page_read: r.get(7)?,
         page_count: r.get(8)?,
         downloaded: r.get(9)?,
+        bookmark: r.get(10)?,
     })
 }
 
@@ -593,6 +633,7 @@ pub(crate) fn read_title(conn: &Connection, id: i64) -> Result<TitleView> {
                     reader_fit: r.get(17)?,
                     auto_download: r.get(18)?,
                     chapters_at: r.get(19)?,
+                    release_days: None,
                     categories: Vec::new(),
                     chapters: Vec::new(),
                 })
@@ -606,6 +647,8 @@ pub(crate) fn read_title(conn: &Connection, id: i64) -> Result<TitleView> {
         ids
     };
     title.chapters = read_chapters(conn, id)?;
+    let days = title.chapters.iter().filter(|c| c.date_upload > 0).map(|c| c.date_upload / DAY_MS).collect();
+    title.release_days = rhythm(days).map(|(every, _)| every);
     Ok(title)
 }
 
@@ -656,13 +699,13 @@ fn read_reader(conn: &Connection, chapter: i64) -> Result<ReaderView> {
     let (view, manga_id, title, reader_mode, reader_fit, prefs, kind) = conn
         .query_row(
             "SELECT c.id, c.name, c.chapter_number, c.scanlator, c.date_upload, c.fetched_at, c.read, c.last_page_read, c.page_count,
-                    c.download_path IS NOT NULL, m.id, m.title, m.reader_mode, m.reader_fit, m.reader_prefs, m.genre, s.name, s.lang
+                    c.download_path IS NOT NULL, c.bookmark, m.id, m.title, m.reader_mode, m.reader_fit, m.reader_prefs, m.genre, s.name, s.lang
              FROM chapters c JOIN manga m ON m.id = c.manga_id LEFT JOIN sources s ON s.id = m.source_id WHERE c.id = ?1",
             [chapter],
             |r| {
-                let (genre, source, lang): (Option<String>, Option<String>, Option<String>) = (r.get(15)?, r.get(16)?, r.get(17)?);
+                let (genre, source, lang): (Option<String>, Option<String>, Option<String>) = (r.get(16)?, r.get(17)?, r.get(18)?);
                 let kind = kind_of(genre.as_deref(), source.as_deref(), lang.as_deref());
-                Ok((chapter_row(r)?, r.get::<_, i64>(10)?, r.get::<_, String>(11)?, r.get(12)?, r.get(13)?, r.get::<_, Option<String>>(14)?, kind))
+                Ok((chapter_row(r)?, r.get::<_, i64>(11)?, r.get::<_, String>(12)?, r.get(13)?, r.get(14)?, r.get::<_, Option<String>>(15)?, kind))
             },
         )
         .optional()?
@@ -880,6 +923,31 @@ mod tests {
         assert_eq!(stored_prefs(None).unwrap(), None);
         assert!(stored_prefs(Some(json!([1]))).is_err());
         assert!(stored_prefs(Some(json!({ "tint": "x".repeat(MAX_READER_PREFS) }))).is_err());
+    }
+
+    #[test]
+    fn a_title_tells_its_rhythm_and_its_bookmarks() {
+        let mut conn = database();
+        let id = save_listing(&mut conn, 7, &[manga("/a", "Alpha")]).unwrap()[0].id;
+        let list = [chapter("/3", "Three", 21 * DAY_MS), chapter("/2", "Two", 14 * DAY_MS), chapter("/1", "One", 7 * DAY_MS)];
+        apply_update(&mut conn, id, &manga("/a", "Alpha"), &list, true, true).unwrap();
+        conn.execute("UPDATE chapters SET bookmark = 1 WHERE manga_id = ?1 AND url = '/2'", [id]).unwrap();
+        let title = read_title(&conn, id).unwrap();
+        assert_eq!(title.release_days, Some(7));
+        assert_eq!(title.chapters.iter().map(|c| c.bookmark).collect::<Vec<_>>(), [false, true, false]);
+        assert!(read_reader(&conn, title.chapters[1].id).unwrap().chapter.bookmark);
+        assert_eq!(among(&Some(Vec::new())), None, "no chapter named is no chapter changed");
+        assert_eq!(among(&None).as_deref(), Some(""));
+    }
+
+    #[test]
+    fn rhythms() {
+        assert_eq!(rhythm(vec![10, 3, 17, 17, 24]), Some((7, 24)));
+        assert_eq!(rhythm(vec![1, 2]), None, "two days say too little");
+        assert_eq!(rhythm(vec![5, 5, 5, 5]), None, "what came out together is one day");
+        assert_eq!(rhythm(vec![0, 7, 14, 60, 67, 74]), Some((7, 74)), "one long break does not sway it");
+        assert_eq!(rhythm(vec![0, 400, 800]), Some((MAX_RELEASE_DAYS, 800)));
+        assert_eq!(rhythm((0..40).collect()), Some((1, 39)));
     }
 
     #[test]

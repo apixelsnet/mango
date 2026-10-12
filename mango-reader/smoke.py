@@ -147,6 +147,16 @@ me, _ = call("GET", "/auth")
 # Unless the owner opened it to everyone, only an admin brings an extension into the host.
 restricted = not call("GET", "/health")[0]["anyoneInstalls"]
 check("answers of the API are kept nowhere", raw("GET", base + "/library")[1].get("Cache-Control") == "no-store")
+_, page_head, page, _ = raw("GET", site + "/")
+again, _, nothing, _ = raw("GET", site + "/", headers={"If-None-Match": page_head.get("ETag", "")})
+check("a page the browser has is not sent again", again == 304 and nothing == b"")
+# The page's script: the largest text Mango sends.
+script = site + "/" + page.decode().split('src="', 1)[1].split('"', 1)[0].lstrip("./")
+_, plain_head, plain, _ = raw("GET", script)
+_, packed_head, packed, _ = raw("GET", script, headers={"Accept-Encoding": "gzip"})
+check("text goes out gzipped to who reads gzip", packed_head.get("Content-Encoding") == "gzip" and gzip.decompress(packed) == plain)
+check("and as it is to who does not", plain_head.get("Content-Encoding") is None and "Accept-Encoding" in plain_head.get("Vary", ""))
+print(f"  the page's script: {len(plain)} bytes, {len(packed)} gzipped")
 KID, KID_PASSWORD = "smoke-kid", PASSWORD + "-kid"
 kid = None
 if who["login"]:
@@ -381,6 +391,13 @@ check(
 )
 call("PUT", f"/manga/{card['id']}/chapters", {"read": False})
 check("mark all unread", not any(c["read"] for c in call("GET", f"/manga/{card['id']}")[0]["chapters"]))
+kept = title["chapters"][0]["id"]
+call("PUT", f"/manga/{card['id']}/chapters", {"ids": [kept], "bookmark": True})
+marked = call("GET", f"/manga/{card['id']}")[0]["chapters"]
+check("a chapter can be bookmarked, and it alone", [c["id"] for c in marked if c["bookmark"]] == [kept] and not marked[0]["read"])
+call("PUT", f"/manga/{card['id']}/chapters", {"ids": [kept]}, expect=400)
+call("PUT", f"/manga/{card['id']}/chapters", {"bookmark": False})
+check("and the bookmark taken off again", not any(c["bookmark"] for c in call("GET", f"/manga/{card['id']}")[0]["chapters"]))
 print("library")
 library, ms = call("GET", "/library")
 print(f"  library: {ms} ms")
@@ -628,6 +645,19 @@ if db_path and victim:
     )
 call("DELETE", "/downloads")
 call("PUT", f"/manga/{card['id']}/auto-download", {"on": False})
+call("PUT", "/settings", {"updates.smart": True})
+call("POST", "/updates/run")
+start = time.time()
+while call("GET", "/updates")[0]["status"]["running"] and time.time() - start < 120:
+    time.sleep(1)
+smart = call("GET", "/updates")[0]
+days = call("GET", f"/manga/{card['id']}")[0]["releaseDays"]
+print(f"  a chapter every {days} day(s) by its dates; {smart['status']['waiting']} title(s) left out as not due")
+check(
+    "an update that waits for the expected day asks the title or leaves it out",
+    smart["status"]["total"] + smart["status"]["waiting"] == 1 and not smart["errors"],
+)
+call("PUT", "/settings", {"updates.smart": None})
 
 call("PUT", "/settings", {"smoke.test": {"n": 1}})
 check("settings are kept", call("GET", "/settings")[0]["smoke.test"] == {"n": 1})

@@ -688,6 +688,13 @@
             <div class="what"><strong>Skip titles with unread chapters</strong><span>Catch up first, then look for more.</span></div>
             <div class="how">{@render toggle(pref('updates.skipUnread', false), 'Skip titles with unread chapters', () => flip('updates.skipUnread'))}</div>
           </div>
+          <div class="set">
+            <div class="what">
+              <strong>Wait for the day a chapter is expected</strong>
+              <span>A weekly series is asked around its day, going by the dates of its chapters. A title without dates is asked every time.</span>
+            </div>
+            <div class="how">{@render toggle(pref('updates.smart', false), 'Wait for the day a chapter is expected', () => flip('updates.smart'))}</div>
+          </div>
           {#if categories.length}
             {#each [['updates.categories', 'Only these categories', 'None picked: all of them.'], ['updates.excluded', 'Never these categories', 'Left out even when picked above.']] as [key, label, hint] (key)}
               <div class="set stack" role="group" aria-label={label}>
