@@ -1,11 +1,13 @@
 <script lang="ts">
   import { get, message, send, type Source } from '../lib/api';
   import Icon from '../lib/Icon.svelte';
+  import { keep, recall } from '../lib/keep';
   import Notice from '../lib/Notice.svelte';
   import { browseLangs, setPref } from '../lib/prefs.svelte';
   import { langName } from '../lib/util';
 
-  let sources = $state<Source[]>([]);
+  // What was here last time shows at once; the sources are then asked for again.
+  let sources = $state<Source[]>(recall('sources') ?? []);
   let loading = $state(true);
   let error = $state<string | null>(null);
   let showHidden = $state(false);
@@ -22,10 +24,12 @@
   const hiddenCount = $derived(sources.filter((s) => s.hidden).length);
 
   async function load() {
-    loading = true;
+    loading = sources.length === 0;
     error = null;
     try {
-      sources = (await get<{ sources: Source[] }>('/sources')).sources;
+      const fresh = (await get<{ sources: Source[] }>('/sources')).sources;
+      keep('sources', fresh);
+      sources = fresh;
     } catch (e) {
       error = message(e);
     }
