@@ -147,6 +147,16 @@ me, _ = call("GET", "/auth")
 # Unless the owner opened it to everyone, only an admin brings an extension into the host.
 restricted = not call("GET", "/health")[0]["anyoneInstalls"]
 check("answers of the API are kept nowhere", raw("GET", base + "/library")[1].get("Cache-Control") == "no-store")
+_, page_head, page, _ = raw("GET", site + "/")
+again, _, nothing, _ = raw("GET", site + "/", headers={"If-None-Match": page_head.get("ETag", "")})
+check("a page the browser has is not sent again", again == 304 and nothing == b"")
+# The page's script: the largest text Mango sends.
+script = site + "/" + page.decode().split('src="', 1)[1].split('"', 1)[0].lstrip("./")
+_, plain_head, plain, _ = raw("GET", script)
+_, packed_head, packed, _ = raw("GET", script, headers={"Accept-Encoding": "gzip"})
+check("text goes out gzipped to who reads gzip", packed_head.get("Content-Encoding") == "gzip" and gzip.decompress(packed) == plain)
+check("and as it is to who does not", plain_head.get("Content-Encoding") is None and "Accept-Encoding" in plain_head.get("Vary", ""))
+print(f"  the page's script: {len(plain)} bytes, {len(packed)} gzipped")
 KID, KID_PASSWORD = "smoke-kid", PASSWORD + "-kid"
 kid = None
 if who["login"]:

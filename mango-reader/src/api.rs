@@ -22,20 +22,24 @@ use crate::{
     ui,
 };
 use axum::{
-    body::Bytes,
+    body::{to_bytes, Body, Bytes},
     extract::{DefaultBodyLimit, FromRequestParts, Path, Query, RawQuery, Request, State},
-    http::{header, request::Parts, HeaderMap, HeaderValue, Method},
+    http::{header, request::Parts, HeaderMap, HeaderValue, Method, StatusCode},
     middleware::{self, Next},
     response::{IntoResponse, Response},
     routing::{delete, get, post, put},
     Json, Router,
 };
+use flate2::{write::GzEncoder, Compression};
 use serde::Deserialize;
 use serde_json::{json, Map, Value};
-use std::sync::Arc;
+use sha2::{Digest, Sha256};
+use std::{io::Write, sync::Arc};
 
 /// For answers whose address changes when their content does.
 const FOREVER: &str = "private, max-age=31536000, immutable";
+/// Text shorter than this goes out as it is: gzip would save next to nothing on it.
+const GZIP_FROM: usize = 1024;
 
 /// What a request works with: the library of the account it comes from, and what
 /// all accounts share. `spaces.rs` keeps one per account.
@@ -147,7 +151,95 @@ pub fn router(state: Spaces) -> Router {
         .nest("/api", api)
         .nest("/opds", opds::routes(state.clone()))
         .fallback(ui::serve)
+        // The inner one first: an answer that is not sent again is not gzipped either.
+        .layer(middleware::from_fn(sent_once))
+        .layer(middleware::from_fn(gzipped))
         .layer(middleware::from_fn_with_state(state, known_host_only))
+}
+
+/// An answer marked `no-cache` is asked for again every time it is wanted: the page, a
+/// feed, a cover without its version. It gets a mark made from its content, and a caller
+/// that shows the same mark is told that what it holds still stands, with nothing sent
+/// after. Such answers are whole in memory already.
+async fn sent_once(request: Request, next: Next) -> Response {
+    let got = request.method() == Method::GET;
+    let held = request.headers().get(header::IF_NONE_MATCH).cloned();
+    let response = next.run(request).await;
+    let asked_again = response.headers().get(header::CACHE_CONTROL).is_some_and(|kept| kept == "no-cache");
+    if !got || !asked_again || response.status() != StatusCode::OK {
+        return response;
+    }
+    let (mut head, body) = response.into_parts();
+    let Ok(bytes) = to_bytes(body, usize::MAX).await else {
+        return AppError::internal("an answer broke off").into_response();
+    };
+    // A weak mark: the gzipped answer and the plain one carry the same.
+    let mark = format!("W/\"{}\"", hex::encode(&Sha256::digest(&bytes)[..8]));
+    if let Ok(value) = HeaderValue::from_str(&mark) {
+        head.headers.insert(header::ETAG, value);
+    }
+    if held.as_ref().and_then(|held| held.to_str().ok()).is_some_and(|held| names(held, &mark)) {
+        head.status = StatusCode::NOT_MODIFIED;
+        head.headers.remove(header::CONTENT_LENGTH);
+        return Response::from_parts(head, Body::empty());
+    }
+    Response::from_parts(head, Body::from(bytes))
+}
+
+/// Whether a caller's `If-None-Match` names this mark. Weak or strong is the same here.
+fn names(held: &str, mark: &str) -> bool {
+    fn bare(mark: &str) -> &str {
+        mark.trim().trim_start_matches("W/")
+    }
+    held.split(',').any(|one| one.trim() == "*" || bare(one) == bare(mark))
+}
+
+/// Text of some size goes out gzipped to a caller that reads gzip: the page's script and
+/// styles, JSON, the feeds. Pictures and archives are packed already and pass untouched.
+async fn gzipped(request: Request, next: Next) -> Response {
+    let reads = reads_gzip(request.headers());
+    let mut response = next.run(request).await;
+    let kind = response.headers().get(header::CONTENT_TYPE).and_then(|kind| kind.to_str().ok()).unwrap_or("");
+    let text = kind.starts_with("text/") || kind.contains("json") || kind.contains("xml");
+    if !text || response.headers().contains_key(header::CONTENT_ENCODING) {
+        return response;
+    }
+    // A cache between Mango and its callers has to keep the two forms apart.
+    response.headers_mut().append(header::VARY, HeaderValue::from_static("Accept-Encoding"));
+    if !reads {
+        return response;
+    }
+    let (mut head, body) = response.into_parts();
+    let Ok(bytes) = to_bytes(body, usize::MAX).await else {
+        return AppError::internal("an answer broke off").into_response();
+    };
+    if bytes.len() < GZIP_FROM {
+        return Response::from_parts(head, Body::from(bytes));
+    }
+    let plain = bytes.clone();
+    let packed = tokio::task::spawn_blocking(move || {
+        let mut gzip = GzEncoder::new(Vec::with_capacity(plain.len() / 4), Compression::default());
+        gzip.write_all(&plain)?;
+        gzip.finish()
+    })
+    .await;
+    match packed {
+        Ok(Ok(packed)) => {
+            head.headers.insert(header::CONTENT_ENCODING, HeaderValue::from_static("gzip"));
+            head.headers.remove(header::CONTENT_LENGTH);
+            Response::from_parts(head, Body::from(packed))
+        }
+        _ => Response::from_parts(head, Body::from(bytes)),
+    }
+}
+
+/// Whether a caller says it reads gzip, and does not take it back with `q=0`.
+fn reads_gzip(headers: &HeaderMap) -> bool {
+    headers.get_all(header::ACCEPT_ENCODING).iter().filter_map(|value| value.to_str().ok()).flat_map(|value| value.split(',')).any(|coding| {
+        let mut parts = coding.split(';').map(str::trim);
+        let named = parts.next().is_some_and(|name| name.eq_ignore_ascii_case("gzip"));
+        named && !parts.any(|part| part.strip_prefix("q=").and_then(|q| q.parse::<f32>().ok()) == Some(0.0))
+    })
 }
 
 /// Refuses a call that names Mango by a host it does not go by; see `Auth::answers`.
@@ -894,5 +986,24 @@ mod tests {
 
         // A reading app or a script sends neither, and is not a page at all.
         assert!(!from_elsewhere(&headers(&[at])));
+    }
+
+    #[test]
+    fn gzip_goes_to_who_reads_it() {
+        assert!(reads_gzip(&headers(&[("accept-encoding", "gzip, deflate, br")])));
+        assert!(reads_gzip(&headers(&[("accept-encoding", "br;q=1.0, GZIP;q=0.5")])));
+        assert!(!reads_gzip(&headers(&[("accept-encoding", "br, gzip;q=0")])));
+        assert!(!reads_gzip(&headers(&[("accept-encoding", "identity")])));
+        assert!(!reads_gzip(&headers(&[])));
+    }
+
+    #[test]
+    fn a_mark_is_known_again() {
+        let mark = "W/\"abc\"";
+        assert!(names("W/\"abc\"", mark));
+        assert!(names("\"other\", \"abc\"", mark), "one of several, and strong for weak");
+        assert!(names("*", mark));
+        assert!(!names("\"abd\"", mark));
+        assert!(!names("", mark));
     }
 }
