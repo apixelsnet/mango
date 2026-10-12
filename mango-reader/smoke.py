@@ -391,6 +391,13 @@ check(
 )
 call("PUT", f"/manga/{card['id']}/chapters", {"read": False})
 check("mark all unread", not any(c["read"] for c in call("GET", f"/manga/{card['id']}")[0]["chapters"]))
+kept = title["chapters"][0]["id"]
+call("PUT", f"/manga/{card['id']}/chapters", {"ids": [kept], "bookmark": True})
+marked = call("GET", f"/manga/{card['id']}")[0]["chapters"]
+check("a chapter can be bookmarked, and it alone", [c["id"] for c in marked if c["bookmark"]] == [kept] and not marked[0]["read"])
+call("PUT", f"/manga/{card['id']}/chapters", {"ids": [kept]}, expect=400)
+call("PUT", f"/manga/{card['id']}/chapters", {"bookmark": False})
+check("and the bookmark taken off again", not any(c["bookmark"] for c in call("GET", f"/manga/{card['id']}")[0]["chapters"]))
 print("library")
 library, ms = call("GET", "/library")
 print(f"  library: {ms} ms")
@@ -638,6 +645,19 @@ if db_path and victim:
     )
 call("DELETE", "/downloads")
 call("PUT", f"/manga/{card['id']}/auto-download", {"on": False})
+call("PUT", "/settings", {"updates.smart": True})
+call("POST", "/updates/run")
+start = time.time()
+while call("GET", "/updates")[0]["status"]["running"] and time.time() - start < 120:
+    time.sleep(1)
+smart = call("GET", "/updates")[0]
+days = call("GET", f"/manga/{card['id']}")[0]["releaseDays"]
+print(f"  a chapter every {days} day(s) by its dates; {smart['status']['waiting']} title(s) left out as not due")
+check(
+    "an update that waits for the expected day asks the title or leaves it out",
+    smart["status"]["total"] + smart["status"]["waiting"] == 1 and not smart["errors"],
+)
+call("PUT", "/settings", {"updates.smart": None})
 
 call("PUT", "/settings", {"smoke.test": {"n": 1}})
 check("settings are kept", call("GET", "/settings")[0]["smoke.test"] == {"n": 1})

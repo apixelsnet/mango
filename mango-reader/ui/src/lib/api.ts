@@ -89,6 +89,7 @@ export type Chapter = {
   lastPageRead: number;
   pageCount: number | null;
   downloaded: boolean;
+  bookmark: boolean;
 };
 
 export type Title = {
@@ -111,6 +112,8 @@ export type Title = {
   readerFit: string | null;
   autoDownload: boolean;
   chaptersAt: number | null;
+  /** How many days usually pass between two chapters, when the source's dates say. */
+  releaseDays: number | null;
   categories: number[];
   chapters: Chapter[];
 };
@@ -192,7 +195,8 @@ export type Updates = {
   errors: { mangaId: number; title: string; error: string; at: number }[];
   /** Unread chapters found in the last week. */
   fresh: number;
-  status: { running: boolean; done: number; total: number; found: number; failed: number; startedAt: number | null; finishedAt: number | null };
+  /** `waiting` counts the titles a run left out because no chapter is expected of them yet. */
+  status: { running: boolean; done: number; total: number; waiting: number; found: number; failed: number; startedAt: number | null; finishedAt: number | null };
 };
 
 export type Queued = {

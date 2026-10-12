@@ -69,7 +69,7 @@
     <h1 class="display">UPDATES</h1>
     <div class="tools">
       {#if data?.status.finishedAt && !running}
-        <strong>Checked {ago(data.status.finishedAt)}: {data.status.found} new{data.status.failed ? `, ${data.status.failed} failed` : ''}</strong>
+        <strong>Checked {ago(data.status.finishedAt)}: {data.status.found} new{data.status.failed ? `, ${data.status.failed} failed` : ''}{data.status.waiting ? `, ${data.status.waiting} not due yet` : ''}</strong>
       {/if}
       <button class="btn big spot" disabled={running} onclick={run}>
         <Icon name="refresh" size={18} stroke={3} />

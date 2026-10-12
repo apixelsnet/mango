@@ -621,13 +621,23 @@ async fn set_reader(Me(app): Me, Path(id): Path<i64>, Json(body): Json<ReaderCha
 struct MarkChange {
     /// Left out: every chapter of the title.
     ids: Option<Vec<i64>>,
-    read: bool,
+    /// Read or not, bookmarked or not: at least one of the two.
+    read: Option<bool>,
+    bookmark: Option<bool>,
 }
 
 async fn mark_chapters(Me(app): Me, Path(id): Path<i64>, Json(body): Json<MarkChange>) -> Result<Json<Value>> {
-    app.titles.mark(id, body.ids, body.read).await?;
-    if body.read {
-        app.trackers.read_title(id);
+    if body.read.is_none() && body.bookmark.is_none() {
+        return Err(AppError::bad_request("Say what to change: read or bookmark"));
+    }
+    if let Some(on) = body.bookmark {
+        app.titles.bookmark(id, body.ids.clone(), on).await?;
+    }
+    if let Some(read) = body.read {
+        app.titles.mark(id, body.ids, read).await?;
+        if read {
+            app.trackers.read_title(id);
+        }
     }
     Ok(done())
 }

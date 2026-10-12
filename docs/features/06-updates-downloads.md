@@ -43,6 +43,20 @@ Checked on Linux and Windows by `smoke.py` (64 checks in all): a 58-page chapter
 
 Not checked: the timer itself (only the rule it applies), a real overnight run, a source that fails during an update, retries after a real failure, and delete after reading.
 
+## Waiting for the day (2026-10-12)
+
+An option in Settings, off until switched on: a run leaves out the titles no chapter is expected of yet. Code: `expected` and `plan` in `updates.rs`, `rhythm` in `titles.rs`.
+
+- A title's rhythm is read from the upload dates of its chapters: the middle one of the gaps between its last ten release days, from 1 to 28 days. Fewer than three days known, and the title is asked every run as before. A date still to come is not counted.
+- A title is asked from the day before a chapter is expected to the day after, counted from its latest chapter. It is also asked once when such days went by unasked, so a Mango that was switched off catches up.
+- After ten expected days with nothing new the days move apart, doubling up to four weeks. A series on a break is still looked at, only less often.
+- It applies to "Update now" as well as to the timer. The Updates screen says how many titles were left out. A title's own refresh always asks.
+- The title page shows the rhythm beside the status: Daily, Weekly, Every N days.
+
+Checked by unit tests of the rule and the plan, and on Linux and Windows by `smoke.py`: a run with the option on asks the title or counts it as not due, without failures. By hand on Linux: a weekly title whose latest chapter was three days old was left out and counted.
+
+Not checked: weeks of real runs. A series that changes its rhythm is found late by up to one of its old gaps.
+
 ## Done when
 
 An overnight update finds new chapters, auto-downloads them, and they open with the network unplugged.
