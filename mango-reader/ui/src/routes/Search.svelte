@@ -91,7 +91,7 @@
   function again(event: SubmitEvent) {
     event.preventDefault();
     const text = String(new FormData(event.currentTarget as HTMLFormElement).get('q') ?? '').trim();
-    if (text) go(`/search?q=${encodeURIComponent(text)}&for=${from}`);
+    if (text) go(`/search?q=${encodeURIComponent(text)}${from ? `&for=${from}` : ''}`);
   }
 </script>
 
@@ -101,16 +101,21 @@
     <strong>“{q}” in {scope || '…'}</strong>
   </div>
 
-  {#if from}
-    <div class="pick">
-      <strong>Pick the title to move to. Nothing changes until you confirm.</strong>
-      <form class="field" role="search" onsubmit={again}>
-        <Icon name="search" size={18} stroke={3} />
-        <input type="search" name="q" value={q} placeholder="Try another name" aria-label="Search for another name" />
-      </form>
-      <a class="btn" href="#/title/{from}"><Icon name="back" size={16} stroke={3} />Back to the title</a>
-    </div>
-  {/if}
+  <div class="pick">
+    {#if from}<strong>Pick the title to move to. Nothing changes until you confirm.</strong>{/if}
+    <form class="field" role="search" onsubmit={again}>
+      <Icon name="search" size={18} stroke={3} />
+      <input
+        type="search"
+        name="q"
+        value={q}
+        placeholder={from ? 'Try another name' : 'Search all sources'}
+        aria-label={from ? 'Search for another name' : 'Search all sources'}
+        enterkeyhint="search"
+      />
+    </form>
+    {#if from}<a class="btn" href="#/title/{from}"><Icon name="back" size={16} stroke={3} />Back to the title</a>{/if}
+  </div>
 
   <Notice {error} />
   {#if left > 0}

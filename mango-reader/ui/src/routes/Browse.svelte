@@ -4,6 +4,7 @@
   import { keep, recall } from '../lib/keep';
   import Notice from '../lib/Notice.svelte';
   import { browseLangs, setPref } from '../lib/prefs.svelte';
+  import { go } from '../lib/router.svelte';
   import { langName } from '../lib/util';
 
   // What was here last time shows at once; the sources are then asked for again.
@@ -12,6 +13,7 @@
   let error = $state<string | null>(null);
   let showHidden = $state(false);
   let picking = $state(false);
+  let words = $state('');
 
   const langs = $derived([...new Set(sources.filter((s) => s.id !== '0').map((s) => s.lang))].sort());
   const chosen = $derived(browseLangs(sources));
@@ -44,6 +46,13 @@
     } catch (e) {
       error = message(e);
     }
+  }
+
+  /** Every source at once: the pinned ones, or those in the languages picked here. */
+  function search(event: SubmitEvent) {
+    event.preventDefault();
+    const text = words.trim();
+    if (text) go('/search?q=' + encodeURIComponent(text));
   }
 
   function toggleLang(lang: string) {
@@ -90,6 +99,11 @@
       <a class="btn" href="#/extensions"><Icon name="puzzle" size={18} />Extensions</a>
     </div>
   </div>
+
+  <form class="field" role="search" onsubmit={search}>
+    <Icon name="search" size={18} stroke={3} />
+    <input type="search" bind:value={words} placeholder="Search all sources" aria-label="Search all sources" enterkeyhint="search" />
+  </form>
 
   <Notice {loading} {error} retry={load} />
 
@@ -140,6 +154,10 @@
 </div>
 
 <style>
+  form {
+    max-width: 560px;
+  }
+
   ul {
     margin: 0;
     padding: 0;
