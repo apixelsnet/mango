@@ -202,7 +202,7 @@
           </div>
         </div>
         <p class="muted count">{total} {total === 1 ? 'extension' : 'extensions'}{nsfw ? '' : ', 18+ hidden'}</p>
-        <ul class="rows">
+        <ul class="rows cells">
           {#each items as item (`${item.storeId}:${item.pkg}`)}
             <li>
               <span class="main">
@@ -211,7 +211,7 @@
               </span>
               <span class="tools">
                 {#if item.contentWarning >= 3}<span class="tag">18+</span>{/if}
-                <button class="btn" disabled={!item.installable || busy[`install:${item.pkg}`]} onclick={() => install(item.pkg, item.storeId)}>
+                <button class="btn go" disabled={!item.installable || busy[`install:${item.pkg}`]} onclick={() => install(item.pkg, item.storeId)}>
                   {!item.installable ? 'APK only' : busy[`install:${item.pkg}`] ? 'Installing…' : 'Install'}
                 </button>
               </span>
@@ -219,9 +219,12 @@
           {/each}
         </ul>
         {#if items.length < total}
-          <div class="more" use:whenVisible={() => !busy.catalog && attempt('catalog', () => loadCatalog(false))}>
-            <button class="btn" disabled={busy.catalog} onclick={() => attempt('catalog', () => loadCatalog(false))}>Load more</button>
-          </div>
+          <!-- Made anew after each load: in columns a load may not push it out of sight, and it is only asked once per sighting. -->
+          {#key items.length}
+            <div class="more" use:whenVisible={() => !busy.catalog && attempt('catalog', () => loadCatalog(false))}>
+              <button class="btn" disabled={busy.catalog} onclick={() => attempt('catalog', () => loadCatalog(false))}>Load more</button>
+            </div>
+          {/key}
         {/if}
       </section>
     {:else}
@@ -241,6 +244,53 @@
     margin: 0;
     padding: 0;
     list-style: none;
+  }
+
+  /* A wide window puts a name far from its button. Every other row is shaded, so the eye can
+     follow one across, and the row under the pointer is lit together with its button. */
+  .rows > li {
+    padding-inline: 10px;
+  }
+
+  .rows:not(.cells) > li:nth-child(even) {
+    background: color-mix(in srgb, var(--ink) 12%, transparent);
+  }
+
+  /* The long list takes as many columns as fit, so that a button is never far from its name:
+     each pair is boxed together instead. */
+  .cells {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(min(340px, 100%), 1fr));
+    gap: 10px;
+  }
+
+  .cells > li {
+    border: 2px solid var(--ink);
+  }
+
+  .cells .tools {
+    flex: none;
+    flex-wrap: nowrap;
+  }
+
+  .rows > li:focus-within {
+    background: color-mix(in srgb, var(--spot) 30%, var(--surface));
+  }
+
+  .rows > li:focus-within .go:not(:disabled) {
+    background: var(--spot);
+    color: var(--on-spot);
+  }
+
+  @media (hover: hover) {
+    .rows > li:hover {
+      background: color-mix(in srgb, var(--spot) 30%, var(--surface));
+    }
+
+    .rows > li:hover .go:not(:disabled) {
+      background: var(--spot);
+      color: var(--on-spot);
+    }
   }
 
   .store {
