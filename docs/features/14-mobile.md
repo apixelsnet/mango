@@ -13,7 +13,7 @@ Mango on a narrow screen, and as an app on a phone's home screen. All of it is i
 
 ## Getting around
 
-- Narrower than 760px, the menu is a row of tabs along the bottom. A press on the tab already open goes to its top. The header is one line: the name, the search, the settings.
+- Narrower than 760px, the menu is a row of tabs along the bottom. A press on the tab already open goes to its top. The header is one line: the name and the settings.
 - An app on a home screen has no back button, so a screen that is not one of the tabs gets one in the header. A title is a screen of its own: its bar stays at the top with the way back, and the tabs make room for its Resume button.
 - The reader's back goes back to the title it was opened from, instead of opening a second copy. Before, the title's own back then led into the reader again.
 - `lib/router.svelte.ts` numbers each screen in the browser's history. A new screen starts at its top. One come back to is put where it was left, as soon as it is long enough again.

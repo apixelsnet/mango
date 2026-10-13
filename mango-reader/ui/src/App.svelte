@@ -40,7 +40,6 @@
   const pushed = $derived(tabbed && area === 'title');
   // Any other screen that is not one of the menu's gets a way back: an app on a phone's home screen has no other.
   const deep = $derived(tabbed && !NAV.some((item) => item.to === route.path));
-  let query = $state('');
   // Unread chapters found lately, shown beside Updates. Looked up again on each change of screen.
   let fresh = $state(0);
 
@@ -62,12 +61,6 @@
   $effect(() => {
     if (session.signedIn && area === 'join') go('/', true);
   });
-
-  function search(event: SubmitEvent) {
-    event.preventDefault();
-    const text = query.trim();
-    if (text) go('/search?q=' + encodeURIComponent(text));
-  }
 
   /** A press on the tab already open goes back to its top, as in a phone's own apps. */
   function again(event: MouseEvent, to: string) {
@@ -117,10 +110,6 @@
             {/each}
           </nav>
         {/if}
-        <form class="field" role="search" onsubmit={search}>
-          <Icon name="search" size={18} stroke={3} />
-          <input type="search" bind:value={query} placeholder={tabbed ? 'Search' : 'Search all sources'} aria-label="Search all sources" enterkeyhint="search" />
-        </form>
         <a class="btn icon settings" href="#/settings" aria-label={news ? 'Settings: a newer Mango is out' : 'Settings'} aria-current={area === 'settings' ? 'page' : undefined}>
           <Icon name="sliders" />
           {#if news}<span class="news" aria-hidden="true"></span>{/if}
@@ -240,7 +229,7 @@
     letter-spacing: 0.18em;
   }
 
-  /* The menu stays on one line and scrolls sideways if it must; the search gives way first. */
+  /* The menu stays on one line and scrolls sideways if it must. */
   nav {
     display: flex;
     flex: 1 1 auto;
@@ -267,13 +256,10 @@
     color: var(--paper);
   }
 
-  form {
-    flex: 0 1 260px;
-    min-width: 150px;
-  }
-
+  /* Against the far edge, whatever stands before it. */
   .settings {
     position: relative;
+    margin-left: auto;
   }
 
   .news {
@@ -298,15 +284,11 @@
       flex-wrap: nowrap;
       overflow-x: auto;
     }
-
-    form {
-      flex: 1 1 160px;
-    }
   }
 
   /* ---------- the menu along the bottom ---------- */
 
-  /* With it there, the top is one line: the way back or the name, the search, the settings. */
+  /* With it there, the top is one line: the way back or the name, and the settings. */
   .tabbed .top {
     flex-wrap: nowrap;
     gap: 10px;
@@ -329,12 +311,6 @@
   .tabbed .kana,
   .tabbed .alone .word {
     display: none;
-  }
-
-  .tabbed form {
-    flex: 1 1 0;
-    min-width: 0;
-    box-shadow: none;
   }
 
   @media (max-width: 359px) {
