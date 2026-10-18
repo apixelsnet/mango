@@ -21,6 +21,7 @@ How Mango is shipped, configured, protected and kept up to date.
 | `data_dir` | `MANGO_DATA` | `data`; the image sets `/data` |
 | `log` | `MANGO_LOG` | `info` |
 | `cache_mb` | `MANGO_CACHE_MB` | `1024`: cap on cached pages and covers |
+| `keep_free_mb` | `MANGO_KEEP_FREE_MB` | `0`; above it, no chapter is downloaded while the disk has less free (Linux and macOS) |
 | `local_dir` | `MANGO_LOCAL` | `local` in the data directory |
 | `login` | `MANGO_LOGIN` | `true`; `off` lets everyone in |
 | | `MANGO_PASSWORD` | none. Sets the password on a start that finds none |
@@ -34,6 +35,7 @@ How Mango is shipped, configured, protected and kept up to date.
 | `stores.refresh_hours` | `MANGO_STORES_REFRESH_HOURS` | `12`; `0` turns the check off |
 | `stores.local` | `MANGO_STORES_LOCAL` | `false`; `on` lets a store be on this machine or its network, and be fetched over plain HTTP |
 | `stores.anyone_installs` | `MANGO_ANYONE_INSTALLS` | `false`; `on` lets every account bring extensions into the host, not only an admin |
+| `stores.blocklist` | `MANGO_BLOCKLIST` | none. A file of extensions and stores no account may have; see feature 02 |
 | `releases.repo` | `MANGO_RELEASES_REPO` | the repository the build came from, as `owner/name`; none in a build made by hand |
 | `releases.token` | `MANGO_RELEASES_TOKEN` | none. Needed when that repository is not public |
 | `releases.api` | `MANGO_RELEASES_API` | `https://api.github.com`; another address for a self-hosted forge |

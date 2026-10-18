@@ -57,6 +57,10 @@ Checked by unit tests of the rule and the plan, and on Linux and Windows by `smo
 
 Not checked: weeks of real runs. A series that changes its rhythm is found late by up to one of its old gaps.
 
+## Keeping room
+
+`MANGO_KEEP_FREE_MB` (off by default, 2026-10-18): while the disk under the data directory has less free than that, a chapter is not fetched; it fails with 507 `disk_full` "Less than N MB is free on the disk…" and takes the usual retries. A full disk would take the database's next write with it. Linux and macOS only. Checked on Linux with a real chapter: it was held back with that message and nothing was written.
+
 ## Done when
 
 An overnight update finds new chapters, auto-downloads them, and they open with the network unplugged.
