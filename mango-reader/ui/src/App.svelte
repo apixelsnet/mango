@@ -3,6 +3,8 @@
   import { display } from './lib/display.svelte';
   import Icon, { type IconName } from './lib/Icon.svelte';
   import Notice from './lib/Notice.svelte';
+  import Tour from './lib/Tour.svelte';
+  import { tour } from './lib/tour.svelte';
   import { back, go, route } from './lib/router.svelte';
   import { loadSession, session } from './lib/session.svelte';
   import { loadVersion, version } from './lib/version.svelte';
@@ -174,6 +176,10 @@
       </nav>
     {/if}
   </div>
+{/if}
+
+{#if tour.open && session.signedIn}
+  <Tour />
 {/if}
 
 <style>

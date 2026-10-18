@@ -4,8 +4,9 @@
   import Icon from '../lib/Icon.svelte';
   import { keep, recall } from '../lib/keep';
   import Notice from '../lib/Notice.svelte';
-  import { pref, setPref } from '../lib/prefs.svelte';
+  import { pref, prefs, setPref } from '../lib/prefs.svelte';
   import TitleCard from '../lib/TitleCard.svelte';
+  import { startTour, tour } from '../lib/tour.svelte';
 
   type Sort = 'lastRead' | 'latest' | 'unread' | 'title' | 'added';
   type View = { layout: 'grid' | 'list'; sort: Sort; down: boolean; unread: boolean; downloaded: boolean; completed: boolean };
@@ -38,6 +39,12 @@
   let picked = $state<Record<number, boolean>>({});
   let filters = $state(false);
   let sure = $state(false);
+
+  // A new account lands here with an empty library: the tour starts by itself, once.
+  // An account that has titles already found its way, and is not shown it unasked.
+  $effect(() => {
+    if (data && data.items.length === 0 && prefs.ready && !tour.open && !pref('tour.done', false)) startTour();
+  });
 
   const view = $derived<View>({ ...DEFAULT, ...pref<Partial<View>>('library.view', {}) });
   const shown = $derived.by(() => {
