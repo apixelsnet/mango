@@ -4,7 +4,7 @@
   import Icon, { type IconName } from './lib/Icon.svelte';
   import Notice from './lib/Notice.svelte';
   import Tour from './lib/Tour.svelte';
-  import { tour } from './lib/tour.svelte';
+  import { tour } from './lib/guide.svelte';
   import { back, go, route } from './lib/router.svelte';
   import { loadSession, session } from './lib/session.svelte';
   import { loadVersion, version } from './lib/version.svelte';

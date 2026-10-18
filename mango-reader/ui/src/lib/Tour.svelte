@@ -1,7 +1,7 @@
 <script lang="ts">
   import Icon, { type IconName } from './Icon.svelte';
   import { session } from './session.svelte';
-  import { endTour } from './tour.svelte';
+  import { endTour } from './guide.svelte';
 
   type Card = { icon: IconName; title: string; text: string; link?: { href: string; label: string; away?: boolean } };
 

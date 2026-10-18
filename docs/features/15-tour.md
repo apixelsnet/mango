@@ -4,7 +4,7 @@ A short tour for a new account, and a picture of the reader's tap zones. All of 
 
 ## What it does
 
-- **Tour** (`lib/Tour.svelte`, `lib/tour.svelte.ts`). A few cards in a modal dialog: what Mango is, finding titles through extensions, the library and Updates, reading, downloads and backups, where Settings are. Back, Next, Skip, the close button and Escape all work; Skip and finishing count the same.
+- **Tour** (`lib/Tour.svelte`, `lib/guide.svelte.ts`). A few cards in a modal dialog: what Mango is, finding titles through extensions, the library and Updates, reading, downloads and backups, where Settings are. Back, Next, Skip, the close button and Escape all work; Skip and finishing count the same.
 - It starts by itself on the Library screen when the library is empty and the account's setting `tour.done` is unset. An account that already has titles is not shown it unasked, so an upgrade does not put it in front of people who know Mango.
 - **Tap zones** (`lib/Zones.svelte`). The first chapter an account opens draws over the page where a tap goes back, forward or opens the menu, computed from the reader's own `zone()` rule on a 12×12 grid, so it is right for every layout, direction and swap. Tap or Escape closes it and sets `tour.zones`. Not shown while the zones are off (manhwa and manhua by default). The reader's top bar has a button to show it again.
 - **Again**: Settings → About → Show the tour. It clears `tour.zones` and opens the tour.
