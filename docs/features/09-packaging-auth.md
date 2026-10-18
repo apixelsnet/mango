@@ -28,6 +28,7 @@ How Mango is shipped, configured, protected and kept up to date.
 | `hosts` | `MANGO_HOSTS` | none. Names Mango goes by, comma separated in the variable; see below |
 | `proxied` | `MANGO_PROXIED` | `false`; `on` when a proxy in front writes each caller's address into `X-Forwarded-For` |
 | `signup` | `MANGO_SIGNUP` | `false`; `on` shows the main page to whoever is not signed in, and lets the holder of an admin's invitation make an account |
+| `account_url` | `MANGO_ACCOUNT_URL` | none. For whoever runs Mango for others: where a reader's plan and billing are kept, an `https://` address or a path on the same site. Shown as a link in Settings, Account and in the tour; see feature 15 |
 | `host.dir` | `MANGO_HOST_DIR` | `host` beside the binary |
 | `host.java` | `MANGO_JAVA` | `java` |
 | `host.idle_secs` | `MANGO_HOST_IDLE_SECS` | `300`; `0` never stops the host |

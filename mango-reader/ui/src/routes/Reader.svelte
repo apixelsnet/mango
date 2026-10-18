@@ -9,7 +9,9 @@
   import Icon from '../lib/Icon.svelte';
   import ReaderPrefs from '../lib/ReaderPrefs.svelte';
   import { filterOf, FITS, KINDS, merge, MODES, owned, profile, setProfile, zone, type Kind, type Mode, type Own, type Prefs } from '../lib/reader';
+  import { pref, prefs, setPref } from '../lib/prefs.svelte';
   import { go, route, up } from '../lib/router.svelte';
+  import Zones from '../lib/Zones.svelte';
 
   let { id }: { id: number } = $props();
 
@@ -20,6 +22,8 @@
   let zoom = $state(1);
   let overlay = $state(false);
   let panel = $state(false);
+  // Where taps turn the page, drawn over it: by itself the first time an account reads, and when asked.
+  let zones = $state(false);
   let error = $state<string | null>(null);
   let note = $state('');
   let flash = $state('');
@@ -47,6 +51,15 @@
   const speed = $derived(p.autoSpeed);
   const seconds = $derived(p.autoSeconds);
   const awake = $derived(p.awake);
+
+  $effect(() => {
+    if (ready && prefs.ready && p.zones !== 'off' && !pref('tour.zones', false)) untrack(() => (zones = true));
+  });
+
+  function closeZones() {
+    zones = false;
+    setPref('tour.zones', true).catch(() => {});
+  }
 
   const paged = $derived(mode !== 'webtoon');
   const pages = $derived(Array.from({ length: count }, (_, i) => i));
@@ -454,7 +467,8 @@
     if (event.metaKey || event.ctrlKey || event.altKey) return;
     const on = event.target instanceof Element ? event.target : null;
     if (event.key === 'Escape') {
-      if (panel) panel = false;
+      if (zones) closeZones();
+      else if (panel) panel = false;
       else if (overlay) overlay = false;
       else if (info) up(`/title/${info.mangaId}`);
       event.preventDefault();
@@ -658,6 +672,9 @@
       {#if document.fullscreenEnabled}
         <button class="btn icon" aria-label="Full screen" aria-pressed={full} onclick={fullscreen}><Icon name="expand" /></button>
       {/if}
+      {#if p.zones !== 'off'}
+        <button class="btn icon" aria-label="Show the tap zones" onclick={() => ((zones = true), (overlay = false))}><Icon name="grid" /></button>
+      {/if}
       <button class="btn icon" aria-label="Hide the controls" onclick={() => (overlay = false)}><Icon name="close" /></button>
     </div>
     <div class="bar bottom">
@@ -693,6 +710,10 @@
         <button class="btn icon" aria-label="Reader settings" onclick={() => ((panel = true), (overlay = false))}><Icon name="sliders" /></button>
       </div>
     </div>
+  {/if}
+
+  {#if zones && info && ready}
+    <Zones {p} onclose={closeZones} />
   {/if}
 
   {#if panel && info && ready}

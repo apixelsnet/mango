@@ -37,6 +37,10 @@ pub struct Config {
     /// Let whoever holds an admin's invitation make an account, and show the main page
     /// to a browser that is not signed in. `MANGO_SIGNUP`
     pub signup: bool,
+    /// Where whoever runs this Mango for others keeps each reader's account: their plan,
+    /// billing and the like. Shown as a link in Settings and the tour. Unset, nothing is
+    /// shown. `MANGO_ACCOUNT_URL`
+    pub account_url: Option<String>,
     pub host: HostConfig,
     pub stores: StoresConfig,
     pub releases: ReleasesConfig,
@@ -105,6 +109,7 @@ impl Default for Config {
             hosts: Vec::new(),
             proxied: false,
             signup: false,
+            account_url: None,
             host: HostConfig::default(),
             stores: StoresConfig::default(),
             releases: ReleasesConfig::default(),
@@ -220,6 +225,9 @@ impl Config {
         if let Some(v) = switch("MANGO_ANYONE_INSTALLS")? {
             self.stores.anyone_installs = v;
         }
+        if let Some(v) = var("MANGO_ACCOUNT_URL").filter(|v| !v.trim().is_empty()) {
+            self.account_url = Some(v.trim().to_owned());
+        }
         self.first_password = var("MANGO_PASSWORD").filter(|v| !v.is_empty());
         if let Some(v) = var("MANGO_HOSTS") {
             self.hosts = v.split(',').map(str::trim).filter(|name| !name.is_empty()).map(str::to_owned).collect();
@@ -241,6 +249,13 @@ impl Config {
         if let Some(repo) = self.releases.repo.as_deref().filter(|repo| !repo.is_empty()) {
             if !repo.split_once('/').is_some_and(|(owner, name)| plain(owner) && plain(name)) {
                 return Err("releases.repo must read owner/name".into());
+            }
+        }
+        // It becomes a link: an https address, or a path on this same site.
+        if let Some(url) = self.account_url.as_deref() {
+            let shaped = url.starts_with("https://") || (url.starts_with('/') && !url.starts_with("//"));
+            if !shaped || url.chars().any(|c| c.is_whitespace() || c.is_control() || matches!(c, '"' | '<' | '>' | '\\')) {
+                return Err("account_url must be an https:// address or a path starting with /".into());
             }
         }
         Ok(())
@@ -316,6 +331,15 @@ mod tests {
         })
         .unwrap();
         assert_eq!((cfg.keep_free_mb, cfg.stores.blocklist.as_deref()), (200, Some(Path::new("/etc/mango/blocklist"))));
+        assert!(cfg.account_url.is_none(), "no account page is shown unless one is named");
+        for good in ["/account/", "https://example.org/account"] {
+            cfg.apply_env(|name| (name == "MANGO_ACCOUNT_URL").then(|| good.into())).unwrap();
+            assert_eq!(cfg.account_url.as_deref(), Some(good));
+        }
+        for bad in ["http://example.org", "//example.org", "javascript:alert(1)", "/a b", "/a\"b"] {
+            assert!(cfg.apply_env(|name| (name == "MANGO_ACCOUNT_URL").then(|| bad.into())).is_err(), "{bad}");
+        }
+        cfg.account_url = None;
         assert!(cfg.apply_env(|name| (name == "MANGO_RELEASES_REPO").then(|| "someone/mango/../x".into())).is_err());
 
         assert!(cfg.apply_env(|name| (name == "MANGO_HOST_IDLE_SECS").then(|| "soon".into())).is_err());

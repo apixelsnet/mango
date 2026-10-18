@@ -8,6 +8,7 @@
   import ReaderPrefs from '../lib/ReaderPrefs.svelte';
   import { route } from '../lib/router.svelte';
   import { session, signOut } from '../lib/session.svelte';
+  import { againTour } from '../lib/tour.svelte';
   import { ago } from '../lib/util';
   import { checkVersion, version as about } from '../lib/version.svelte';
   import { activeName, contrast, isHex, palette, PRESETS, saveTheme, sound, SPOTS, theme, type Theme } from '../lib/theme.svelte';
@@ -21,7 +22,7 @@
     { id: 'sources', label: 'Sources', icon: 'puzzle', about: 'Where titles come from, and backups in and out.' },
     { id: 'trackers', label: 'Trackers', icon: 'link', about: 'Keep reading progress in step with a tracking site.' },
     { id: 'account', label: 'Account', icon: 'user', about: 'The password, signing out, and who else may use this Mango.' },
-    { id: 'about', label: 'About', icon: 'info', about: 'This version, and newer ones.' },
+    { id: 'about', label: 'About', icon: 'info', about: 'The tour, this version, and newer ones.' },
   ];
   const tab = $derived(TABS.find((entry) => entry.id === route.path.split('/')[2]) ?? TABS[0]);
 
@@ -904,6 +905,18 @@
           </section>
         {/each}
       {:else if tab.id === 'account'}
+        {#if session.account}
+          <section class="card">
+            <h3>Plan and billing</h3>
+            <div class="set">
+              <div class="what">
+                <strong>Your account</strong>
+                <span>Your plan, the room your downloads take, billing and your email are kept on your account page.</span>
+              </div>
+              <div class="how"><a class="btn spot" href={session.account} target="_blank" rel="noopener">Open your account</a></div>
+            </div>
+          </section>
+        {/if}
         {#if session.login}
           <section class="card">
             <h3>Password</h3>
@@ -1057,6 +1070,17 @@
           <p class="warn"><strong>Login is switched off.</strong> Anyone who can reach this address can use Mango. Take <code>MANGO_LOGIN=off</code> away to ask for a password.</p>
         {/if}
       {:else if v}
+        <section class="card">
+          <h3>Tour</h3>
+          <div class="set">
+            <div class="what">
+              <strong>Show the tour again</strong>
+              <span>The cards a new account sees first, and where the reader's tap zones are the next time a chapter opens.</span>
+            </div>
+            <div class="how"><button class="btn" onclick={againTour}>Show the tour</button></div>
+          </div>
+        </section>
+
         <section class="card">
           <h3>This version</h3>
           <div class="set">

@@ -129,6 +129,8 @@ pub struct Front {
     pub proxied: bool,
     /// Whoever holds an admin's invitation may make an account; see `Auth::join`.
     pub signup: bool,
+    /// Where a reader's account is kept, for whoever runs this Mango for others.
+    pub account: Option<String>,
 }
 
 pub struct Auth {
@@ -171,6 +173,9 @@ pub struct Status {
     named: bool,
     name: Option<String>,
     admin: bool,
+    /// Where the signed-in reader's account is kept, when whoever runs this Mango keeps one.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    account: Option<String>,
     /// The answer to a challenge; see `Auth::proof`.
     #[serde(skip_serializing_if = "Option::is_none")]
     proof: Option<String>,
@@ -387,6 +392,7 @@ impl Auth {
             signed_in: who.is_some(),
             named: self.on && locked(&self.accounts).len() > 1,
             admin: who.as_ref().is_some_and(|who| who.admin),
+            account: who.as_ref().and(self.front.account.clone()),
             name: who.map(|who| who.name),
         }
     }

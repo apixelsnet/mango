@@ -2,7 +2,7 @@
 
 import { gate, get, message, send } from './api';
 
-type Status = { login: boolean; setup: boolean; setupCode: boolean; signup: boolean; signedIn: boolean; named: boolean; name: string | null; admin: boolean };
+type Status = { login: boolean; setup: boolean; setupCode: boolean; signup: boolean; signedIn: boolean; named: boolean; name: string | null; admin: boolean; account?: string };
 
 export const session = $state({
   /** False until Mango has said who we are. */
@@ -23,6 +23,8 @@ export const session = $state({
   name: null as string | null,
   /** Whether that account may change what all accounts share: the accounts themselves, and the solver. */
   admin: false,
+  /** Where this reader's account is kept, when whoever runs this Mango keeps one: their plan, billing and the like. */
+  account: null as string | null,
 });
 
 export async function loadSession() {

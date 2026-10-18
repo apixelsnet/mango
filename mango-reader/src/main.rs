@@ -97,7 +97,7 @@ async fn run() -> Result<(), String> {
 
     std::fs::create_dir_all(&cfg.data_dir).map_err(|e| format!("cannot create {}: {e}", cfg.data_dir.display()))?;
     let db = db::Db::open(&cfg.data_dir.join("mango.db")).map_err(|e| e.to_string())?;
-    let front = auth::Front { hosts: cfg.hosts.clone(), proxied: cfg.proxied, signup: cfg.signup };
+    let front = auth::Front { hosts: cfg.hosts.clone(), proxied: cfg.proxied, signup: cfg.signup, account: cfg.account_url.clone() };
     let auth = auth::Auth::open(db.clone(), cfg.login, cfg.port()?, cfg.first_password.clone(), front).await.map_err(|e| e.to_string())?;
     let private = |name: &str, text: &str| db::write_private(&cfg.data_dir.join(name), text).map_err(|e| format!("cannot write {name} in {}: {e}", cfg.data_dir.display()));
     private(INSTANCE, auth.instance())?;
