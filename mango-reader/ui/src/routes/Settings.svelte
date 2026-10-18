@@ -438,6 +438,18 @@
   get<{ version: string; localDir: string }>('/health')
     .then((health) => ((version = health.version), (localDir = health.localDir)))
     .catch(() => {});
+
+  // What "Export my files" would hold, asked for when the Downloads group opens.
+  type FilesSize = { titles: number; chapters: number; bytes: number };
+  let files = $state<FilesSize | null>(null);
+  $effect(() => {
+    if (tab.id !== 'downloads') return;
+    get<FilesSize>('/export/files/size')
+      .then((size) => (files = size))
+      .catch(() => (files = null));
+  });
+  const counted = (n: number, word: string) => `${n} ${word}${n === 1 ? '' : 's'}`;
+  const sized = (bytes: number) => (bytes >= 1 << 30 ? `${(bytes / (1 << 30)).toFixed(1)} GB` : `${Math.max(1, Math.round(bytes / (1 << 20)))} MB`);
 </script>
 
 {#snippet toggle(on: boolean, label: string, press: () => void)}
@@ -718,6 +730,24 @@
           <div class="set">
             <div class="what"><strong>Download queue</strong><span>What is being saved now, and what waits.</span></div>
             <div class="how"><a class="btn" href="#/downloads"><Icon name="download" size={18} />Open the queue</a></div>
+          </div>
+          <div class="set">
+            <div class="what">
+              <strong>Export my files</strong>
+              <span>
+                Every downloaded chapter in one .zip, a folder for each title. Unzip it into the local folder of Mihon, Suwayomi or Mango to read them
+                there.
+                {#if files?.chapters}{counted(files.chapters, 'chapter')} of {counted(files.titles, 'title')}, {sized(files.bytes)}.{:else if files}Nothing
+                  is downloaded yet.{/if}
+              </span>
+            </div>
+            <div class="how">
+              {#if files?.chapters}
+                <a class="btn" href="api/export/files" download><Icon name="upload" size={18} />Export files</a>
+              {:else}
+                <button class="btn" disabled><Icon name="upload" size={18} />Export files</button>
+              {/if}
+            </div>
           </div>
         </section>
       {:else if tab.id === 'sources'}

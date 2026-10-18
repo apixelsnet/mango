@@ -33,7 +33,7 @@ Fields 1 and 2 of each message (source id and url, chapter url and name, categor
 - Import is one transaction; a failure leaves the library unchanged.
 - Runs in the background with progress; a 5,000-title backup must not block the UI.
 
-## Result (2026-10-10) — built; checked with Suwayomi, not with Mihon
+## Result (2026-10-10) — built
 
 Code: `mango-reader/src/import.rs`; UI in `routes/Import.svelte`, reached from Settings. API: `POST /api/import/preview` and `POST /api/import` take the file itself as the body; `GET /api/import` gives progress and the report.
 
@@ -47,9 +47,9 @@ Code: `mango-reader/src/import.rs`; UI in `routes/Import.svelte`, reached from S
 
 Checked on Linux and Windows by `smoke.py` (78 checks in all) with a small backup written out by hand, and in a browser. On Linux with a real Suwayomi backup: 161 titles, 19,414 chapters, 6 categories, 4,559 history entries came in within 0.2 s, nothing was unreadable or skipped, the unread count matched the backup, and importing it again changed nothing. Half of its 18 sources had an extension in the store that was added.
 
-Not checked: a real Mihon backup (none was at hand; the schema is Mihon's), tracker links from a real file (that backup had none), a 5,000-title backup, and the install button with a real missing extension.
+Not checked: a 5,000-title backup, and the install button with a real missing extension.
 
-## Export (2026-10-10) — built; read back by Mango, not yet by Mihon or Suwayomi
+## Export (2026-10-10) — built
 
 Code: `mango-reader/src/export.rs`. API: `GET /api/export` answers with the file, named `mango_<date>.tachibk`. In the UI it is a button in Settings, Sources, beside the import.
 
@@ -60,7 +60,27 @@ Code: `mango-reader/src/export.rs`. API: `GET /api/export` answers with the file
 
 Checked on Linux and Windows by `smoke.py`: the export holds the imported title, its chapters, category and tracker link, and taking it back in changes nothing. A unit test exports a library, imports it into an empty database and finds the two alike.
 
-Not checked: opening the file in Mihon or in Suwayomi. The format is theirs and the required fields are covered, but neither app was at hand.
+## Checked against the real apps (2026-10-18)
+
+Suwayomi-Server v2.4.2366 in a container, and Mihon v0.21.2 in an Android 14 emulator, with a real Suwayomi backup of 161 titles, 19,448 chapters (10,157 read, 21 bookmarked, 115 part-read), 4,493 history entries and 6 categories. Compared title by title, by source and address: categories, chapter count, which chapters are read and bookmarked, the page reached, history, tracker links.
+
+- Mango's export restored into Suwayomi and into Mihon with nothing different and no errors.
+- A backup made by each of them then came into Mango with nothing different; taking it in again changed nothing.
+- Category names and order survive. Three tracker links (AniList, MyAnimeList, and MangaUpdates with an id past 32 bits) went to both apps and back whole.
+- Reading mode reaches Mihon on a fresh restore and comes back from Mihon's backup. Restoring over a title Mihon already has keeps Mihon's own mode: that is how Mihon merges.
+
+## Export my files (2026-10-18) — built
+
+Code: `mango-reader/src/files.rs`. API: `GET /api/export/files` sends the zip; `GET /api/export/files/size` says how many titles, chapters and bytes it would hold. In the UI it is a button in Settings, Downloads, with that size beside it.
+
+- Every downloaded chapter of the account, as `<title>/<chapter>.cbz`, with a `ComicInfo.xml` for the title (name, summary, author, artist, genre, status, as Mihon's local source reads it) and its cover when Mango keeps one. Unzipped into the local folder of Mihon, Suwayomi or Mango, the titles are there to read.
+- Two titles of one name get a folder each: the second takes its source's name, or a number.
+- Written while it is sent, so it takes no room on the disk. The `zip` crate needs to seek, so the format is written by hand: stored entries, each file read once for its checksum and once to send, ZIP64 past 4 GB. A caller that goes away stops it.
+- Nothing downloaded answers 404 `nothing_downloaded`.
+
+Checked on Linux: a 5 GB export (ZIP64) passed Python's `zipfile`, Info-ZIP `unzip -t` and 7-Zip, with Mango using about 16 MB; a download stopped half way stopped the writing with nothing logged. A small one unzipped with Windows' `Expand-Archive`, read as a local source in Mango (titles, details, covers, chapters, pages) and in Mihon v0.21.2 (cover, author, artist, status, summary, genres, chapters, and a chapter opened in the reader).
+
+Not checked: Suwayomi's local source, and an export over a slow link through the hosting tunnel.
 
 ## Done when
 

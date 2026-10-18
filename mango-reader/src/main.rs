@@ -10,6 +10,7 @@ mod db;
 mod downloads;
 mod error;
 mod export;
+mod files;
 mod host;
 mod images;
 mod import;

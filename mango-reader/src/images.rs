@@ -126,7 +126,7 @@ impl Images {
             return Image::checked(local::blocking(move || local.cover(&key)).await?);
         }
         let name = format!("{manga}-{:08x}", fnv(&url));
-        let kept = self.covers.join(&name);
+        let kept = self.kept_cover(manga, &url);
         let cached = self.cache.join("covers").join(&name);
         if let Some(bytes) = read(kept.clone()).await {
             return Image::checked(bytes);
@@ -147,6 +147,11 @@ impl Images {
             write(cached, image.bytes.clone()).await;
         }
         Ok(image)
+    }
+
+    /// Where a library title's cover is kept once it was shown.
+    pub fn kept_cover(&self, manga: i64, url: &str) -> PathBuf {
+        self.covers.join(format!("{manga}-{:08x}", fnv(url)))
     }
 
     /// How many pages a chapter has. Known chapters answer from the database; others ask the source.
