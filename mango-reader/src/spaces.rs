@@ -16,7 +16,7 @@ use crate::{
     images::Images,
     import::Importer,
     local::Local,
-    store::{Fleet, Rules, Stores},
+    store::{blocklist::Blocklist, Fleet, Rules, Stores},
     titles::Titles,
     trackers::Trackers,
     updates::Updates,
@@ -41,12 +41,15 @@ pub struct Shared {
     pub cache_mb: u64,
     pub stores_refresh_hours: u64,
     pub store_rules: Rules,
+    pub blocklist: Arc<Blocklist>,
+    /// Downloads stop while the disk has less than this free, in megabytes. 0: never.
+    pub keep_free_mb: u64,
 }
 
 struct Open {
     app: AppState,
     /// The library's background work: the cache sweep, the download queue, the update
-    /// schedule, and keeping its stores and extensions current.
+    /// schedule, and keeping its stores and extensions current and clear of the blocklist.
     tasks: Vec<JoinHandle<()>>,
 }
 
@@ -106,10 +109,10 @@ impl Spaces {
         };
         // The local source needs no extension and no host: every library has it from the start.
         db.now(|conn| Local::register(conn))?;
-        let stores = Stores::new(db.clone(), shared.host.clone(), self.fleet.clone(), id, shared.store_rules)?;
+        let stores = Stores::new(db.clone(), shared.host.clone(), self.fleet.clone(), id, shared.store_rules, shared.blocklist.clone())?;
         let titles = Titles::new(db.clone(), shared.host.clone(), shared.local.clone());
         let images = Images::new(db.clone(), shared.host.clone(), shared.local.clone(), &dir, shared.cache_mb);
-        let downloads = Downloads::new(db.clone(), images.clone(), &dir);
+        let downloads = Downloads::new(db.clone(), images.clone(), &dir, shared.keep_free_mb);
         let updates = Updates::new(db.clone(), titles.clone(), downloads.clone());
         let tasks = vec![
             tokio::spawn(images.clone().sweep_forever()),
@@ -117,6 +120,7 @@ impl Spaces {
             tokio::spawn(updates.clone().schedule()),
             tokio::spawn(stores.clone().keep_in_sync(shared.host.subscribe())),
             tokio::spawn(stores.clone().refresh_on_schedule(shared.stores_refresh_hours)),
+            tokio::spawn(stores.clone().keep_blocked_out()),
         ];
         let app = AppState {
             me: Who::default(),

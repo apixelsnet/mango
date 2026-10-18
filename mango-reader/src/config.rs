@@ -19,6 +19,8 @@ pub struct Config {
     pub log: String,
     /// Cap on the page and cover cache, in megabytes. `MANGO_CACHE_MB`
     pub cache_mb: u64,
+    /// Downloads stop while the disk has less than this free, in megabytes. 0 never stops them. `MANGO_KEEP_FREE_MB`
+    pub keep_free_mb: u64,
     /// The folder the local source reads: `<title>/<chapter>` inside it. Default: `local` in the data directory. `MANGO_LOCAL`
     pub local_dir: Option<PathBuf>,
     /// Ask for a password. Off is for a network where everyone may use Mango. `MANGO_LOGIN`
@@ -84,6 +86,9 @@ pub struct StoresConfig {
     pub local: bool,
     /// Let every account bring extensions into the host, not only an admin. `MANGO_ANYONE_INSTALLS`
     pub anyone_installs: bool,
+    /// A file of extensions and stores no account may have, for whoever runs Mango for
+    /// others. See `store/blocklist.rs`. `MANGO_BLOCKLIST`
+    pub blocklist: Option<PathBuf>,
 }
 
 impl Default for Config {
@@ -93,6 +98,7 @@ impl Default for Config {
             data_dir: "data".into(),
             log: "info".into(),
             cache_mb: 1024,
+            keep_free_mb: 0,
             local_dir: None,
             login: true,
             first_password: None,
@@ -130,7 +136,7 @@ impl Default for HostConfig {
 
 impl Default for StoresConfig {
     fn default() -> Self {
-        Self { refresh_hours: 12, local: false, anyone_installs: false }
+        Self { refresh_hours: 12, local: false, anyone_installs: false, blocklist: None }
     }
 }
 
@@ -177,6 +183,12 @@ impl Config {
         }
         if let Some(v) = number("MANGO_CACHE_MB")? {
             self.cache_mb = v;
+        }
+        if let Some(v) = number("MANGO_KEEP_FREE_MB")? {
+            self.keep_free_mb = v;
+        }
+        if let Some(v) = var("MANGO_BLOCKLIST").filter(|v| !v.trim().is_empty()) {
+            self.stores.blocklist = Some(v.into());
         }
         if let Some(v) = number("MANGO_HOST_IDLE_SECS")? {
             self.host.idle_secs = v;
@@ -296,6 +308,14 @@ mod tests {
         assert!(cfg.hosts.is_empty());
         cfg.apply_env(|name| (name == "MANGO_HOSTS").then(|| "mango.example.org, read.example.org,".into())).unwrap();
         assert_eq!(cfg.hosts, ["mango.example.org", "read.example.org"]);
+        assert!(cfg.keep_free_mb == 0 && cfg.stores.blocklist.is_none(), "nothing is held back unless asked");
+        cfg.apply_env(|name| match name {
+            "MANGO_KEEP_FREE_MB" => Some("200".into()),
+            "MANGO_BLOCKLIST" => Some("/etc/mango/blocklist".into()),
+            _ => None,
+        })
+        .unwrap();
+        assert_eq!((cfg.keep_free_mb, cfg.stores.blocklist.as_deref()), (200, Some(Path::new("/etc/mango/blocklist"))));
         assert!(cfg.apply_env(|name| (name == "MANGO_RELEASES_REPO").then(|| "someone/mango/../x".into())).is_err());
 
         assert!(cfg.apply_env(|name| (name == "MANGO_HOST_IDLE_SECS").then(|| "soon".into())).is_err());

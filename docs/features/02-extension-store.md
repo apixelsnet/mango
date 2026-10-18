@@ -91,6 +91,12 @@ Checked by unit tests and, for the first two, by the smoke test on Linux and Win
 
 Not checked: a store of one's own that serves such an index, which would need a signing key.
 
+## Blocklist
+
+For whoever runs Mango for other people (2026-10-18). `MANGO_BLOCKLIST` names a file, one entry a line: a package, a package prefix ending in `*`, or a store's address without its scheme (an entry with a `/`), which blocks every store whose address starts so. Adding a blocked store and installing a blocked extension, or anything from a blocked store, are answered 403 `blocked`. Each account looks every minute whether the file changed, and then removes the blocked stores it has, what it installed from them and the blocked extensions; the host lets go of an extension once no account has it. The file is read again when its time changes, so a Kubernetes config map mounted there takes effect without a restart. An unreadable file keeps what was read before. Without the setting nothing changes.
+
+Checked by unit tests of the file's reading, and on Linux against the real store with two accounts: blocking the extension took it from both within a minute, its sources with it, and the host let go of it (a reader's install afterwards was 403 `admin_only`); installing it again was 403 `blocked`; blocking the store's address took the store from both and refused adding it; deleting the file let both back in.
+
 ## Done when
 
 A fresh install can add a Mihon extension store, find an extension by name, install it and see its sources under Browse.

@@ -3,6 +3,7 @@
 //! Only install, remove and the comparison with the host start the JVM. Everything
 //! else reads the index a store publishes and the database.
 
+pub mod blocklist;
 pub mod index;
 pub mod verify;
 
@@ -24,12 +25,15 @@ use std::{
     sync::{Arc, Mutex as StdMutex},
     time::Duration,
 };
+use blocklist::Blocklist;
 use tokio::sync::{watch, Mutex};
 use verify::VerifyError;
 
 /// Cap on any one download: an index, a hash list or an extension.
 const MAX_DOWNLOAD: usize = 64 << 20;
 const INSTALL_TIMEOUT: Duration = Duration::from_secs(180);
+/// How often an account looks whether the blocklist changed.
+const BLOCKLIST_EVERY: Duration = Duration::from_secs(60);
 const KEY_CHANGED: &str = "The store now publishes a different signing key. Accept it only if the store announced the change.";
 
 const STORE_COLUMNS: &str = "SELECT s.id, s.url, s.index_url, s.name, s.badge, s.website, s.signing_key, s.offered_key, \
@@ -231,16 +235,17 @@ pub struct Stores {
     /// The account these stores belong to.
     account: i64,
     rules: Rules,
+    blocked: Arc<Blocklist>,
 }
 
 impl Stores {
-    pub fn new(db: Db, host: Arc<Host>, fleet: Fleet, account: i64, rules: Rules) -> Result<Self> {
+    pub fn new(db: Db, host: Arc<Host>, fleet: Fleet, account: i64, rules: Rules, blocked: Arc<Blocklist>) -> Result<Self> {
         let http = reqwest::Client::builder()
             .user_agent(concat!("Mango/", env!("CARGO_PKG_VERSION")))
             .connect_timeout(Duration::from_secs(15))
             .timeout(Duration::from_secs(120));
         let http = net::guard(http, rules.local).build().map_err(|e| AppError::internal(e.to_string()))?;
-        Ok(Self { db, http, host, fleet, account, rules })
+        Ok(Self { db, http, host, fleet, account, rules, blocked })
     }
 
     /// Whether `who` may bring code into the extension host, which every account shares:
@@ -285,6 +290,9 @@ impl Stores {
     /// Adds a store from the URL of its `repo.json` or its `index.pb`, and pins its signing key.
     pub async fn add(&self, url: &str) -> Result<StoreInfo> {
         let url = self.address(url)?.to_string();
+        if self.blocked.store(&url) {
+            return Err(blocked_store());
+        }
         let (mut bytes, mut etag) = self.download(&url).await?;
         let mut index_url = url.clone();
         let mut repo_key = None;
@@ -292,6 +300,9 @@ impl Stores {
             Ok(Value::Object(_)) => {
                 let repo: index::RepoJson = serde_json::from_slice(&bytes).map_err(|_| not_a_store())?;
                 index_url = self.address(&repo.index_v2.ok_or_else(not_a_store)?)?.to_string();
+                if self.blocked.store(&index_url) {
+                    return Err(blocked_store());
+                }
                 repo_key = repo.meta.signing_key;
                 (bytes, etag) = self.download(&index_url).await?;
             }
@@ -543,6 +554,9 @@ impl Stores {
         if !valid_pkg(pkg) {
             return Err(AppError::bad_request("Not a package name"));
         }
+        if self.blocked.package(pkg) {
+            return Err(AppError::new(403, "blocked", "The operator of this server has blocked this extension."));
+        }
         let _one_at_a_time = self.fleet.changes.lock().await;
 
         struct Pick {
@@ -591,6 +605,11 @@ impl Stores {
 
         if pick.key_changed {
             return Err(AppError::new(409, "signing_key_changed", KEY_CHANGED));
+        }
+        // A store blocked a moment ago may not be swept away yet.
+        let from = self.get(pick.store_id).await?;
+        if self.blocked.store(&from.url) || self.blocked.store(&from.index_url) {
+            return Err(blocked_store());
         }
         // The index is not signed. An older version would still pass the signature check.
         if pick.version_code < pick.highest {
@@ -730,6 +749,49 @@ impl Stores {
             .await
     }
 
+    /// Takes out of this account what the operator's blocklist names, each time the list
+    /// changes: blocked stores, what was installed from them, and blocked extensions.
+    /// Never returns.
+    pub async fn keep_blocked_out(self) {
+        let mut swept = 0;
+        loop {
+            let generation = self.blocked.generation();
+            if generation != swept {
+                match self.sweep_blocked().await {
+                    Ok(()) => swept = generation,
+                    Err(e) => tracing::warn!("could not take out what the blocklist names: {e}"),
+                }
+            }
+            tokio::time::sleep(BLOCKLIST_EVERY).await;
+        }
+    }
+
+    async fn sweep_blocked(&self) -> Result<()> {
+        let stores: Vec<i64> = self.list().await?.into_iter().filter(|s| self.blocked.store(&s.url) || self.blocked.store(&s.index_url)).map(|s| s.id).collect();
+        let installed = self
+            .db
+            .call(|conn| {
+                let mut stmt = conn.prepare("SELECT pkg, store_id FROM extensions WHERE pkg != ?1")?;
+                let installed = stmt.query_map([LOCAL_PKG], |r| Ok((r.get::<_, String>(0)?, r.get::<_, Option<i64>>(1)?)))?.collect::<rusqlite::Result<Vec<_>>>()?;
+                Ok(installed)
+            })
+            .await?;
+        let mut failed = None;
+        for (pkg, store) in installed {
+            if self.blocked.package(&pkg) || store.is_some_and(|id| stores.contains(&id)) {
+                match self.remove(&pkg).await {
+                    Ok(()) => tracing::info!("{pkg} is blocked; account {} no longer has it", self.account),
+                    Err(e) => failed = Some(e),
+                }
+            }
+        }
+        for id in stores {
+            self.remove_store(id).await?;
+            tracing::info!("store {id} is blocked; account {} no longer has it", self.account);
+        }
+        failed.map_or(Ok(()), Err)
+    }
+
     /// Takes this account's extensions out of the host, where no other account has them.
     /// For an account that is being removed.
     pub async fn remove_all(&self) {
@@ -836,6 +898,10 @@ impl Stores {
 
 fn no_store() -> AppError {
     AppError::new(404, "unknown_store", "No such store")
+}
+
+fn blocked_store() -> AppError {
+    AppError::new(403, "blocked", "The operator of this server has blocked this store.")
 }
 
 fn not_a_store() -> AppError {

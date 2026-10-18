@@ -69,14 +69,25 @@ pub struct Downloads {
     db: Db,
     images: Images,
     dir: PathBuf,
+    data_dir: PathBuf,
+    /// A chapter is not fetched while the disk has less than this free, in bytes. 0: always.
+    keep_free: u64,
     wake: Arc<Notify>,
     /// The chapter being fetched: its id, pages done, pages in all.
     progress: Arc<StdMutex<Option<(i64, i64, i64)>>>,
 }
 
 impl Downloads {
-    pub fn new(db: Db, images: Images, data_dir: &Path) -> Self {
-        Self { db, images, dir: data_dir.join("downloads"), wake: Arc::default(), progress: Arc::default() }
+    pub fn new(db: Db, images: Images, data_dir: &Path, keep_free_mb: u64) -> Self {
+        Self {
+            db,
+            images,
+            dir: data_dir.join("downloads"),
+            data_dir: data_dir.to_owned(),
+            keep_free: keep_free_mb << 20,
+            wake: Arc::default(),
+            progress: Arc::default(),
+        }
     }
 
     /// Adds chapters to the end of the queue. Ones already saved or queued are skipped.
@@ -225,6 +236,11 @@ impl Downloads {
 
     /// Fetches a chapter and writes its CBZ. None when it was cancelled or paused part way.
     async fn save(&self, job: &Job) -> Result<Option<(String, i64)>> {
+        // A disk that fills up takes the database's next write with it.
+        if self.keep_free > 0 && free_space(&self.data_dir).is_some_and(|free| free < self.keep_free) {
+            let why = format!("Less than {} MB is free on the disk. Delete some downloads to make room.", self.keep_free >> 20);
+            return Err(AppError::new(507, "disk_full", why));
+        }
         let total = self.images.page_count(job.chapter).await?;
         let relative = self.place(job);
         let file = self.dir.join(&relative);
@@ -431,6 +447,24 @@ fn record(conn: &Connection, chapter: i64, attempts: i64, outcome: Result<Option
         }
     }
     Ok(())
+}
+
+/// Bytes the disk that holds `dir` has free for Mango. None where that is not known.
+#[cfg(unix)]
+fn free_space(dir: &Path) -> Option<u64> {
+    use std::os::unix::ffi::OsStrExt;
+    let path = std::ffi::CString::new(dir.as_os_str().as_bytes()).ok()?;
+    // SAFETY: statvfs fills the struct it is given, which is plain numbers, and reads a
+    // path that lives until it returns.
+    let mut seen: libc::statvfs = unsafe { std::mem::zeroed() };
+    let done = unsafe { libc::statvfs(path.as_ptr(), &mut seen) };
+    #[allow(clippy::unnecessary_cast)]
+    (done == 0).then(|| seen.f_bavail as u64 * seen.f_frsize as u64)
+}
+
+#[cfg(not(unix))]
+fn free_space(_: &Path) -> Option<u64> {
+    None
 }
 
 /// A name that is safe as a file or folder on Linux, macOS and Windows.
