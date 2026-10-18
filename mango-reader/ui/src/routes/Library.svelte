@@ -6,7 +6,7 @@
   import Notice from '../lib/Notice.svelte';
   import { pref, prefs, setPref } from '../lib/prefs.svelte';
   import TitleCard from '../lib/TitleCard.svelte';
-  import { startTour, tour } from '../lib/tour.svelte';
+  import { startTour, tour } from '../lib/guide.svelte';
 
   type Sort = 'lastRead' | 'latest' | 'unread' | 'title' | 'added';
   type View = { layout: 'grid' | 'list'; sort: Sort; down: boolean; unread: boolean; downloaded: boolean; completed: boolean };

@@ -8,7 +8,7 @@
   import ReaderPrefs from '../lib/ReaderPrefs.svelte';
   import { route } from '../lib/router.svelte';
   import { session, signOut } from '../lib/session.svelte';
-  import { againTour } from '../lib/tour.svelte';
+  import { againTour } from '../lib/guide.svelte';
   import { ago } from '../lib/util';
   import { checkVersion, version as about } from '../lib/version.svelte';
   import { activeName, contrast, isHex, palette, PRESETS, saveTheme, sound, SPOTS, theme, type Theme } from '../lib/theme.svelte';
