@@ -90,6 +90,11 @@ impl Downloads {
         }
     }
 
+    /// The folder chapters are saved in.
+    pub fn dir(&self) -> &Path {
+        &self.dir
+    }
+
     /// Adds chapters to the end of the queue. Ones already saved or queued are skipped.
     pub async fn enqueue(&self, chapters: Vec<i64>) -> Result<usize> {
         let added = self.db.call(move |conn| add(conn, &chapters)).await?;
@@ -468,7 +473,7 @@ fn free_space(_: &Path) -> Option<u64> {
 }
 
 /// A name that is safe as a file or folder on Linux, macOS and Windows.
-fn clean(name: &str) -> String {
+pub(crate) fn clean(name: &str) -> String {
     let safe: String = name.chars().map(|c| if c.is_control() || "<>:\"/\\|?*".contains(c) { '_' } else { c }).collect();
     let safe: String = safe.trim().trim_end_matches('.').trim().chars().take(120).collect();
     let reserved = ["CON", "PRN", "AUX", "NUL"].iter().any(|word| safe.eq_ignore_ascii_case(word));
@@ -491,11 +496,12 @@ pub(crate) fn extension(content_type: &str) -> &'static str {
     }
 }
 
+pub(crate) fn escape(text: &str) -> String {
+    text.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;").replace('"', "&quot;")
+}
+
 /// The ComicInfo.xml other readers look for inside a CBZ.
 fn comic_info(job: &Job, pages: i64) -> String {
-    fn escape(text: &str) -> String {
-        text.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;").replace('"', "&quot;")
-    }
     let mut xml = String::from("<?xml version=\"1.0\" encoding=\"utf-8\"?>\n<ComicInfo>\n");
     let mut field = |tag: &str, value: Option<&str>| {
         if let Some(value) = value.map(str::trim).filter(|v| !v.is_empty()) {

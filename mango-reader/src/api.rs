@@ -8,7 +8,7 @@ use crate::{
     updates::{Status, Updates, UpdatesView},
     version::{self, Releases},
     error::{AppError, Result},
-    export,
+    export, files,
     host::{Host, Solver},
     images::{Image, Images},
     import::{self, Importer, Preview},
@@ -132,6 +132,8 @@ pub fn router(state: Spaces) -> Router {
         .route("/import",get(import_status).post(start_import).layer(DefaultBodyLimit::max(import::MAX_UPLOAD)))
         .route("/import/preview", post(preview_import).layer(DefaultBodyLimit::max(import::MAX_UPLOAD)))
         .route("/export", get(export_library))
+        .route("/export/files", get(export_files))
+        .route("/export/files/size", get(files_size))
         .route("/trackers", get(list_trackers))
         .route("/trackers/{id}/authorize", post(authorize_tracker))
         .route("/trackers/{id}/login", post(login_tracker).delete(logout_tracker))
@@ -803,6 +805,24 @@ async fn export_library(Me(app): Me) -> Result<Response> {
         (header::CACHE_CONTROL, "no-store".to_owned()),
     ];
     Ok((headers, file).into_response())
+}
+
+/// Every downloaded chapter as one zip, laid out as a local source reads it.
+async fn export_files(Me(app): Me) -> Result<Response> {
+    let titles = files::plan(&app.db, &app.images, app.downloads.dir()).await?;
+    if titles.is_empty() {
+        return Err(AppError::new(404, "nothing_downloaded", "No chapter is downloaded, so there are no files to export."));
+    }
+    let headers = [
+        (header::CONTENT_TYPE, "application/zip".to_owned()),
+        (header::CONTENT_DISPOSITION, format!("attachment; filename=\"{}\"", files::file_name())),
+        (header::CACHE_CONTROL, "no-store".to_owned()),
+    ];
+    Ok((headers, files::send(titles)).into_response())
+}
+
+async fn files_size(Me(app): Me) -> Result<Json<files::Size>> {
+    Ok(Json(files::size(&files::plan(&app.db, &app.images, app.downloads.dir()).await?)))
 }
 
 // ---------- trackers ----------
