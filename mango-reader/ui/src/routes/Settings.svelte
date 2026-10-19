@@ -913,7 +913,7 @@
                 <strong>Your account</strong>
                 <span>Your plan, the room your downloads take, billing and your email are kept on your account page.</span>
               </div>
-              <div class="how"><a class="btn spot" href={session.account} target="_blank" rel="noopener">Open your account</a></div>
+              <div class="how"><a class="btn spot" href={session.account}>Manage your account</a></div>
             </div>
           </section>
         {/if}

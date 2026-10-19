@@ -13,7 +13,7 @@ A short tour for a new account, and a picture of the reader's tap zones. All of 
 
 ## For whoever runs Mango for others
 
-`MANGO_ACCOUNT_URL` (feature 09) names the page where a reader's plan and billing are kept. When it is set, `GET /api/auth` returns it as `account` to a signed-in caller, the tour gains a card about the account, and Settings → Account shows a link to it. Unset, which is the default, nothing about accounts, plans or billing appears anywhere in Mango: it has no plans or limits of its own.
+`MANGO_ACCOUNT_URL` (feature 09) names the page where a reader's plan and billing are kept. When it is set, `GET /api/auth` returns it as `account` to a signed-in caller, the tour gains a card about the account, the top bar gains an account button beside Settings, and Settings → Account shows a link to it. Unset, which is the default, nothing about accounts, plans or billing appears anywhere in Mango: it has no plans or limits of its own.
 
 ## Checked
 
