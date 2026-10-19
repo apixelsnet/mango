@@ -36,17 +36,6 @@
   color-scheme: light;
 }
 
-/* Before the script has run, follow the system. */
-@media (prefers-color-scheme: dark) {
-  :root:not([data-themed]) {
-    --paper: #151513;
-    --ink: #f1f1ec;
-    --surface: #232320;
-    --bar: #151513;
-    color-scheme: dark;
-  }
-}
-
 /* Small covers go three across a phone, the others two. */
 :root[data-covers='small'] {
   --cover: 108px;
