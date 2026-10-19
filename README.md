@@ -21,6 +21,13 @@
 <!-- PROJECT TITLE -->
 <br />
 <div align="center">
+  <a href="https://github.com/apixelsnet/mango">
+    <picture>
+      <source media="(prefers-color-scheme: dark)" srcset="docs/images/logo-dark.svg" />
+      <img src="docs/images/logo.svg" alt="Mango logo" width="96" height="96" />
+    </picture>
+  </a>
+
   <h1 align="center">Mango</h1>
 
   <p align="center">
@@ -99,8 +106,8 @@ extension is used and stops when it has been idle for a while.
 
 | | Measured, Linux x86_64 |
 |---|---|
-| Binary | 11 MB |
-| Docker image, unpacked | 359 MB |
+| Binary | 13 MB |
+| Docker image, unpacked | 368 MB (185 MB to pull) |
 | Memory, extension host asleep | 10 to 22 MB |
 | Memory, extension host awake | about 180 MB |
 
@@ -118,8 +125,10 @@ it does, how it was built, and what was and was not tried.
 * **Reader.** Paged left-to-right and right-to-left, vertical, and webtoon long
   strip. Keyboard, touch and wheel. It resumes at the page you left.
 * **Library and history.** Categories, unread counts, and what you read last.
+  A title's chapters can be sorted, filtered and bookmarked.
 * **Updates and downloads.** New chapters are found on a schedule. Chapters save
-  as CBZ and read with no network.
+  as CBZ and read with no network, and leave again as one zip that Mihon,
+  Suwayomi or Mango reads as a local source.
 * **Local source.** A folder of CBZ files or image folders, read without Java.
 * **Import and export.** A Mihon or Suwayomi backup (`.tachibk`) brings your
   library, read state and history across, and Mango writes one they read.
@@ -127,7 +136,12 @@ it does, how it was built, and what was and was not tried.
   read.
 * **Migration.** Move a title to another source and keep your progress,
   categories and tracker links.
-* **Themes.** Six presets, six accent colours, or your own colours.
+* **Themes.** Day by default, or Night, or whatever the system says. Six
+  presets, six accent colours, or your own colours.
+* **Phones.** Tabs along the bottom on a narrow screen, and it can be added to
+  a home screen as an app.
+* **Tour.** A new account is walked through the app once, and the reader shows
+  where a tap goes.
 * **Accounts.** A password is asked for by default. More accounts can be added,
   each with stores, extensions, a library, reading progress, downloads and
   settings of its own.
