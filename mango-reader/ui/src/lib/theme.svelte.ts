@@ -36,7 +36,8 @@ export const SPOTS: Record<string, string> = {
 };
 
 export const DEFAULT_THEME: Theme = {
-  follow: 'system',
+  // Day until the reader picks otherwise; System and Night are a choice in Settings.
+  follow: 'light',
   light: 'Paper',
   dark: 'Midnight',
   spot: '#FFC400',
@@ -79,7 +80,7 @@ export function sound(raw: unknown): Theme {
   const t = { ...DEFAULT_THEME, ...(raw && typeof raw === 'object' ? (raw as Partial<Theme>) : {}) };
   const known = (name: unknown) => name === 'Custom' || (typeof name === 'string' && name in PRESETS);
   return {
-    follow: t.follow === 'light' || t.follow === 'dark' ? t.follow : 'system',
+    follow: t.follow === 'system' || t.follow === 'dark' ? t.follow : 'light',
     light: known(t.light) ? t.light : DEFAULT_THEME.light,
     dark: known(t.dark) ? t.dark : DEFAULT_THEME.dark,
     spot: isHex(t.spot) ? t.spot : DEFAULT_THEME.spot,

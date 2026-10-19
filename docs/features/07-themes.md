@@ -40,7 +40,7 @@ Spot colours: Mango `#FFC400`, Tangerine `#FF8A1F`, Guava `#FF6B8B`, Mint `#6EE7
 ## MVP
 
 - The six presets, the six spot colours, custom colours with the contrast check.
-- Follow the system light/dark setting, with one preset assigned to each.
+- Day, Night, or follow the system's light/dark setting, with one preset assigned to each. Day is the default, the first paint included; a reader who picked System or Night keeps it.
 - Toggles: hard shadows, halftone dots.
 - A theme is a small JSON object; import and export.
 
