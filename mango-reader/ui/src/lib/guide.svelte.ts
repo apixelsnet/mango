@@ -3,9 +3,11 @@
 
 import { setPref } from './prefs.svelte';
 
-export const tour = $state({ open: false });
+// The step is kept here, not in the card, as each step opens the screen it is about.
+export const tour = $state({ open: false, step: 0 });
 
 export function startTour() {
+  tour.step = 0;
   tour.open = true;
 }
 

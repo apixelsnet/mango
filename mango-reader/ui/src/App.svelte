@@ -178,7 +178,7 @@
   </div>
 {/if}
 
-{#if tour.open && session.signedIn}
+{#if tour.open && session.signedIn && area !== 'read'}
   <Tour />
 {/if}
 
