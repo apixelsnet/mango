@@ -112,6 +112,10 @@
             {/each}
           </nav>
         {/if}
+        <!-- Only where whoever runs this Mango keeps accounts: plan, billing and email live on their page. -->
+        {#if session.account}
+          <a class="btn icon account" href={session.account} aria-label="Your account: plan, billing and email" title="Your account"><Icon name="user" /></a>
+        {/if}
         <a class="btn icon settings" href="#/settings" aria-label={news ? 'Settings: a newer Mango is out' : 'Settings'} aria-current={area === 'settings' ? 'page' : undefined}>
           <Icon name="sliders" />
           {#if news}<span class="news" aria-hidden="true"></span>{/if}
@@ -266,6 +270,15 @@
   .settings {
     position: relative;
     margin-left: auto;
+  }
+
+  /* With the account's button there, it takes the push to the right, and settings sits beside it. */
+  .account {
+    margin-left: auto;
+  }
+
+  .account + .settings {
+    margin-left: 0;
   }
 
   .news {
