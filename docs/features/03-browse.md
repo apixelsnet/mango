@@ -25,6 +25,7 @@ Code: `mango-reader/src/titles.rs`, `images.rs`; UI in `mango-reader/ui/src/rout
 - Global search asks each source on its own, five at a time, with a 30 s limit each. It covers pinned sources if there are any, else the sources in the languages picked on Browse, and at most 20. It starts from the field at the top of Browse, and its results carry the field for another try. Until 2026-10-13 the field was in the header of every screen, where it stood beside the library's own and was taken for it.
 - The source list keeps to English until other languages are picked, or to every language when no source is English. The language pills sit behind a small button in the page head; "All" lifts the limit.
 - Covers and pages go through the host and are kept on disk. Only what is recognisably an image is passed on to the browser.
+- A JPEG cover over 256 KB is decoded at a half, quarter or eighth of its size (no smaller than 600×900) and saved again before it is kept or sent, one at a time; some sources hand out 10 to 20 MB scans. Other formats, progressive JPEGs over 16 MP and covers with an EXIF turn are left as they came.
 - Checked on Linux and Windows by `smoke.py` (popular 0.3 to 0.7 s, title with chapters 0.9 s, cover 0.1 to 0.3 s) and by hand in a browser.
 
 Not built:

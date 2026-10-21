@@ -29,6 +29,8 @@ cms = "0.2"
 der = { version = "0.7", features = ["oid", "std"] }
 base64 = "0.22"
 hex = "0.4"
+jpeg-decoder = { version = "0.3", default-features = false }
+jpeg-encoder = "0.7"
 getrandom = "0.2"
 tracing = "0.1"
 tracing-subscriber = "0.3"
