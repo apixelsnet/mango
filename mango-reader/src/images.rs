@@ -21,16 +21,30 @@ use std::{
     fs,
     io::Read,
     path::{Path, PathBuf},
-    sync::{Arc, Mutex as StdMutex},
+    sync::{
+        atomic::{AtomicU64, Ordering},
+        Arc, Mutex as StdMutex,
+    },
     time::{Duration, Instant, SystemTime},
 };
-use tokio::sync::{Mutex, OwnedMutexGuard};
+use tokio::sync::{Mutex, Notify, OwnedMutexGuard};
 
 /// How long a chapter's page list is trusted. Sources sign page addresses that expire.
 const LIST_TTL: Duration = Duration::from_secs(600);
 /// A failed page asks for a new list only when the one at hand is at least this old.
 const LIST_RETRY_AGE: Duration = Duration::from_secs(30);
 const SWEEP_EVERY: Duration = Duration::from_secs(600);
+/// A JPEG cover bigger than this is made smaller before it is kept or sent. Some sources
+/// hand out the scan itself, tens of megabytes, for a picture shown a few hundred pixels wide.
+const SHRINK_FROM: usize = 256 << 10;
+/// The smallest a shrunk cover may come out, in pixels. Decoding only scales by halves,
+/// so it lands between this and twice it.
+const COVER_BOX: (u16, u16) = (600, 900);
+/// A progressive JPEG is held whole while it is decoded, about 7 bytes a pixel, so a
+/// bigger one is left as it came.
+const PROGRESSIVE_MAX_PIXELS: u32 = 16_000_000;
+/// Covers are shrunk one at a time in the whole process, so a page of them cannot add up.
+static SHRINKING: StdMutex<()> = StdMutex::new(());
 
 pub struct Image {
     pub bytes: Vec<u8>,
@@ -87,6 +101,9 @@ pub struct Images {
     covers: PathBuf,
     downloads: PathBuf,
     max_bytes: u64,
+    /// Bytes put in the cache since the last sweep, and the call for an early one.
+    written: Arc<AtomicU64>,
+    early: Arc<Notify>,
     lists: Arc<StdMutex<HashMap<i64, PageList>>>,
     locks: KeyedLock,
 }
@@ -101,6 +118,8 @@ impl Images {
             covers: data_dir.join("covers"),
             downloads: data_dir.join("downloads"),
             max_bytes: cache_mb.saturating_mul(1 << 20),
+            written: Arc::default(),
+            early: Arc::default(),
             lists: Arc::default(),
             locks: KeyedLock::default(),
         }
@@ -140,13 +159,31 @@ impl Images {
                 (self.host.bytes(&format!("/sources/{source}/image"), &json!({ "cover": url }), opts).await?, true)
             }
         };
-        let image = Image::checked(bytes)?;
+        let mut image = Image::checked(bytes)?;
+        if fetched || in_library {
+            let bytes = std::mem::take(&mut image.bytes);
+            image = Image::checked(tokio::task::spawn_blocking(move || shrink(bytes)).await.map_err(|_| AppError::internal("Could not read the cover"))?)?;
+        }
         if in_library {
             write(kept, image.bytes.clone()).await;
         } else if fetched {
-            write(cached, image.bytes.clone()).await;
+            self.stash(cached, image.bytes.clone()).await;
         }
         Ok(image)
+    }
+
+    /// Puts a file in the cache. One bigger than an eighth of the cap is only passed on,
+    /// as it would push out most of the rest. A tenth of the cap put in since the last
+    /// sweep calls the next one early, so a fast browse cannot run far past the cap.
+    async fn stash(&self, path: PathBuf, bytes: Vec<u8>) {
+        let size = bytes.len() as u64;
+        if size > self.max_bytes / 8 {
+            return;
+        }
+        write(path, bytes).await;
+        if self.written.fetch_add(size, Ordering::Relaxed) + size > self.max_bytes / 10 {
+            self.early.notify_one();
+        }
     }
 
     /// Where a library title's cover is kept once it was shown.
@@ -211,7 +248,7 @@ impl Images {
             let fetched = self.host.bytes(&format!("/sources/{source}/image"), &json!({ "page": page }), opts).await.and_then(Image::checked);
             match fetched {
                 Ok(image) => {
-                    write(file, image.bytes.clone()).await;
+                    self.stash(file, image.bytes.clone()).await;
                     return Ok(image);
                 }
                 // The addresses in an old list may have run out; ask for new ones once.
@@ -295,14 +332,73 @@ impl Images {
         Ok((source, pages, true))
     }
 
-    /// Keeps the cache under its cap. Never returns.
+    /// Keeps the cache under its cap: every ten minutes, and sooner when much was put in. Never returns.
     pub async fn sweep_forever(self) {
         loop {
+            self.written.store(0, Ordering::Relaxed);
             let (dir, max) = (self.cache.clone(), self.max_bytes);
             let _ = tokio::task::spawn_blocking(move || sweep(&dir, max)).await;
-            tokio::time::sleep(SWEEP_EVERY).await;
+            tokio::select! {
+                _ = tokio::time::sleep(SWEEP_EVERY) => {}
+                _ = self.early.notified() => {}
+            }
         }
     }
+}
+
+/// A big JPEG cover decoded at a fraction of its size and saved again. Anything else,
+/// or anything that goes wrong, comes back as it was.
+fn shrink(bytes: Vec<u8>) -> Vec<u8> {
+    if bytes.len() < SHRINK_FROM || sniff(&bytes) != Some("image/jpeg") {
+        return bytes;
+    }
+    let smaller = (|| {
+        let _one = SHRINKING.lock().unwrap_or_else(|e| e.into_inner());
+        let mut decoder = jpeg_decoder::Decoder::new(bytes.as_slice());
+        decoder.read_info().ok()?;
+        let info = decoder.info()?;
+        if info.coding_process == jpeg_decoder::CodingProcess::DctProgressive
+            && u32::from(info.width) * u32::from(info.height) > PROGRESSIVE_MAX_PIXELS
+        {
+            return None;
+        }
+        // The browser turns the picture by its EXIF orientation; a new file would lose it.
+        if decoder.exif_data().is_some_and(|exif| turned(exif)) {
+            return None;
+        }
+        let (width, height) = decoder.scale(COVER_BOX.0, COVER_BOX.1).ok()?;
+        if (width, height) == (info.width, info.height) {
+            return None;
+        }
+        let pixels = decoder.decode().ok()?;
+        let color = match decoder.info()?.pixel_format {
+            jpeg_decoder::PixelFormat::RGB24 => jpeg_encoder::ColorType::Rgb,
+            jpeg_decoder::PixelFormat::L8 => jpeg_encoder::ColorType::Luma,
+            _ => return None,
+        };
+        let mut out = Vec::new();
+        jpeg_encoder::Encoder::new(&mut out, 85).encode(&pixels, width, height, color).ok()?;
+        Some(out)
+    })();
+    match smaller {
+        Some(out) if out.len() < bytes.len() => out,
+        _ => bytes,
+    }
+}
+
+/// Whether EXIF data says the picture is to be shown turned or mirrored.
+fn turned(exif: &[u8]) -> bool {
+    let tiff = exif.strip_prefix(b"Exif\0\0").unwrap_or(exif);
+    let big = match tiff.get(..2) {
+        Some(b"MM") => true,
+        Some(b"II") => false,
+        _ => return false,
+    };
+    let u16_at = |at: usize| tiff.get(at..at + 2).map(|b| if big { u16::from_be_bytes([b[0], b[1]]) } else { u16::from_le_bytes([b[0], b[1]]) });
+    let u32_at = |at: usize| tiff.get(at..at + 4).map(|b| if big { u32::from_be_bytes([b[0], b[1], b[2], b[3]]) } else { u32::from_le_bytes([b[0], b[1], b[2], b[3]]) });
+    let Some(ifd) = u32_at(4).map(|at| at as usize) else { return false };
+    let count = u16_at(ifd).unwrap_or(0) as usize;
+    (0..count).map(|i| ifd + 2 + i * 12).any(|entry| u16_at(entry) == Some(0x0112) && u16_at(entry + 8).is_some_and(|value| value > 1))
 }
 
 /// One page out of a CBZ. Pages are its entries in name order; ComicInfo.xml is not one.
@@ -409,6 +505,43 @@ mod tests {
         assert_eq!(sniff(b"<!doctype html><script>"), None);
         assert_eq!(sniff(b"<svg xmlns='http://www.w3.org/2000/svg'>"), None);
         assert!(Image::checked(b"<html>blocked</html>".to_vec()).is_err());
+    }
+
+    #[test]
+    fn big_covers_come_back_smaller() {
+        let (width, height) = (2400u16, 3600u16);
+        let mut seed = 1u32;
+        let pixels: Vec<u8> = (0..width as usize * height as usize * 3)
+            .map(|_| {
+                seed = seed.wrapping_mul(1_103_515_245).wrapping_add(12345);
+                (seed >> 24) as u8
+            })
+            .collect();
+        let mut big = Vec::new();
+        jpeg_encoder::Encoder::new(&mut big, 95).encode(&pixels, width, height, jpeg_encoder::ColorType::Rgb).unwrap();
+        assert!(big.len() > SHRINK_FROM);
+        let small = shrink(big.clone());
+        assert!(small.len() < big.len() / 4, "{} from {}", small.len(), big.len());
+        let mut decoder = jpeg_decoder::Decoder::new(small.as_slice());
+        decoder.read_info().unwrap();
+        let info = decoder.info().unwrap();
+        assert!((COVER_BOX.0..COVER_BOX.0 * 2).contains(&info.width) && (COVER_BOX.1..COVER_BOX.1 * 2).contains(&info.height));
+
+        let png = [b"\x89PNG\r\n\x1a\n".as_slice(), &vec![0u8; SHRINK_FROM]].concat();
+        assert_eq!(shrink(png.clone()), png, "only JPEGs are shrunk");
+        assert_eq!(shrink(b"\xFF\xD8\xFFnot really".to_vec()), b"\xFF\xD8\xFFnot really", "a broken one is left alone");
+    }
+
+    #[test]
+    fn reads_the_exif_orientation() {
+        let exif = |big: bool, value: u16| {
+            let (order, two, four): (&[u8], fn(u16) -> [u8; 2], fn(u32) -> [u8; 4]) =
+                if big { (b"MM", u16::to_be_bytes, u32::to_be_bytes) } else { (b"II", u16::to_le_bytes, u32::to_le_bytes) };
+            [b"Exif\0\0".as_slice(), order, &two(42), &four(8), &two(1), &two(0x0112), &two(3), &four(1), &two(value), &[0, 0]].concat()
+        };
+        assert!(turned(&exif(true, 6)) && turned(&exif(false, 3)));
+        assert!(!turned(&exif(true, 1)) && !turned(&exif(false, 1)));
+        assert!(!turned(b"Exif\0\0junk"));
     }
 
     #[test]

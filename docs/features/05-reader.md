@@ -27,7 +27,7 @@ Code: `mango-reader/ui/src/routes/Reader.svelte`; pages come from `mango-reader/
 - A chapter opened before shows its first page without asking the source: the page count is in the database and the pages are on disk. Otherwise the page list is the only thing the first page waits for.
 - The next three pages are fetched ahead, and near the end the first two of the next chapter.
 - Webtoon mode keeps only the images near the screen in the document; each page keeps its height once seen.
-- Page cache: `<data>/cache`, 1 GB by default (`cache_mb`), least recently used goes first.
+- Page cache: `<data>/cache`, 1 GB by default (`cache_mb`), least recently used goes first. It is swept every ten minutes, and at once when a tenth of the cap went in since the last sweep. A single image over an eighth of the cap is sent but not kept.
 
 Checked in a browser against real sources: a 37-page chapter paged with keys and slider; an 82-image strip scrolled end to end at phone size with at most 12 images in the document and no slow frame; a reload came back to the same page; the chapter was marked read at the end. Page times: 0.3 s for the list, 0.3 to 0.5 s for a 3 MB page, 5 ms once cached.
 
