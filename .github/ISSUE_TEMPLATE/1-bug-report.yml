@@ -1,0 +1,137 @@
+name: Bug report
+description: Something in Mango does not work the way it should.
+title: "[Bug]: "
+labels: ["bug", "status: needs triage"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for taking the time to report this. The more of this form is filled
+        in, the sooner the problem can be found.
+
+        A source that is broken in Mihon as well is a problem for that extension's
+        maker, not Mango. A source that works in Mihon but not here goes in an
+        **Extension problem** instead.
+
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Before opening
+      options:
+        - label: I searched the [open and closed issues](https://github.com/apixelsnet/mango/issues?q=is%3Aissue) and this has not been reported.
+          required: true
+        - label: I am on the [newest release](https://github.com/apixelsnet/mango/releases/latest), or this happens on it too.
+          required: true
+        - label: This is not a security problem. Those go through [SECURITY.md](https://github.com/apixelsnet/mango/blob/main/SECURITY.md).
+          required: true
+
+  - type: textarea
+    id: description
+    attributes:
+      label: What happened
+      description: A clear and short description of the bug.
+      placeholder: Opening a chapter from History shows a blank page.
+    validations:
+      required: true
+
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      description: The smallest set of steps that shows the problem.
+      placeholder: |
+        1. Open Library
+        2. Pick a title
+        3. Tap the newest chapter
+        4. See the error
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: What you expected
+    validations:
+      required: true
+
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      description: Which part of Mango is it in? Pick every one that applies.
+      multiple: true
+      options:
+        - Reader
+        - Library
+        - Browse and search
+        - Extensions and stores
+        - Updates and downloads
+        - Local source
+        - Import and export
+        - Trackers
+        - Migration
+        - OPDS
+        - Accounts and login
+        - Settings and themes
+        - Phones
+        - Desktop shell
+        - Install and Docker
+        - Other
+    validations:
+      required: true
+
+  - type: input
+    id: version
+    attributes:
+      label: Mango version
+      description: Settings, About, or `mango version`.
+      placeholder: v1.4.2
+    validations:
+      required: true
+
+  - type: dropdown
+    id: install
+    attributes:
+      label: How Mango was installed
+      options:
+        - Docker, published image (ghcr.io/apixelsnet/mango)
+        - Docker, full image (ghcr.io/apixelsnet/mango:full)
+        - Docker, built from a checkout
+        - Release archive
+        - Desktop shell (mango-desktop)
+        - Built by hand
+        - The hosted demo (mangoreader.org)
+    validations:
+      required: true
+
+  - type: input
+    id: platform
+    attributes:
+      label: Operating system
+      description: Of the machine Mango runs on.
+      placeholder: Ubuntu 24.04 x86_64, Windows 11, macOS 15 (arm64)
+    validations:
+      required: true
+
+  - type: input
+    id: client
+    attributes:
+      label: Browser or reading app
+      description: What you read with, and on what device.
+      placeholder: Firefox 131 on desktop, Safari on iPhone, KOReader over OPDS
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs
+      description: |
+        Mango's output around the time it happened (`docker compose logs mango`, or
+        the terminal it runs in). Take out passwords, tokens and addresses you
+        would rather not share. This is formatted as code on its own.
+      render: shell
+
+  - type: textarea
+    id: extra
+    attributes:
+      label: Screenshots and anything else
+      description: Pictures, a screen recording, or whatever else helps. Drag files here.

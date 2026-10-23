@@ -1,0 +1,116 @@
+name: Extension problem
+description: A source works in Mihon but not in Mango, or an extension will not install or update.
+title: "[Extension]: "
+labels: ["bug", "area: extensions", "status: needs triage"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Mango runs Mihon extensions unchanged, so a source that works in Mihon
+        should work here. If it is broken in Mihon too, the extension's maker is
+        the one to tell: Mango does not make or fix extensions.
+
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Before opening
+      options:
+        - label: I searched the [open and closed issues](https://github.com/apixelsnet/mango/issues?q=is%3Aissue+label%3A%22area%3A+extensions%22) and this has not been reported.
+          required: true
+        - label: I am on the [newest release](https://github.com/apixelsnet/mango/releases/latest) of Mango and the newest version of the extension.
+          required: true
+
+  - type: dropdown
+    id: mihon
+    attributes:
+      label: Does the same source work in Mihon?
+      options:
+        - Yes, it works in Mihon
+        - No, it is broken in Mihon too
+        - I have not tried
+    validations:
+      required: true
+
+  - type: input
+    id: extension
+    attributes:
+      label: Extension and version
+      placeholder: "Example Source (EN) 1.4.12"
+    validations:
+      required: true
+
+  - type: input
+    id: store
+    attributes:
+      label: Store
+      description: The address of the store it came from, if you may share it.
+
+  - type: dropdown
+    id: stage
+    attributes:
+      label: Where it fails
+      options:
+        - Adding the store
+        - Installing or updating the extension
+        - Popular or latest list
+        - Search
+        - Title details or chapter list
+        - Loading pages
+        - Something else
+    validations:
+      required: true
+
+  - type: dropdown
+    id: helpers
+    attributes:
+      label: Web view or Cloudflare
+      description: Does the source need either of these?
+      options:
+        - Neither, as far as I know
+        - It opens a web view
+        - It sits behind a Cloudflare check, with FlareSolverr set up
+        - It sits behind a Cloudflare check, without FlareSolverr
+        - I do not know
+    validations:
+      required: true
+
+  - type: textarea
+    id: description
+    attributes:
+      label: What happened
+      description: The error Mango shows, and what you did to get there.
+    validations:
+      required: true
+
+  - type: input
+    id: version
+    attributes:
+      label: Mango version
+      description: Settings, About, or `mango version`.
+      placeholder: v1.4.2
+    validations:
+      required: true
+
+  - type: dropdown
+    id: install
+    attributes:
+      label: How Mango was installed
+      options:
+        - Docker, published image (ghcr.io/apixelsnet/mango)
+        - Docker, full image (ghcr.io/apixelsnet/mango:full)
+        - Docker, built from a checkout
+        - Release archive
+        - Desktop shell (mango-desktop)
+        - Built by hand
+        - The hosted demo (mangoreader.org)
+    validations:
+      required: true
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs
+      description: |
+        Mango's output while the source fails. The extension host writes there too.
+        Take out passwords, tokens and addresses you would rather not share.
+      render: shell

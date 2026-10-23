@@ -1,0 +1,13 @@
+# Every issue starts from one of the forms in this folder. The links below are
+# for what does not belong in a public issue.
+blank_issues_enabled: false
+contact_links:
+  - name: Security vulnerability
+    url: https://github.com/apixelsnet/mango/security/advisories/new
+    about: Report it privately, not in a public issue. SECURITY.md says what counts.
+  - name: Feature documentation
+    url: https://github.com/apixelsnet/mango/tree/main/docs/features
+    about: What each feature does, how it was built, and what was and was not tried.
+  - name: Try the live demo
+    url: https://mangoreader.org
+    about: Check whether something happens on the hosted Mango as well.

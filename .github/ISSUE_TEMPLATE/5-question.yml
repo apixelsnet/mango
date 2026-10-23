@@ -1,0 +1,40 @@
+name: Question
+description: Ask how to do something with Mango, when the README and docs do not say.
+title: "[Question]: "
+labels: ["question"]
+body:
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Before opening
+      options:
+        - label: I read the [README](https://github.com/apixelsnet/mango#readme) and searched the [issues](https://github.com/apixelsnet/mango/issues?q=is%3Aissue).
+          required: true
+
+  - type: textarea
+    id: question
+    attributes:
+      label: Your question
+      description: What you are trying to do, and what you have tried.
+    validations:
+      required: true
+
+  - type: input
+    id: version
+    attributes:
+      label: Mango version
+      description: Settings, About, or `mango version`, if it matters.
+
+  - type: dropdown
+    id: install
+    attributes:
+      label: How Mango was installed
+      options:
+        - Docker, published image (ghcr.io/apixelsnet/mango)
+        - Docker, full image (ghcr.io/apixelsnet/mango:full)
+        - Docker, built from a checkout
+        - Release archive
+        - Desktop shell (mango-desktop)
+        - Built by hand
+        - The hosted demo (mangoreader.org)
+        - Not installed yet
