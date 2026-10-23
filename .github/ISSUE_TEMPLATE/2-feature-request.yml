@@ -1,0 +1,88 @@
+name: Feature request
+description: Suggest something new for Mango, or a change to something it does.
+title: "[Feature]: "
+labels: ["enhancement", "status: needs triage"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for the idea. Mango is built to stay small, so a request is weighed
+        against what it adds to the binary, the memory and the upkeep. Saying what
+        problem it solves helps more than how it should look.
+
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Before opening
+      options:
+        - label: I searched the [open and closed issues](https://github.com/apixelsnet/mango/issues?q=is%3Aissue) and this has not been asked for.
+          required: true
+        - label: I read the [feature docs](https://github.com/apixelsnet/mango/tree/main/docs/features) for this area, including what was already tried.
+          required: true
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: The problem
+      description: What are you trying to do, and what gets in the way today?
+      placeholder: When I catch up on a long series I have to mark every earlier chapter read one by one.
+    validations:
+      required: true
+
+  - type: textarea
+    id: solution
+    attributes:
+      label: What you would like
+      description: How Mango could solve it.
+      placeholder: A "Mark read up to here" action on a chapter's menu.
+    validations:
+      required: true
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+      description: Other ways around it, and how Mihon, Suwayomi or another reader handle it, if you know.
+
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      description: Which part of Mango is it about? Pick every one that applies.
+      multiple: true
+      options:
+        - Reader
+        - Library
+        - Browse and search
+        - Extensions and stores
+        - Updates and downloads
+        - Local source
+        - Import and export
+        - Trackers
+        - Migration
+        - OPDS
+        - Accounts and login
+        - Settings and themes
+        - Phones
+        - Desktop shell
+        - Install and Docker
+        - Other
+    validations:
+      required: true
+
+  - type: dropdown
+    id: contribute
+    attributes:
+      label: Would you work on it?
+      options:
+        - Yes, I would like to open a pull request
+        - Maybe, with some pointers
+        - No
+    validations:
+      required: true
+
+  - type: textarea
+    id: extra
+    attributes:
+      label: Anything else
+      description: Mock-ups, screenshots, links.

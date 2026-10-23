@@ -40,9 +40,9 @@
     &middot;
     <a href="https://github.com/apixelsnet/mango/releases">Releases</a>
     &middot;
-    <a href="https://github.com/apixelsnet/mango/issues/new?labels=bug">Report Bug</a>
+    <a href="https://github.com/apixelsnet/mango/issues/new?template=1-bug-report.yml">Report Bug</a>
     &middot;
-    <a href="https://github.com/apixelsnet/mango/issues/new?labels=enhancement">Request Feature</a>
+    <a href="https://github.com/apixelsnet/mango/issues/new?template=2-feature-request.yml">Request Feature</a>
     &middot;
     <a href="https://ko-fi.com/pixelsthecoder">Support on Ko-fi</a>
   </p>
@@ -377,7 +377,10 @@ folder is left alone either way.
 ## Contributing
 
 If you have a suggestion that would make Mango better, fork the repository and
-open a pull request, or open an issue with the tag "enhancement".
+open a pull request, or [open an issue](https://github.com/apixelsnet/mango/issues/new/choose).
+Issues start from a form (bug report, feature request, extension problem,
+documentation or question) and are labelled by type, status and area. The labels
+are listed in [.github/labels.yml](.github/labels.yml).
 
 1. Fork the Project
 2. Create your Feature Branch (`git checkout -b feature/AmazingFeature`)

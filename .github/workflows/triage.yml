@@ -1,0 +1,70 @@
+name: Triage
+
+# Labels a new issue. The issue forms add their own labels; this adds the area
+# labels picked in a form's Area field, and gives an issue that arrives with no
+# label at all (one opened through the API, say) "status: needs triage".
+
+on:
+  issues:
+    types: [opened]
+
+permissions:
+  issues: write
+
+jobs:
+  label:
+    name: Label the issue
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Add labels
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          NUMBER: ${{ github.event.issue.number }}
+          # The body is the reporter's text: it is only ever read from here, never
+          # put into the script.
+          BODY: ${{ github.event.issue.body }}
+          LABELS: ${{ toJSON(github.event.issue.labels) }}
+        run: |
+          labels=()
+
+          # A form writes each field as "### Label", a blank line, then the answer;
+          # several picks in one dropdown come out joined by ", ".
+          area=$(printf '%s\n' "$BODY" | tr -d '\r' | awk '
+            /^### / { inside = ($0 == "### Area"); next }
+            inside && NF { print; exit }
+          ')
+          IFS=',' read -ra picks <<<"$area"
+          for pick in "${picks[@]}"; do
+            pick=$(sed 's/^ *//; s/ *$//' <<<"$pick")
+            case "$pick" in
+              "Reader")                labels+=("area: reader") ;;
+              "Library")               labels+=("area: library") ;;
+              "Browse and search")     labels+=("area: browse") ;;
+              "Extensions and stores") labels+=("area: extensions") ;;
+              "Updates and downloads") labels+=("area: downloads") ;;
+              "Local source")          labels+=("area: local source") ;;
+              "Import and export")     labels+=("area: import/export") ;;
+              "Trackers")              labels+=("area: trackers") ;;
+              "Migration")             labels+=("area: migration") ;;
+              "OPDS")                  labels+=("area: opds") ;;
+              "Accounts and login")    labels+=("area: accounts") ;;
+              "Settings and themes")   labels+=("area: ui") ;;
+              "Phones")                labels+=("area: mobile") ;;
+              "Desktop shell")         labels+=("area: desktop") ;;
+              "Install and Docker")    labels+=("area: packaging") ;;
+            esac
+          done
+
+          if [ "$(jq length <<<"$LABELS")" -eq 0 ]; then
+            labels+=("status: needs triage")
+          fi
+
+          if [ ${#labels[@]} -eq 0 ]; then
+            echo "nothing to add"
+            exit 0
+          fi
+
+          joined=$(IFS=','; echo "${labels[*]}")
+          echo "adding: $joined"
+          gh issue edit "$NUMBER" --add-label "$joined"

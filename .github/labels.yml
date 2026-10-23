@@ -1,0 +1,131 @@
+# The repository's labels. The Labels workflow creates each one that is missing
+# and brings the colour and description of the others in line with this file.
+# A label that is not listed here is left alone, so removing one from this file
+# does not delete it.
+
+# What kind of issue it is. The first three are GitHub's own names, kept so old
+# links and issues still match.
+- name: bug
+  color: d73a4a
+  description: Something isn't working
+- name: enhancement
+  color: a2eeef
+  description: New feature or request
+- name: documentation
+  color: 0075ca
+  description: Improvements or additions to the README or docs
+- name: question
+  color: d876e3
+  description: Further information is requested
+- name: security
+  color: b60205
+  description: Hardening or a fix found outside a private report
+- name: dependencies
+  color: 0366d6
+  description: Updates a dependency
+- name: performance
+  color: fbca04
+  description: Size, memory or speed
+
+# Where it stands.
+- name: "status: needs triage"
+  color: ededed
+  description: Not looked at by a maintainer yet
+- name: "status: needs info"
+  color: fef2c0
+  description: Waiting on the reporter for more details
+- name: "status: confirmed"
+  color: 0e8a16
+  description: Reproduced or accepted
+- name: "status: in progress"
+  color: 1d76db
+  description: Someone is working on it
+- name: "status: blocked"
+  color: 5319e7
+  description: Waiting on something else first
+
+# How soon.
+- name: "priority: critical"
+  color: b60205
+  description: Breaks Mango for most people, or loses data
+- name: "priority: high"
+  color: d93f0b
+  description: Should be in the next release
+- name: "priority: medium"
+  color: fbca04
+  description: Will be done when there is time
+- name: "priority: low"
+  color: c2e0c6
+  description: Nice to have
+
+# Which part of Mango. The issue forms set these from their Area field.
+- name: "area: reader"
+  color: bfdadc
+  description: Paged, vertical and webtoon reading
+- name: "area: library"
+  color: bfdadc
+  description: Library, categories and history
+- name: "area: browse"
+  color: bfdadc
+  description: Popular, latest and search across sources
+- name: "area: extensions"
+  color: bfdadc
+  description: Extension host, stores and sources
+- name: "area: downloads"
+  color: bfdadc
+  description: Updates and downloads
+- name: "area: local source"
+  color: bfdadc
+  description: Your own files
+- name: "area: import/export"
+  color: bfdadc
+  description: Mihon and Suwayomi backups
+- name: "area: trackers"
+  color: bfdadc
+  description: AniList, MyAnimeList, Kitsu and MangaUpdates
+- name: "area: migration"
+  color: bfdadc
+  description: Moving a title to another source
+- name: "area: opds"
+  color: bfdadc
+  description: The OPDS catalog for reading apps
+- name: "area: accounts"
+  color: bfdadc
+  description: Passwords, accounts, sign-up and invitations
+- name: "area: ui"
+  color: bfdadc
+  description: Settings, themes and the web UI in general
+- name: "area: mobile"
+  color: bfdadc
+  description: Phones and the home screen app
+- name: "area: desktop"
+  color: bfdadc
+  description: The desktop shell
+- name: "area: packaging"
+  color: bfdadc
+  description: Docker images, release archives and installing
+- name: "area: ci"
+  color: bfdadc
+  description: Workflows and releases
+
+# How it ended, when it did not end in a change.
+- name: duplicate
+  color: cfd3d7
+  description: This issue or pull request already exists
+- name: invalid
+  color: e4e669
+  description: This doesn't seem right
+- name: wontfix
+  color: ffffff
+  description: This will not be worked on
+- name: upstream
+  color: c5def5
+  description: The cause is in an extension, Suwayomi-Server or another project
+
+# For people who want to help.
+- name: good first issue
+  color: 7057ff
+  description: Good for newcomers
+- name: help wanted
+  color: 008672
+  description: Extra attention is needed
