@@ -36,6 +36,8 @@
     <a href="docs/features"><strong>Explore the docs »</strong></a>
     <br />
     <br />
+    <a href="https://mangoreader.org"><strong>Live Demo</strong></a>
+    &middot;
     <a href="https://github.com/apixelsnet/mango/releases">Releases</a>
     &middot;
     <a href="https://github.com/apixelsnet/mango/issues/new?labels=bug">Report Bug</a>
@@ -188,6 +190,9 @@ The same library in the Midnight theme:
 
 <!-- GETTING STARTED -->
 ## Getting Started
+
+Want to explore Mango before installing it? A hosted version is available at
+[mangoreader.org](https://mangoreader.org).
 
 Docker is the shortest way. Mango also runs as a plain program on Linux, macOS
 and Windows.
