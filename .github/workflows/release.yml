@@ -185,6 +185,7 @@ jobs:
             mkdir "pack/$name"
             cp -r "out/linux_${pair%%:*}/." "pack/$name/"
             cp README.md LICENSE NOTICE "pack/$name/"
+            cp docs/install.md "pack/$name/HOW-TO-START.txt"
             chmod +x "pack/$name"/mango*
             tar -C pack -czf "dist/$name.tar.gz" "$name"
           done
@@ -297,6 +298,7 @@ jobs:
           mkdir -p "pack/$name" dist
           cp -r shared/host "pack/$name/host"
           cp README.md LICENSE NOTICE shared/THIRD-PARTY-LICENSES.txt "pack/$name/"
+          cp docs/install.md "pack/$name/HOW-TO-START.txt"
           if [ "$RUNNER_OS" = Windows ]; then
             cp "$built/mango.exe" "$shell/mango-desktop.exe" "pack/$name/"
             (cd pack && 7z a -tzip "../dist/$name.zip" "$name" > /dev/null)
