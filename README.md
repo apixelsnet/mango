@@ -197,6 +197,11 @@ Want to explore Mango before installing it? A hosted version is available at
 Docker is the shortest way. Mango also runs as a plain program on Linux, macOS
 and Windows.
 
+New to this? **[How to start Mango](docs/install.md)** walks through it step by
+step for Windows, macOS and Linux: which file to download, which one to open,
+and what to do when something goes wrong. Every download carries the same guide
+as `HOW-TO-START.txt`.
+
 ### Prerequisites
 
 * With Docker: Docker with Compose. Nothing else.
@@ -237,8 +242,9 @@ links. To build that one from a checkout, uncomment `target: full` in
 
 1. Take the archive for your system from the [releases page][releases-url] and
    unpack it.
-2. Start `mango` (`mango.exe` on Windows).
-3. Open `http://127.0.0.1:8787` and set a password.
+2. Start `mango-desktop` (`mango-desktop.exe` on Windows) for a window of its
+   own, or `mango` (`mango.exe`) and open `http://127.0.0.1:8787`.
+3. Set a password.
 
 Mango keeps its data in `data/` beside where it was started.
 
