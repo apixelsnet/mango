@@ -49,6 +49,12 @@
   let filters = $state(false);
   // The chapter whose own menu is open.
   let opened = $state<number | null>(null);
+  // Picking chapters to act on several at once.
+  let picking = $state(false);
+  let picked = $state<Record<number, boolean>>({});
+  // The chapter picked last: a long press or a shift-click on another takes in every chapter between.
+  let anchor = $state<number | null>(null);
+  let sure = $state(false);
   // What the list is narrowed to lasts as long as the page: the next title opened shows whole.
   let show = $state<Show>('all');
   let group = $state('');
@@ -72,6 +78,9 @@
     }
     return view.down ? list : list.reverse();
   });
+  // Only what is shown is acted on: a chapter the filter hides drops out.
+  const chosen = $derived(listed.filter((c) => picked[c.id]));
+  const allKept = $derived(chosen.length > 0 && chosen.every((c) => c.bookmark));
   const nothing = $derived(
     !chapters.length ? 'No chapters yet.' : show === 'unread' && !from ? 'Every chapter is read.' : 'No chapter fits the filter.',
   );
@@ -128,9 +137,9 @@
     });
   }
 
-  function deleteFile(chapter: Chapter) {
-    chapter.downloaded = false;
-    change(() => send('DELETE', `/chapters/${chapter.id}/download`));
+  function deleteFiles(list: Chapter[]) {
+    for (const chapter of list) chapter.downloaded = false;
+    change(() => Promise.all(list.map((c) => send('DELETE', `/chapters/${c.id}/download`))));
   }
 
   function toggleAuto() {
@@ -167,9 +176,103 @@
     change(() => send('PUT', `/manga/${id}/chapters`, { ids: list.map((c) => c.id), read }));
   }
 
-  function bookmark(chapter: Chapter) {
-    chapter.bookmark = !chapter.bookmark;
-    change(() => send('PUT', `/manga/${id}/chapters`, { ids: [chapter.id], bookmark: chapter.bookmark }));
+  /** The chapters older than this one, in the source's order, that are still unread. */
+  function unreadBefore(chapter: Chapter): Chapter[] {
+    return chapters.slice(chapters.indexOf(chapter) + 1).filter((c) => !c.read);
+  }
+
+  function markUpTo(chapter: Chapter) {
+    mark([...(chapter.read ? [] : [chapter]), ...unreadBefore(chapter)], true);
+  }
+
+  function setBookmark(list: Chapter[], on: boolean) {
+    for (const chapter of list) chapter.bookmark = on;
+    change(() => send('PUT', `/manga/${id}/chapters`, { ids: list.map((c) => c.id), bookmark: on }));
+  }
+
+  function startPicking(chapter?: Chapter) {
+    opened = null;
+    picking = true;
+    picked = chapter ? { [chapter.id]: true } : {};
+    anchor = chapter?.id ?? null;
+    sure = false;
+  }
+
+  function stopPicking() {
+    picking = false;
+    picked = {};
+    anchor = null;
+    sure = false;
+  }
+
+  /** Picks every chapter shown from the one picked last to this one. */
+  function pickTo(chapter: Chapter) {
+    const ids = listed.map((c) => c.id);
+    const end = ids.indexOf(chapter.id);
+    const start = anchor === null || !ids.includes(anchor) ? end : ids.indexOf(anchor);
+    for (const id of ids.slice(Math.min(start, end), Math.max(start, end) + 1)) picked[id] = true;
+    anchor = chapter.id;
+    sure = false;
+  }
+
+  /** While picking, a click on a row picks it instead of opening it. A shift-click on a chapter picks a run, and starts picking. */
+  function pick(event: MouseEvent, chapter: Chapter) {
+    if (held) {
+      held = false;
+      event.preventDefault();
+      event.stopPropagation();
+      return;
+    }
+    if (!picking && !(event.shiftKey && (event.target as Element).closest?.('.main'))) return;
+    event.preventDefault();
+    event.stopPropagation();
+    if (!picking) startPicking(chapter);
+    else if (event.shiftKey) pickTo(chapter);
+    else {
+      picked[chapter.id] = !picked[chapter.id];
+      anchor = chapter.id;
+      sure = false;
+    }
+  }
+
+  // A long press picks, as in Mihon: the first starts picking, the next takes in the run up to it.
+  let press: ReturnType<typeof setTimeout> | undefined;
+  let pressAt = { x: 0, y: 0 };
+  // A long press just ended: the click that follows it is not a pick.
+  let held = false;
+
+  function pressStart(event: PointerEvent, chapter: Chapter) {
+    held = false;
+    if (event.button !== 0) return;
+    pressAt = { x: event.clientX, y: event.clientY };
+    clearTimeout(press);
+    press = setTimeout(() => {
+      press = undefined;
+      held = true;
+      navigator.vibrate?.(15);
+      if (picking) pickTo(chapter);
+      else startPicking(chapter);
+    }, 450);
+  }
+
+  function pressMove(event: PointerEvent) {
+    if (press && Math.hypot(event.clientX - pressAt.x, event.clientY - pressAt.y) > 10) pressEnd();
+  }
+
+  function pressEnd() {
+    clearTimeout(press);
+    press = undefined;
+  }
+
+  /** Runs an action on the picked chapters, then stops picking. */
+  function onPicked(action: (list: Chapter[]) => void) {
+    action(chosen);
+    stopPicking();
+  }
+
+  function deletePicked() {
+    if (sure) onPicked((list) => deleteFiles(list.filter((c) => c.downloaded)));
+    else sure = true;
   }
 
   function setView(patch: Partial<View>) {
@@ -199,14 +302,17 @@
 </script>
 
 <!-- A chapter's menu closes when anything else is pressed. -->
-<svelte:window onclick={(e) => opened !== null && !(e.target as Element).closest?.('.own') && (opened = null)} />
+<svelte:window
+  onclick={(e) => opened !== null && !(e.target as Element).closest?.('.own') && (opened = null)}
+  onkeydown={(e) => e.key === 'Escape' && picking && stopPicking()}
+/>
 
-<div class="page">
+<div class="page" class:picking>
   <Notice {loading} {error} retry={load} />
 
   {#if title}
     <div class="bar">
-      <a class="btn icon lift" href="#/" aria-label="Back" onclick={(e) => (e.preventDefault(), back())}>
+      <a class="btn icon lift" href="#/" aria-label="Back" title="Back" onclick={(e) => (e.preventDefault(), back())}>
         <Icon name="back" stroke={3} />
       </a>
       <div class="tools">
@@ -218,7 +324,7 @@
           <Icon name="bookmark" fill={title.inLibrary} />{title.inLibrary ? 'In library' : 'Add to library'}
         </button>
         <div class="menu">
-          <button class="btn icon lift" aria-label="More actions" aria-expanded={menu} onclick={() => (menu = !menu)}><Icon name="more" fill /></button>
+          <button class="btn icon lift" aria-label="More actions" title="More actions" aria-expanded={menu} onclick={() => (menu = !menu)}><Icon name="more" fill /></button>
           {#if menu}
             <div class="panel sheet">
               <button class="btn" onclick={refresh}><Icon name="refresh" size={18} />Refresh from the source</button>
@@ -294,15 +400,17 @@
             <button class="btn" aria-expanded={filters} onclick={() => (filters = !filters)}>
               <Icon name="filter" size={18} />Sort &amp; filter{filtering ? ' · on' : ''}
             </button>
+            <button class="btn" aria-pressed={picking} onclick={() => (picking ? stopPicking() : startPicking())}>Select</button>
             <button
               class="btn icon"
               aria-label="Download the unread chapters"
+              title="Download the unread chapters"
               disabled={!chapters.some((c) => !c.read && !c.downloaded)}
               onclick={() => download(chapters.filter((c) => !c.read && !c.downloaded))}
             >
               <Icon name="download" />
             </button>
-            <button class="btn icon" aria-label="Refresh from the source" disabled={refreshing} onclick={refresh}><Icon name="refresh" /></button>
+            <button class="btn icon" aria-label="Refresh from the source" title="Refresh the chapter list from the source" disabled={refreshing} onclick={refresh}><Icon name="refresh" /></button>
           </div>
         </div>
 
@@ -314,7 +422,7 @@
                 {#each SORTS as [value, label] (value)}<option {value}>{label}</option>{/each}
               </select>
             </label>
-            <button class="btn icon" aria-label={view.down ? 'Sorted downwards. Sort upwards' : 'Sorted upwards. Sort downwards'} onclick={() => setView({ down: !view.down })}>
+            <button class="btn icon" aria-label={view.down ? 'Sorted downwards. Sort upwards' : 'Sorted upwards. Sort downwards'} title={view.down ? 'Sort upwards' : 'Sort downwards'} onclick={() => setView({ down: !view.down })}>
               <Icon name={view.down ? 'down' : 'up'} />
             </button>
             <label class="sorter">
@@ -340,7 +448,17 @@
 
         <ul class="rows">
           {#each listed as chapter (chapter.id)}
-            <li class:done={chapter.read}>
+            <!-- svelte-ignore a11y_click_events_have_key_events, a11y_no_noninteractive_element_interactions -->
+            <li
+              class:done={chapter.read}
+              onclickcapture={(e) => pick(e, chapter)}
+              onpointerdown={(e) => pressStart(e, chapter)}
+              onpointermove={pressMove}
+              onpointerup={pressEnd}
+              onpointercancel={pressEnd}
+              onpointerleave={pressEnd}
+              oncontextmenu={(e) => (held || press) && e.preventDefault()}
+            >
               <a class="main" href="#/read/{chapter.id}">
                 <strong>
                   {#if chapter.bookmark}<span class="kept"><Icon name="bookmark" size={14} fill /><span class="sr">Bookmarked.</span></span>{/if}
@@ -353,27 +471,38 @@
               {:else if !chapter.read && chapter.lastPageRead > 0 && chapter.pageCount}
                 <span class="meter" aria-hidden="true"><span style:width="{Math.round(((chapter.lastPageRead + 1) / chapter.pageCount) * 100)}%"></span></span>
               {/if}
-              {#if chapter.downloaded}
-                <button class="btn icon" aria-label="Delete the saved file of {chapter.name}" onclick={() => deleteFile(chapter)}><Icon name="trash" /></button>
+              {#if picking}
+                {#if picked[chapter.id]}<span class="tag ink">Selected</span>{/if}
               {:else}
-                <button class="btn icon" aria-label="Download {chapter.name}" onclick={() => download([chapter])}><Icon name="download" /></button>
-              {/if}
-              <!-- What is seldom wanted waits behind one button, so a row keeps to two. -->
-              <div class="menu own">
-                <button class="btn icon" aria-label="More for {chapter.name}" aria-expanded={opened === chapter.id} onclick={() => (opened = opened === chapter.id ? null : chapter.id)}>
-                  <Icon name="more" fill />
-                </button>
-                {#if opened === chapter.id}
-                  <div class="panel sheet">
-                    <button class="btn" onclick={() => mark([chapter], !chapter.read)}>
-                      <Icon name="check" size={18} stroke={3} />{chapter.read ? 'Mark unread' : 'Mark read'}
-                    </button>
-                    <button class="btn" onclick={() => bookmark(chapter)}>
-                      <Icon name="bookmark" size={18} fill={chapter.bookmark} />{chapter.bookmark ? 'Take the bookmark off' : 'Bookmark'}
-                    </button>
-                  </div>
+                {#if chapter.downloaded}
+                  <button class="btn icon" aria-label="Delete the saved file of {chapter.name}" title="Delete the saved file" onclick={() => deleteFiles([chapter])}><Icon name="trash" /></button>
+                {:else}
+                  <button class="btn icon" aria-label="Download {chapter.name}" title="Download" onclick={() => download([chapter])}><Icon name="download" /></button>
                 {/if}
-              </div>
+                <!-- What is seldom wanted waits behind one button, so a row keeps to two. -->
+                <div class="menu own">
+                  <button class="btn icon" aria-label="More for {chapter.name}" title="More" aria-expanded={opened === chapter.id} onclick={() => (opened = opened === chapter.id ? null : chapter.id)}>
+                    <Icon name="more" fill />
+                  </button>
+                  {#if opened === chapter.id}
+                    <div class="panel sheet">
+                      <button class="btn" onclick={() => mark([chapter], !chapter.read)}>
+                        <Icon name="check" size={18} stroke={3} />{chapter.read ? 'Mark unread' : 'Mark read'}
+                      </button>
+                      <!-- Only what is unread is sent: marking a chapter again would move its read date. -->
+                      {#if unreadBefore(chapter).length}
+                        <button class="btn" onclick={() => markUpTo(chapter)}>
+                          <Icon name="check" size={18} stroke={3} />Mark read up to here
+                        </button>
+                      {/if}
+                      <button class="btn" onclick={() => setBookmark([chapter], !chapter.bookmark)}>
+                        <Icon name="bookmark" size={18} fill={chapter.bookmark} />{chapter.bookmark ? 'Take the bookmark off' : 'Bookmark'}
+                      </button>
+                      <button class="btn" onclick={() => startPicking(chapter)}>Select</button>
+                    </div>
+                  {/if}
+                </div>
+              {/if}
             </li>
           {/each}
         </ul>
@@ -383,8 +512,34 @@
       </div>
     </div>
 
-    <div class="dock">
-      {#if resume}
+    <div class="dock" class:picking>
+      {#if picking}
+        <div class="line">
+          <strong>{chosen.length} selected</strong>
+          <button class="btn" onclick={() => (picked = Object.fromEntries(listed.map((c) => [c.id, true])))}>All shown</button>
+          <button class="btn" onclick={() => (picked = Object.fromEntries(listed.map((c) => [c.id, !picked[c.id]])))}>Invert</button>
+          <button class="btn icon" aria-label="Stop selecting" title="Stop selecting" onclick={stopPicking}><Icon name="close" /></button>
+        </div>
+        <!-- Each action sends only the chapters it changes: marking a read chapter again would move its read date. -->
+        <div class="line" role="group" aria-label="Selected chapters">
+          <button class="btn" disabled={!chosen.some((c) => !c.read)} onclick={() => onPicked((list) => mark(list.filter((c) => !c.read), true))}>
+            <Icon name="check" size={18} stroke={3} />Mark read
+          </button>
+          <button class="btn" disabled={!chosen.some((c) => c.read || c.lastPageRead > 0)} onclick={() => onPicked((list) => mark(list, false))}>Mark unread</button>
+          {#if chosen.length === 1 && unreadBefore(chosen[0]).length}
+            <button class="btn" onclick={() => onPicked((list) => markUpTo(list[0]))}>Mark read up to here</button>
+          {/if}
+          <button class="btn" disabled={!chosen.length} onclick={() => onPicked((list) => setBookmark(list, !allKept))}>
+            <Icon name="bookmark" size={18} fill={allKept} />{allKept ? 'Take bookmarks off' : 'Bookmark'}
+          </button>
+          <button class="btn" disabled={!chosen.some((c) => !c.downloaded)} onclick={() => onPicked((list) => download(list.filter((c) => !c.downloaded)))}>
+            <Icon name="download" size={18} />Download
+          </button>
+          <button class="btn" disabled={!chosen.some((c) => c.downloaded)} onclick={deletePicked}>
+            <Icon name="trash" size={18} />{sure ? 'Really delete?' : 'Delete saved'}
+          </button>
+        </div>
+      {:else if resume}
         <a class="btn big spot" href="#/read/{resume.id}">
           {started ? 'Resume' : 'Start'} {chapterShort(resume)}<Icon name="arrow" size={18} stroke={3} />
         </a>
@@ -392,7 +547,7 @@
         <a class="btn big" href="#/read/{chapters[chapters.length - 1].id}">Read again<Icon name="arrow" size={18} stroke={3} /></a>
       {/if}
       {#if title.webUrl}
-        <a class="btn big icon" href={title.webUrl} target="_blank" rel="noreferrer noopener" aria-label="Open on the source's site">
+        <a class="btn big icon" href={title.webUrl} target="_blank" rel="noreferrer noopener" aria-label="Open on the source's site" title="Open on the source's site">
           <Icon name="globe" />
         </a>
       {/if}
@@ -404,6 +559,11 @@
   .page {
     gap: 20px;
     padding-bottom: calc(120px + var(--safe-bottom));
+  }
+
+  /* The actions on picked chapters take more of the bottom than the dock's one button. */
+  .page.picking {
+    padding-bottom: calc(220px + var(--safe-bottom));
   }
 
   .bar {
@@ -605,6 +765,28 @@
     flex: 0 0 56px;
   }
 
+  /* A long press picks a chapter: the phone's own menu for the link and its text selection stay out of the way. */
+  @media (pointer: coarse) {
+    .rows li {
+      -webkit-touch-callout: none;
+      user-select: none;
+    }
+  }
+
+  .dock.picking {
+    flex-direction: column;
+    align-items: center;
+    gap: 10px;
+  }
+
+  .line {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    justify-content: center;
+    gap: 8px;
+  }
+
   .sorter select {
     max-width: 220px;
   }
@@ -633,7 +815,7 @@
     background: var(--paper);
   }
 
-  .dock .btn:first-child {
+  .dock > .btn:first-child {
     flex: 0 1 420px;
     min-width: 0;
     overflow: hidden;
