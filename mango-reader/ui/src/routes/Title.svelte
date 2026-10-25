@@ -5,6 +5,7 @@
   import { keep, recall } from '../lib/keep';
   import Notice from '../lib/Notice.svelte';
   import { canKeep, forget as forgetHere, keep as keepHere, keptChapters } from '../lib/offline';
+  import { lacks } from '../lib/plan.svelte';
   import { pref, setPref } from '../lib/prefs.svelte';
   import { back, go } from '../lib/router.svelte';
   import Tracking from '../lib/Tracking.svelte';
@@ -495,7 +496,9 @@
               {/if}
               <a class="btn" href="#/search?q={encodeURIComponent(title.title)}&for={id}"><Icon name="arrow" size={18} />Move to another source</a>
               <a class="btn" href="#/search?q={encodeURIComponent(title.title)}&merge={id}"><Icon name="plus" size={18} />Add another source</a>
-              {#if title.inLibrary}
+              {#if title.inLibrary && lacks('autoDownload') && !title.autoDownload}
+                <button class="btn" disabled title="Not part of your plan"><Icon name="lock" size={18} stroke={3} />Download new chapters</button>
+              {:else if title.inLibrary}
                 <button class="btn" aria-pressed={title.autoDownload} onclick={toggleAuto}>
                   {#if title.autoDownload}<Icon name="check" size={18} stroke={3} />{/if}Download new chapters
                 </button>

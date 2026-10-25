@@ -1,13 +1,16 @@
 <script lang="ts">
-  import { get, message, send, type Backup, type Category, type Orphan, type Tracker } from '../lib/api';
+  import { get, message, send, type Backup, type Category, type Orphan, type ReadFiles, type Tracker } from '../lib/api';
   import { COVERS, display, MENUS, PAGES, setDisplay, SIZES } from '../lib/display.svelte';
   import Icon, { type IconName } from '../lib/Icon.svelte';
+  import Locked from '../lib/Locked.svelte';
   import Notice from '../lib/Notice.svelte';
+  import { lacks, loadPlan, plan, tooOften } from '../lib/plan.svelte';
   import { pref, setPref } from '../lib/prefs.svelte';
   import { ACTIONS, FIXED, keyName, KINDS, profile, setProfile, type Action, type Kind } from '../lib/reader';
   import ReaderPrefs from '../lib/ReaderPrefs.svelte';
   import { route } from '../lib/router.svelte';
   import { session, signOut } from '../lib/session.svelte';
+  import Storage from '../lib/Storage.svelte';
   import { againTour } from '../lib/guide.svelte';
   import { ago } from '../lib/util';
   import { checkVersion, version as about } from '../lib/version.svelte';
@@ -329,6 +332,23 @@
     withUsers(() => send('DELETE', `/users/${id}`));
   }
 
+  // What a hosted reader's plan leaves out, said in words on the account group.
+  const leftOut = $derived(
+    plan.is
+      ? [
+          !plan.is.trackers && 'Trackers',
+          !plan.is.autoDownload && 'Downloading new chapters by themselves',
+          !plan.is.opds && 'Reading apps over OPDS',
+          tooOften(6) && `Checking the library by itself more often than every ${plan.is.updatesEvery} hours`,
+        ].filter((what): what is string => typeof what === 'string')
+      : [],
+  );
+
+  // A hosted reader's plan and storage, fresh each time the account group opens.
+  $effect(() => {
+    if (tab.id === 'account' && session.account) loadPlan(true);
+  });
+
   let askedUsers = false;
   $effect(() => {
     if (tab.id !== 'account' || askedUsers || !session.login || !session.admin) return;
@@ -473,6 +493,62 @@
     try {
       await send('DELETE', '/downloads/orphans');
       orphans = [];
+    } catch (e) {
+      error = message(e);
+    }
+  }
+
+  // How often the library may be checked by itself, in hours; 0 is only when asked.
+  const CHECKS = [
+    [0, 'Only when asked'],
+    [6, 'Every 6 hours'],
+    [12, 'Every 12 hours'],
+    [24, 'Once a day'],
+    [48, 'Every 2 days'],
+  ] as const;
+
+  // ---------- the page cache ----------
+
+  let cachedBytes = $state<number | null>(null);
+  $effect(() => {
+    if (tab.id !== 'downloads') return;
+    get<{ bytes: number }>('/cache')
+      .then((found) => (cachedBytes = found.bytes))
+      .catch(() => (cachedBytes = null));
+  });
+
+  async function clearCache() {
+    error = null;
+    try {
+      await send('DELETE', '/cache');
+      cachedBytes = 0;
+    } catch (e) {
+      error = message(e);
+    }
+  }
+
+  // ---------- files of chapters already read ----------
+
+  let readFiles = $state<ReadFiles | null>(null);
+  let clearingRead = $state(false);
+  $effect(() => {
+    if (tab.id !== 'downloads') return;
+    get<ReadFiles>('/downloads/read')
+      .then((found) => (readFiles = found))
+      .catch(() => (readFiles = null));
+  });
+
+  async function clearRead() {
+    if (!clearingRead) {
+      clearingRead = true;
+      return;
+    }
+    clearingRead = false;
+    error = null;
+    try {
+      await send('DELETE', '/downloads/read');
+      readFiles = { chapters: 0, bytes: 0 };
+      loadPlan(true);
     } catch (e) {
       error = message(e);
     }
@@ -849,12 +925,11 @@
           <div class="set">
             <div class="what"><strong>Check the library</strong><span>How often Mango looks for new chapters by itself.</span></div>
             <div class="how">
+              {#if plan.is?.updatesEvery && tooOften(6)}<Locked label="Every {plan.is.updatesEvery} h at most" />{/if}
               <select class="btn" aria-label="Check the library for new chapters" value={String(pref('updates.hours', 12))} onchange={(e) => setPref('updates.hours', Number(e.currentTarget.value))}>
-                <option value="0">Only when asked</option>
-                <option value="6">Every 6 hours</option>
-                <option value="12">Every 12 hours</option>
-                <option value="24">Once a day</option>
-                <option value="48">Every 2 days</option>
+                {#each CHECKS as [hours, label] (hours)}
+                  <option value={String(hours)} disabled={tooOften(hours)}>{label}{tooOften(hours) ? ' (not in your plan)' : ''}</option>
+                {/each}
               </select>
             </div>
           </div>
@@ -939,6 +1014,34 @@
           </div>
           <div class="set">
             <div class="what">
+              <strong>Cached pages</strong>
+              <span>
+                Pages kept from reading online and browsing{cachedBytes ? `, ${sized(cachedBytes)}` : ''}. Mango keeps this under its own cap and fetches
+                them again when needed.{#if session.account} It does not count toward your storage.{/if}
+              </span>
+            </div>
+            <div class="how">
+              <button class="btn" disabled={!cachedBytes} onclick={clearCache}><Icon name="refresh" size={18} />Clear cache</button>
+            </div>
+          </div>
+          <div class="set">
+            <div class="what">
+              <strong>Chapters already read</strong>
+              <span>
+                {#if readFiles?.chapters}
+                  {counted(readFiles.chapters, 'saved chapter')} read already, {sized(readFiles.bytes)}. Deleting their files keeps them in the library, read, and
+                  they can be read online or downloaded again.
+                {:else}
+                  None: every saved chapter is still unread.
+                {/if}
+              </span>
+            </div>
+            <div class="how">
+              <button class="btn" disabled={!readFiles?.chapters} onclick={clearRead}><Icon name="trash" size={18} />{clearingRead ? 'Really delete them?' : 'Delete those files'}</button>
+            </div>
+          </div>
+          <div class="set">
+            <div class="what">
               <strong>Files of titles you left</strong>
               <span>
                 {#if orphans.length}
@@ -1004,16 +1107,26 @@
 
         <section class="card">
           <h3>Reading apps</h3>
-          <div class="set stack">
-            <div class="what">
-              <strong>OPDS catalog</strong>
-              <span>
-                An app that reads OPDS catalogs can browse this library and fetch its chapters. Give it this
-                address{#if session.login}, with your name and password{/if}.
-              </span>
+          {#if lacks('opds')}
+            <div class="set">
+              <div class="what">
+                <strong>OPDS catalog</strong>
+                <span>An app that reads OPDS catalogs can browse this library and fetch its chapters. Your plan leaves it out.</span>
+              </div>
+              <div class="how"><Locked /></div>
             </div>
-            <code>{home}opds</code>
-          </div>
+          {:else}
+            <div class="set stack">
+              <div class="what">
+                <strong>OPDS catalog</strong>
+                <span>
+                  An app that reads OPDS catalogs can browse this library and fetch its chapters. Give it this
+                  address{#if session.login}, with your name and password{/if}.
+                </span>
+              </div>
+              <code>{home}opds</code>
+            </div>
+          {/if}
         </section>
 
         <section class="card">
@@ -1059,6 +1172,18 @@
           {/if}
         </section>
       {:else if tab.id === 'trackers'}
+        {#if lacks('trackers')}
+          <section class="card">
+            <h3>Your plan</h3>
+            <div class="set">
+              <div class="what">
+                <strong>Trackers are not part of your plan</strong>
+                <span>Signing in to a tracker and linking titles open with a plan that has them. A tracker signed in to already can still be left.</span>
+              </div>
+              <div class="how"><Locked /></div>
+            </div>
+          </section>
+        {/if}
         <section class="card">
           <h3>Both ways</h3>
           <div class="set">
@@ -1082,6 +1207,11 @@
                   <span>Link a title from its own page. Reading a chapter then moves it along on {t.name}.</span>
                 </div>
                 <div class="how"><button class="btn" disabled={working === t.id} onclick={() => tracking(t, () => send('DELETE', `/trackers/${t.id}/login`))}>Sign out</button></div>
+              </div>
+            {:else if lacks('trackers')}
+              <div class="set">
+                <div class="what"><strong>Not signed in</strong><span>Signing in to {t.name} is not part of your plan.</span></div>
+                <div class="how"><Locked /></div>
               </div>
             {:else if t.login === 'password'}
               <form class="set" onsubmit={(e) => signIn(e, t)}>
@@ -1154,11 +1284,38 @@
             <h3>Plan and billing</h3>
             <div class="set">
               <div class="what">
-                <strong>Your account</strong>
-                <span>Your plan, the room your downloads take, billing and your email are kept on your account page.</span>
+                <strong>{plan.is ? `${plan.is.name} plan` : 'Your account'}</strong>
+                <span>Your plan, billing and your email are kept on your account page.</span>
               </div>
               <div class="how"><a class="btn spot" href={session.account}>Manage your account</a></div>
             </div>
+            {#if plan.is?.storage}
+              <div class="set stack">
+                <div class="what">
+                  <strong>Storage</strong>
+                  <span>
+                    What your downloads and imports take. Cached pages do not count.
+                    {#if plan.is.full}It is full: new downloads wait until some files go, or the plan grows.{/if}
+                  </span>
+                </div>
+                <Storage storage={plan.is.storage} full={plan.is.full} />
+                {#if plan.is.full}
+                  <div class="how">
+                    <a class="btn ink" href={session.account}><Icon name="up" size={18} stroke={3} />Get more room</a>
+                    <a class="btn" href="#/settings/downloads"><Icon name="trash" size={18} />Free up space</a>
+                  </div>
+                {/if}
+              </div>
+            {/if}
+            {#if leftOut.length}
+              <div class="set">
+                <div class="what">
+                  <strong>Left out of this plan</strong>
+                  <span>{leftOut.join(', ')}.</span>
+                </div>
+                <div class="how"><Locked label="See the plans" /></div>
+              </div>
+            {/if}
           </section>
         {/if}
         {#if session.login}

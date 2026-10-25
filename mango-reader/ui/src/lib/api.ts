@@ -12,8 +12,12 @@ export class ApiError extends Error {
 
 type Options = { method?: string; json?: unknown; signal?: AbortSignal };
 
-/** Told when Mango answers that nobody is signed in. The session store listens. */
-export const gate = { lost: (_code: string) => {} };
+/**
+ * Told when Mango answers that nobody is signed in, and when what stands in front of a hosted
+ * Mango refuses a call because of the reader's plan (`storage_full`, `not_in_plan`). The session
+ * and plan stores listen.
+ */
+export const gate = { lost: (_code: string) => {}, plan: (_code: string) => {} };
 
 export async function api<T>(path: string, options: Options = {}): Promise<T> {
   let response: Response;
@@ -36,6 +40,7 @@ export async function api<T>(path: string, options: Options = {}): Promise<T> {
   if (!response.ok) {
     const code = data?.error?.code;
     if (response.status === 401 && (code === 'signed_out' || code === 'setup_required')) gate.lost(code);
+    if (code === 'storage_full' || code === 'not_in_plan') gate.plan(code);
     throw new ApiError(response.status, data?.error?.code ?? 'error', data?.error?.message ?? `Mango answered ${response.status}`);
   }
   return data as T;
@@ -237,7 +242,8 @@ export type Queued = {
   error: string | null;
 };
 
-export type Queue = { paused: boolean; queue: Queued[] };
+/** `held`: whoever runs this Mango holds the queue, since the reader's storage is full. */
+export type Queue = { paused: boolean; held?: boolean; queue: Queued[] };
 
 export type ReaderInfo = {
   chapter: Chapter;
@@ -258,6 +264,9 @@ export type ReaderInfo = {
 
 /** A title outside the library that still has chapters saved. */
 export type Orphan = { mangaId: number; title: string; sourceName: string | null; chapters: number; bytes: number };
+
+/** The saved chapters already read, and what their files take. */
+export type ReadFiles = { chapters: number; bytes: number };
 
 /** A backup Mango made by itself. */
 export type Backup = { name: string; bytes: number; madeAt: number };

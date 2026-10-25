@@ -2,6 +2,7 @@
   import { get, message, send, type Queue, type Queued } from '../lib/api';
   import Icon from '../lib/Icon.svelte';
   import Notice from '../lib/Notice.svelte';
+  import { session } from '../lib/session.svelte';
   import { ago, every } from '../lib/util';
 
   let data = $state<Queue | null>(null);
@@ -61,7 +62,7 @@
       const wait = entry.retryAt ? Math.max(0, Math.ceil((entry.retryAt - Date.now() / 1000) / 60)) : 0;
       return `Try ${entry.attempts} failed: ${entry.error}. Next try ${wait > 0 ? `in ${wait} min` : 'soon'}`;
     }
-    return data?.paused ? 'Waiting, queue paused' : 'Waiting';
+    return data?.held ? 'Waiting, storage full' : data?.paused ? 'Waiting, queue paused' : 'Waiting';
   }
 </script>
 
@@ -89,6 +90,13 @@
   </div>
 
   <Notice {loading} {error} retry={load} />
+
+  {#if data?.held}
+    <Notice>
+      On hold: your storage is full. The queue waits, and goes on by itself once some downloads are deleted{session.account ? ' or the plan grows' : ''}.
+      {#if session.account}<a class="btn" href="#/settings/downloads">Free up space</a>{/if}
+    </Notice>
+  {/if}
 
   {#if data}
     {#if queue.length === 0}
