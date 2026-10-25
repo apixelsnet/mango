@@ -132,3 +132,18 @@
 - name: help wanted
   color: "008672"
   description: Extra attention is needed
+
+# Which section of the release notes a pull request goes in (.github/release.yml).
+# The Changelog workflow sets one by the pull request's title.
+- name: "changelog: added"
+  color: "0e8a16"
+  description: A new feature, listed under Added
+- name: "changelog: changed"
+  color: "1d76db"
+  description: A change to what is there, listed under Changed
+- name: "changelog: fixed"
+  color: "d93f0b"
+  description: A fix, listed under Fixed
+- name: "changelog: skip"
+  color: "ededed"
+  description: Left out of the release notes

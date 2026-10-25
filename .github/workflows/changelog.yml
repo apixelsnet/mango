@@ -1,0 +1,42 @@
+name: Changelog
+
+# Gives a pull request the label that puts it in a section of the release notes
+# (.github/release.yml), by the first word of its title: "feat" is Added, "fix" is
+# Fixed, anything else (perf, refactor, docs, ci, chore, deps) is Changed. A pull
+# request that has a changelog label already keeps it, so one set by hand stands.
+#
+# pull_request_target, so it may label a pull request from a fork too. It checks
+# nothing out and runs none of the pull request's code.
+
+on:
+  pull_request_target:
+    types: [opened, reopened, edited]
+
+permissions:
+  pull-requests: write
+
+jobs:
+  label:
+    name: Label for the release notes
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Add the label
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          NUMBER: ${{ github.event.pull_request.number }}
+          # The title is the author's text: it is only ever read from here, never
+          # put into the script.
+          TITLE: ${{ github.event.pull_request.title }}
+          LABELS: ${{ toJSON(github.event.pull_request.labels.*.name) }}
+        run: |
+          if jq -e 'any(startswith("changelog: "))' <<<"$LABELS" >/dev/null; then
+            echo "It has a changelog label already."
+            exit 0
+          fi
+          case "$(tr '[:upper:]' '[:lower:]' <<<"$TITLE")" in
+            feat*) label="changelog: added" ;;
+            fix*) label="changelog: fixed" ;;
+            *) label="changelog: changed" ;;
+          esac
+          gh pr edit "$NUMBER" --add-label "$label"
