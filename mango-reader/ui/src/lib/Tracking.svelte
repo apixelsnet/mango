@@ -1,7 +1,9 @@
 <script lang="ts">
   import { get, message, send, type Track, type Tracker, type TrackerMatch, type TrackingView } from './api';
   import Icon from './Icon.svelte';
+  import Locked from './Locked.svelte';
   import Notice from './Notice.svelte';
+  import { lacks } from './plan.svelte';
 
   // A title's links to trackers. Read once the page is up, so the title never waits for
   // it; and no tracker is asked anything until something here is pressed.
@@ -110,11 +112,13 @@
               <span class="muted">Sign in to {t.name} in <a href="#/settings/trackers">Settings</a> to keep it in step.</span>
             {/if}
           </div>
-          {#if !link}
+          {#if !link && lacks('trackers')}
+            <Locked />
+          {:else if !link}
             <button class="btn" disabled={busy === t.id} onclick={() => open(t)}><Icon name="link" size={18} />Link</button>
           {:else}
             <div class="tools">
-              {#if t.signedIn}
+              {#if t.signedIn && !lacks('trackers')}
                 <select
                   class="btn"
                   aria-label="Status on {t.name}"

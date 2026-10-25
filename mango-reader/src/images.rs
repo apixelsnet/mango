@@ -407,6 +407,24 @@ impl Images {
         Ok((source, pages, true))
     }
 
+    /// What this account's page cache takes, in bytes.
+    pub async fn cache_size(&self) -> u64 {
+        let dir = self.cache.clone();
+        tokio::task::spawn_blocking(move || sweep(&dir, u64::MAX)).await.unwrap_or(0)
+    }
+
+    /// Empties this account's page cache. Covers, downloads and local titles stay; pages are
+    /// fetched again when read. Answers how many bytes went.
+    pub async fn clear_cache(&self) -> u64 {
+        let dir = self.cache.clone();
+        tokio::task::spawn_blocking(move || {
+            let before = sweep(&dir, u64::MAX);
+            before.saturating_sub(sweep(&dir, 0))
+        })
+        .await
+        .unwrap_or(0)
+    }
+
     /// Keeps the cache under its cap: every ten minutes, and sooner when much was put in. Never returns.
     pub async fn sweep_forever(self) {
         loop {
@@ -670,6 +688,7 @@ mod tests {
         assert_eq!(sweep(&dir, 2000), 1200, "under the cap nothing goes");
         assert_eq!(sweep(&dir, 1000), 800);
         assert!(!dir.join("pages/1/0").exists() && dir.join("pages/1/1").exists() && dir.join("cover").exists());
+        assert_eq!(sweep(&dir, 0), 0, "a cap of nothing empties it");
         fs::remove_dir_all(&dir).unwrap();
     }
 }

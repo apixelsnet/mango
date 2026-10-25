@@ -73,6 +73,8 @@ Implementation: `notify.rs`, `updates.rs`, `downloads.rs` (`retry_all`, `orphane
 - **Grouped updates.** The Updates screen groups each day's chapters by title. A title with several new chapters appears as a single expandable row with a button to download all of them.
 - **Retry failed downloads.** All failed downloads can be retried at once (`POST /api/downloads/retry`).
 - **Downloads of removed titles.** Settings › Downloads lists titles that are no longer followed but still have downloaded chapters, with their total size, and can delete those files (`GET` and `DELETE /api/downloads/orphans`). Reading progress is retained.
+- **Downloads of read chapters.** Settings › Downloads also counts the downloaded chapters already read, with their total size, and can delete those files (`GET` and `DELETE /api/downloads/read`). The chapters stay in the library, marked read.
+- **Page cache.** Settings › Downloads shows what the account's page cache takes and can empty it (`GET` and `DELETE /api/cache`). Covers, downloads and local titles stay.
 - Titles merged into a library title are updated with it and inherit its categories and its automatic download setting; their chapters are listed under it.
 - The Updates, Downloads and Import screens poll the server only while the page is visible (`every` in `lib/util.ts`). The update badge in the menu uses `GET /api/updates/fresh`, which performs one query instead of three.
 

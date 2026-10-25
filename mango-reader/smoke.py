@@ -1020,6 +1020,9 @@ check("the stats add up", stats["titles"] >= 1 and len(stats["months"]) == 12 an
 check("the menu's count asks for little", "fresh" in call("GET", "/updates/fresh")[0])
 check("chapters that gave up can all try again", "queued" in call("POST", "/downloads/retry")[0])
 check("titles left with files are listed", isinstance(call("GET", "/downloads/orphans")[0], list))
+read_files = call("GET", "/downloads/read")[0]
+check("files of read chapters are counted", isinstance(read_files.get("chapters"), int) and isinstance(read_files.get("bytes"), int))
+check("the page cache is measured", isinstance(call("GET", "/cache")[0].get("bytes"), int))
 made = call("POST", "/backups")[0]
 status, _, file, _ = raw("GET", f"{base}/backups/{made['name']}")
 check("a backup is made and kept", made["name"] in [b["name"] for b in call("GET", "/backups")[0]["backups"]] and status == 200 and file[:2] == bytes([0x1F, 0x8B]))

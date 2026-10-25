@@ -21,6 +21,9 @@ pub struct Config {
     pub cache_mb: u64,
     /// Downloads stop while the disk has less than this free, in megabytes. 0 never stops them. `MANGO_KEEP_FREE_MB`
     pub keep_free_mb: u64,
+    /// The download queue waits while this file has a line that reads `full`. For whoever runs
+    /// Mango for others and keeps each reader's storage in bounds. Unset: never. `MANGO_HOLD_FILE`
+    pub hold_file: Option<PathBuf>,
     /// The folder the local source reads: `<title>/<chapter>` inside it. Default: `local` in the data directory. `MANGO_LOCAL`
     pub local_dir: Option<PathBuf>,
     /// Ask for a password. Off is for a network where everyone may use Mango. `MANGO_LOGIN`
@@ -103,6 +106,7 @@ impl Default for Config {
             log: "info".into(),
             cache_mb: 1024,
             keep_free_mb: 0,
+            hold_file: None,
             local_dir: None,
             login: true,
             first_password: None,
@@ -191,6 +195,9 @@ impl Config {
         }
         if let Some(v) = number("MANGO_KEEP_FREE_MB")? {
             self.keep_free_mb = v;
+        }
+        if let Some(v) = var("MANGO_HOLD_FILE").filter(|v| !v.trim().is_empty()) {
+            self.hold_file = Some(v.trim().into());
         }
         if let Some(v) = var("MANGO_BLOCKLIST").filter(|v| !v.trim().is_empty()) {
             self.stores.blocklist = Some(v.into());
@@ -323,14 +330,16 @@ mod tests {
         assert!(cfg.hosts.is_empty());
         cfg.apply_env(|name| (name == "MANGO_HOSTS").then(|| "mango.example.org, read.example.org,".into())).unwrap();
         assert_eq!(cfg.hosts, ["mango.example.org", "read.example.org"]);
-        assert!(cfg.keep_free_mb == 0 && cfg.stores.blocklist.is_none(), "nothing is held back unless asked");
+        assert!(cfg.keep_free_mb == 0 && cfg.stores.blocklist.is_none() && cfg.hold_file.is_none(), "nothing is held back unless asked");
         cfg.apply_env(|name| match name {
             "MANGO_KEEP_FREE_MB" => Some("200".into()),
             "MANGO_BLOCKLIST" => Some("/etc/mango/blocklist".into()),
+            "MANGO_HOLD_FILE" => Some(" /etc/mango/limits ".into()),
             _ => None,
         })
         .unwrap();
         assert_eq!((cfg.keep_free_mb, cfg.stores.blocklist.as_deref()), (200, Some(Path::new("/etc/mango/blocklist"))));
+        assert_eq!(cfg.hold_file.as_deref(), Some(Path::new("/etc/mango/limits")));
         assert!(cfg.account_url.is_none(), "no account page is shown unless one is named");
         for good in ["/account/", "https://example.org/account"] {
             cfg.apply_env(|name| (name == "MANGO_ACCOUNT_URL").then(|| good.into())).unwrap();

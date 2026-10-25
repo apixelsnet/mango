@@ -46,6 +46,8 @@ pub struct Shared {
     pub blocklist: Arc<Blocklist>,
     /// Downloads stop while the disk has less than this free, in megabytes. 0: never.
     pub keep_free_mb: u64,
+    /// The download queue waits while this file has a line `full`.
+    pub hold_file: Option<PathBuf>,
 }
 
 struct Open {
@@ -114,7 +116,7 @@ impl Spaces {
         let stores = Stores::new(db.clone(), shared.host.clone(), self.fleet.clone(), id, shared.store_rules, shared.blocklist.clone())?;
         let titles = Titles::new(db.clone(), shared.host.clone(), shared.local.clone());
         let images = Images::new(db.clone(), shared.host.clone(), shared.local.clone(), &dir, shared.cache_mb);
-        let downloads = Downloads::new(db.clone(), images.clone(), &dir, shared.keep_free_mb);
+        let downloads = Downloads::new(db.clone(), images.clone(), &dir, shared.keep_free_mb, shared.hold_file.clone());
         let trackers = Trackers::new(db.clone())?;
         let notifier = Notifier::new(db.clone(), shared.store_rules.local)?;
         let updates = Updates::new(db.clone(), titles.clone(), downloads.clone(), notifier.clone(), trackers.clone());

@@ -5,8 +5,10 @@
   import Notice from './lib/Notice.svelte';
   import Tour from './lib/Tour.svelte';
   import { tour } from './lib/guide.svelte';
+  import { ask, asksOn, loadPlan, plan } from './lib/plan.svelte';
   import { back, go, route } from './lib/router.svelte';
   import { loadSession, session } from './lib/session.svelte';
+  import StorageFull from './lib/StorageFull.svelte';
   import { loadVersion, version } from './lib/version.svelte';
   import SignIn from './routes/SignIn.svelte';
   import Downloads from './routes/Downloads.svelte';
@@ -57,6 +59,18 @@
     get<{ fresh: number }>('/updates/fresh')
       .then((updates) => (fresh = updates.fresh))
       .catch(() => {});
+  });
+
+  // A hosted reader's plan: wanted for its locks and the storage-full card, never waited for.
+  // Asked again now and then as screens change, since the storage fills as downloads come in.
+  $effect(() => {
+    void area;
+    if (session.signedIn && session.account) loadPlan();
+  });
+
+  // While the storage is full the card comes back on each screen, until room is made.
+  $effect(() => {
+    if (session.signedIn && asksOn(area)) ask();
   });
 
   // Whether a newer Mango is out: wanted for a mark on the settings button, never waited for.
@@ -203,6 +217,10 @@
       </nav>
     {/if}
   </div>
+{/if}
+
+{#if plan.asking && session.signedIn && area !== 'read'}
+  <StorageFull />
 {/if}
 
 {#if tour.open && session.signedIn && area !== 'read'}

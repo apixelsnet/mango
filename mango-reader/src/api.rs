@@ -5,7 +5,7 @@ use crate::{
     auth::{self, Account, AccountChange, Auth, Invite, Who},
     backups::{Backups, Saved},
     db::Db,
-    downloads::{Downloads, Orphan, QueueView},
+    downloads::{Downloads, Orphan, QueueView, ReadFiles},
     updates::{Status, Updates, UpdatesView},
     version::{self, Releases},
     error::{AppError, Result},
@@ -139,6 +139,8 @@ pub fn router(state: Spaces) -> Router {
         .route("/downloads/resume", post(resume_downloads))
         .route("/downloads/retry", post(retry_downloads))
         .route("/downloads/orphans", get(orphans).delete(delete_orphans))
+        .route("/downloads/read", get(read_files).delete(delete_read))
+        .route("/cache", get(cache_size).delete(clear_cache))
         .route("/downloads/{chapter}", delete(cancel_download))
         .route("/downloads/{chapter}/retry", post(retry_download))
         .route("/chapters/{id}/download", delete(delete_download))
@@ -839,6 +841,24 @@ async fn orphans(Me(app): Me) -> Result<Json<Vec<Orphan>>> {
 
 async fn delete_orphans(Me(app): Me) -> Result<Json<Value>> {
     Ok(Json(json!({ "deleted": app.downloads.delete_orphans().await? })))
+}
+
+/// The saved chapters already read, and what their files take.
+async fn read_files(Me(app): Me) -> Result<Json<ReadFiles>> {
+    Ok(Json(app.downloads.read_files().await?))
+}
+
+/// What this account's page cache takes.
+async fn cache_size(Me(app): Me) -> Json<Value> {
+    Json(json!({ "bytes": app.images.cache_size().await }))
+}
+
+async fn clear_cache(Me(app): Me) -> Json<Value> {
+    Json(json!({ "freed": app.images.clear_cache().await }))
+}
+
+async fn delete_read(Me(app): Me) -> Result<Json<Value>> {
+    Ok(Json(json!({ "deleted": app.downloads.delete_read().await? })))
 }
 
 async fn order_downloads(Me(app): Me, Json(body): Json<Ids>) -> Result<Json<Value>> {

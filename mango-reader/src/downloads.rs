@@ -47,6 +47,8 @@ pub struct Queued {
 #[derive(Serialize)]
 pub struct QueueView {
     pub paused: bool,
+    /// Whoever runs this Mango holds the queue: the reader's storage is full.
+    pub held: bool,
     pub queue: Vec<Queued>,
 }
 
@@ -57,6 +59,14 @@ pub struct Orphan {
     pub manga_id: i64,
     pub title: String,
     pub source_name: Option<String>,
+    pub chapters: i64,
+    pub bytes: u64,
+}
+
+/// The saved chapters already read: how many, and what their files take.
+#[derive(Serialize, Debug, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct ReadFiles {
     pub chapters: i64,
     pub bytes: u64,
 }
@@ -85,19 +95,22 @@ pub struct Downloads {
     data_dir: PathBuf,
     /// A chapter is not fetched while the disk has less than this free, in bytes. 0: always.
     keep_free: u64,
+    /// The queue waits while this file has a line `full`.
+    hold: Option<PathBuf>,
     wake: Arc<Notify>,
     /// The chapter being fetched: its id, pages done, pages in all.
     progress: Arc<StdMutex<Option<(i64, i64, i64)>>>,
 }
 
 impl Downloads {
-    pub fn new(db: Db, images: Images, data_dir: &Path, keep_free_mb: u64) -> Self {
+    pub fn new(db: Db, images: Images, data_dir: &Path, keep_free_mb: u64, hold: Option<PathBuf>) -> Self {
         Self {
             db,
             images,
             dir: data_dir.join("downloads"),
             data_dir: data_dir.to_owned(),
             keep_free: keep_free_mb << 20,
+            hold,
             wake: Arc::default(),
             progress: Arc::default(),
         }
@@ -130,6 +143,7 @@ impl Downloads {
 
     pub async fn list(&self) -> Result<QueueView> {
         let mut view = self.db.call(|conn| read_queue(conn)).await?;
+        view.held = held(self.hold.as_deref());
         let live = *self.progress.lock().unwrap_or_else(|e| e.into_inner());
         if let Some((chapter, done, total)) = live {
             if let Some(entry) = view.queue.iter_mut().find(|q| q.chapter_id == chapter) {
@@ -195,6 +209,27 @@ impl Downloads {
             self.delete(*chapter).await?;
         }
         Ok(chapters.len())
+    }
+
+    /// The saved chapters already read, with what their files take.
+    pub async fn read_files(&self) -> Result<ReadFiles> {
+        let files = self.db.call(|conn| saved_read(conn)).await?;
+        let dir = self.dir.clone();
+        tokio::task::spawn_blocking(move || {
+            let bytes = files.iter().filter_map(|(_, file)| fs::metadata(dir.join(file)).ok()).map(|meta| meta.len()).sum();
+            ReadFiles { chapters: files.len() as i64, bytes }
+        })
+        .await
+        .map_err(|e| AppError::internal(e.to_string()))
+    }
+
+    /// Deletes the files of every chapter already read. The chapters and their progress stay.
+    pub async fn delete_read(&self) -> Result<usize> {
+        let files = self.db.call(|conn| saved_read(conn)).await?;
+        for (chapter, _) in &files {
+            self.delete(*chapter).await?;
+        }
+        Ok(files.len())
     }
 
     /// Gives a parked chapter a fresh set of tries.
@@ -279,6 +314,11 @@ impl Downloads {
             })
             .await;
         loop {
+            // Held: nothing is handed out, and the queue stays as it is until the hold goes.
+            if held(self.hold.as_deref()) {
+                let _ = tokio::time::timeout(Duration::from_secs(30), self.wake.notified()).await;
+                continue;
+            }
             let Ok(Some(job)) = self.db.call(|conn| next_job(conn)).await else {
                 // Nothing due. Wait for a nudge, and look again before long in case a retry has come due.
                 let _ = tokio::time::timeout(Duration::from_secs(30), self.wake.notified()).await;
@@ -449,6 +489,20 @@ fn orphaned(conn: &Connection) -> Result<Vec<(i64, String, Option<String>, Vec<S
     Ok(found)
 }
 
+/// Whether the hold file says to wait: a line that reads `full`, notes after `#` left out.
+/// A file that is not there, or cannot be read, holds nothing.
+fn held(file: Option<&Path>) -> bool {
+    file.and_then(|file| fs::read_to_string(file).ok())
+        .is_some_and(|text| text.lines().any(|line| line.split('#').next().unwrap_or("").trim() == "full"))
+}
+
+/// Every saved chapter already read, with its file.
+fn saved_read(conn: &Connection) -> Result<Vec<(i64, String)>> {
+    let mut stmt = conn.prepare("SELECT id, download_path FROM chapters WHERE download_path IS NOT NULL AND read ORDER BY id")?;
+    let files = stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?.collect::<rusqlite::Result<Vec<_>>>()?;
+    Ok(files)
+}
+
 fn read_queue(conn: &Connection) -> Result<QueueView> {
     let mut stmt = conn.prepare(
         "SELECT d.chapter_id, c.name, m.id, m.title, d.state, c.page_count, d.attempts, d.retry_at, d.error
@@ -471,7 +525,7 @@ fn read_queue(conn: &Connection) -> Result<QueueView> {
             })
         })?
         .collect::<rusqlite::Result<Vec<_>>>()?;
-    Ok(QueueView { paused: settings::get::<bool>(conn, PAUSED).unwrap_or(false), queue })
+    Ok(QueueView { paused: settings::get::<bool>(conn, PAUSED).unwrap_or(false), held: false, queue })
 }
 
 /// The next chapter that is due, marked as being fetched. None while paused or when nothing is due.
@@ -676,6 +730,26 @@ mod tests {
         .unwrap();
         assert_eq!(orphaned(&conn).unwrap(), [(2, "Beta".to_owned(), None, vec!["S/Beta/One.cbz".to_owned(), "S/Beta/Two.cbz".to_owned()])]);
         assert_eq!(unread_of(&conn, &[1, 3]).unwrap(), [31, 12], "a merged title's chapters come with its head, once");
+    }
+
+    #[test]
+    fn a_hold_file_holds_the_queue() {
+        assert!(!held(None));
+        let file = std::env::temp_dir().join(format!("mango-hold-{}", std::process::id()));
+        assert!(!held(Some(&file)), "no file, no hold");
+        for (text, holds) in [("full\n", true), ("plan Free\n  full  # a note\n", true), ("# full\nno-opds\n", false), ("fuller\n", false), ("", false)] {
+            fs::write(&file, text).unwrap();
+            assert_eq!(held(Some(&file)), holds, "{text:?}");
+        }
+        fs::remove_file(&file).unwrap();
+    }
+
+    #[test]
+    fn files_of_chapters_already_read() {
+        let conn = database();
+        assert_eq!(saved_read(&conn).unwrap(), []);
+        conn.execute_batch("UPDATE chapters SET download_path = 'S/Alpha/' || id || '.cbz' WHERE id IN (10, 11)").unwrap();
+        assert_eq!(saved_read(&conn).unwrap(), [(11, "S/Alpha/11.cbz".to_owned())], "only the read one, not the unread or the unsaved");
     }
 
     #[test]

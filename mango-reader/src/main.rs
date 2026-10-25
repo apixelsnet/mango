@@ -144,6 +144,7 @@ async fn run() -> Result<(), String> {
         store_rules: store::Rules { local: cfg.stores.local, anyone_installs: cfg.stores.anyone_installs },
         blocklist: std::sync::Arc::new(store::blocklist::Blocklist::new(cfg.stores.blocklist.clone())),
         keep_free_mb: cfg.keep_free_mb,
+        hold_file: cfg.hold_file.clone(),
     };
     let state = spaces::Spaces::new(auth, shared).map_err(|e| e.to_string())?;
     // The login counts wrong passwords per address, so the server hands each call its caller's.
