@@ -21,6 +21,7 @@ mod migrate;
 mod net;
 mod notify;
 mod opds;
+mod push;
 mod settings;
 mod spaces;
 mod store;

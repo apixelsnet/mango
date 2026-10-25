@@ -79,3 +79,16 @@ Implementation: `titles.rs` (`edit_details`, `merge`, `prefer`, `listed_chapters
 Verification: unit tests cover locked fields across refreshes, merging and member order, preferred-upload selection, volume parsing and saved pages; `smoke.py` passed all 204 checks on Linux. In Chromium against a Linux build, at 1280×860 and 390×844, the following were confirmed: the edit form; a merge showing both sources and the merged title redirecting to its parent; "one upload per chapter" reducing five rows to four, with the library reporting four chapters; and volume headings. No screen scrolled horizontally and no console errors were logged.
 
 Not verified: a merge of two real online sources, and a custom cover uploaded from a phone.
+
+## Small covers (2026-10-25)
+
+Grids and lists ask for a cover's small copy (`GET /api/manga/{id}/cover?size=small`); the title page still shows the cover itself.
+
+- The copy fits within 360×540, twice the widest card, keeping the cover's shape, and is saved as a JPEG at quality 82. It is made once, on first request, and stored next to the cover with `-small` appended to the name: under `covers/` for library titles and hand-set covers, and in the swept cache for browsed titles and local ones. A local title's copy is named by a hash of its cover, so a changed cover gets a new copy.
+- JPEG, PNG and WebP are read (`png` and `image-webp` crates, about 0.4 MB added to the binary). A cover that already fits, another format, animated or see-through artwork, an EXIF turn, or a copy that would come out larger is served as the cover itself.
+- JPEGs are decoded at the smallest power-of-two scale that still covers the box; the remainder of the reduction averages the source pixels each output pixel covers. Work is done one cover at a time, as with the existing shrink.
+- The service worker matches kept covers without their query string, so a title kept for offline reading still shows its cover in grids.
+
+Verification: unit tests for JPEG and PNG copies, see-through and small inputs, and the averaging; `smoke.py` passed on Linux and Windows. Against a running build on both, a 1200×1800 PNG cover of 1.1 MB came back as a 360×540 JPEG of 77 KB, the same file on a second request; a hand-set WebP of 30 KB came back as a 360×241 JPEG of 20 KB.
+
+Not verified: a library grid in a browser, and a real source's progressive JPEG.

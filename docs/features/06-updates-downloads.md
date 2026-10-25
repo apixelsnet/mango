@@ -69,7 +69,7 @@ An overnight update finds new chapters, auto-downloads them, and they open with 
 
 Implementation: `notify.rs`, `updates.rs`, `downloads.rs` (`retry_all`, `orphaned`), `routes/Updates.svelte` and `routes/Downloads.svelte`.
 
-- **Notifications.** When a library update finds new chapters, a message is sent to the address configured in Settings › Library (`notify.url`). Three formats are supported: an ntfy topic (plain text with a title), a Discord webhook, and a generic JSON webhook receiving `{event, count, chapters: [{mangaId, title, chapterId, chapter}]}`. Up to twenty chapters are listed by name and the remainder are counted. Because the address is supplied by the account, it is subject to the same restrictions as repositories (`net.rs`): HTTPS and public addresses only, unless `MANGO_STORES_LOCAL=on` is set. `POST /api/notify/test` sends a test message. A delivery failure is logged and does not cause the update to fail. Web Push is not supported.
+- **Notifications.** When a library update finds new chapters, a message is sent to the address configured in Settings › Library (`notify.url`). Three formats are supported: an ntfy topic (plain text with a title), a Discord webhook, and a generic JSON webhook receiving `{event, count, chapters: [{mangaId, title, chapterId, chapter}]}`. Up to twenty chapters are listed by name and the remainder are counted. Because the address is supplied by the account, it is subject to the same restrictions as repositories (`net.rs`): HTTPS and public addresses only, unless `MANGO_STORES_LOCAL=on` is set. `POST /api/notify/test` sends a test message. A delivery failure is logged and does not cause the update to fail. Web Push is described below.
 - **Grouped updates.** The Updates screen groups each day's chapters by title. A title with several new chapters appears as a single expandable row with a button to download all of them.
 - **Retry failed downloads.** All failed downloads can be retried at once (`POST /api/downloads/retry`).
 - **Downloads of removed titles.** Settings › Downloads lists titles that are no longer followed but still have downloaded chapters, with their total size, and can delete those files (`GET` and `DELETE /api/downloads/orphans`). Reading progress is retained.
@@ -81,3 +81,30 @@ Implementation: `notify.rs`, `updates.rs`, `downloads.rs` (`retry_all`, `orphane
 Verification: unit tests and `smoke.py` on Linux, including the rejection of a test notification addressed to the local machine.
 
 Not verified: delivery of an update notification to a real ntfy, Discord or webhook receiver.
+
+## Web Push (2026-10-25)
+
+A device can show a notification of new chapters with Mango closed, without a native app. Code: `mango-reader/src/push.rs`, `ui/src/lib/push.ts`, the end of `ui/public/sw.js`.
+
+- **The toggle.** Settings › Library › "Notify this device", one per device and per account. Turning it on asks the browser for permission, subscribes with the account's public key and sends the subscription to `PUT /api/push`; turning it off unsubscribes and calls `DELETE /api/push`. Signing out turns it off for that device. "Send a test" (`POST /api/push/test`) sends to all of the account's devices and reports how many accepted.
+- **Where it works.** Android and desktop browsers (Chrome, Edge, Firefox, Safari) from the page itself; iPhone and iPad (iOS 16.4 or later) only after Add to Home Screen, which the toggle explains in place of the switch. HTTPS is required, or an address on the same machine; a Mango served over plain HTTP on a home network shows why it cannot.
+- **Sending.** After an update that finds new chapters, every subscribed device receives "N new chapters" with up to five named, alongside any ntfy, Discord or webhook address. Tapping the notification opens Updates. A newer notification replaces the previous one.
+- **What happens on each device.** Every subscribed device of the account receives the same message; each decides how to show it:
+
+  | Device and state | What the reader sees |
+  | --- | --- |
+  | Computer, Mango open in the window in front | No system notification. A notice in the corner of the page with Open and Dismiss, gone after 12 s; the count beside Updates goes up. |
+  | Computer, Mango in a background tab, a window behind others, or closed | A system notification. Clicking it brings an open Mango forward at Updates, or opens one. |
+  | Android, Mango open on screen (browser or home-screen app) | As on a computer in front: the notice in the page, above the bottom tabs. |
+  | Android, Mango in the background, closed, or the phone locked | A system notification, on the lock screen too. Tapping it opens Mango at Updates. |
+  | iPhone or iPad, home-screen app (iOS 16.4+) | Always a system notification, open or not, because WebKit cancels a subscription whose pushes show nothing; an open Mango only updates its count. In Safari itself, without Add to Home Screen, nothing: the toggle says so. |
+  | Any device off or offline | The push service keeps the message for 24 hours and delivers it when the device is back. |
+  | Reading a chapter | No notice over the reader; the count is updated for when the reader is closed. |
+
+  A newer notification replaces the one before rather than stacking. Reading the chapters on one device does not clear the notification on another.
+- **Security.** Each account has its own P-256 signing key (VAPID, RFC 8292), created on first use and stored in its database (`push_key`, migration 013), not among its settings. Messages are encrypted for each device (RFC 8291, `aes128gcm`), so the browser's push service sees only the size and the time. Subscription addresses come from the browser and are held to HTTPS and public addresses (`net.rs`), whatever `MANGO_STORES_LOCAL` says. A device whose push service answers 404 or 410 is forgotten. At most 20 devices per account.
+- **Cost.** About 0.2 MB of binary for `p256`, `hkdf` and `aes-gcm`.
+
+Verification: unit tests for the RFC 8291 example message byte for byte, the signed token, address checks and keeping devices; `smoke.py` passed on Linux. On the server, local and plain-HTTP addresses were refused and a made-up Mozilla subscription was forgotten after its push service answered. In Chrome against a Windows build on the same machine: the toggle subscribed through Google's push service, "Send a test" was delivered and shown by the service worker, turning it off removed the device on both sides, and signing out did the same.
+
+Not verified: an iPhone, Firefox and Safari delivery, and a notification sent by a real update run (that path shares the code of the test).

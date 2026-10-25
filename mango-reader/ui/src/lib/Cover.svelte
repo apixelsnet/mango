@@ -12,8 +12,10 @@
     ['#FFFFFF', '#E8452C'],
   ];
 
-  let { src, title, tilt = false }: { src: string | null; title: string; tilt?: boolean } = $props();
+  // Grids and lists show the cover's small copy; `full` asks for the cover itself.
+  let { src: given, title, tilt = false, full = false }: { src: string | null; title: string; tilt?: boolean; full?: boolean } = $props();
 
+  const src = $derived(given && !full && /\/cover(\?|$)/.test(given) ? given + (given.includes('?') ? '&' : '?') + 'size=small' : given);
   let failedSrc = $state<string | null>(null);
   const print = $derived(PRINTS[hash(title) % PRINTS.length]);
   const glyph = $derived([...title.trim()][0]?.toUpperCase() ?? '?');

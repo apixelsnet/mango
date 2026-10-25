@@ -88,8 +88,8 @@
           />
         </label>
         <label class="field">
-          <span class="sr">The password again</span>
-          <input type="password" bind:value={again} placeholder="Once more" autocomplete="new-password" required />
+          <span class="sr">Confirm password</span>
+          <input type="password" bind:value={again} placeholder="Confirm password" autocomplete="new-password" required />
         </label>
         <label class="field">
           <span class="sr">Invitation code</span>

@@ -6,6 +6,7 @@
   import Notice from '../lib/Notice.svelte';
   import { lacks, loadPlan, plan, tooOften } from '../lib/plan.svelte';
   import { pref, setPref } from '../lib/prefs.svelte';
+  import * as push from '../lib/push';
   import { ACTIONS, FIXED, keyName, KINDS, profile, setProfile, type Action, type Kind } from '../lib/reader';
   import ReaderPrefs from '../lib/ReaderPrefs.svelte';
   import { route } from '../lib/router.svelte';
@@ -568,6 +569,51 @@
     }
   }
 
+  // ---------- notifications on this device ----------
+
+  const pushUnable = push.unable();
+  let pushOn = $state(false);
+  let pushDevices = $state(0);
+  let pushBusy = $state(false);
+  let pushNote = $state('');
+
+  async function loadPush() {
+    try {
+      ({ on: pushOn, devices: pushDevices } = await push.state());
+    } catch (e) {
+      pushNote = message(e);
+    }
+  }
+
+  $effect(() => {
+    if (tab.id === 'library' && !pushUnable) loadPush();
+  });
+
+  async function flipPush() {
+    if (pushBusy) return;
+    pushBusy = true;
+    pushNote = '';
+    try {
+      await (pushOn ? push.turnOff() : push.turnOn());
+      await loadPush();
+    } catch (e) {
+      pushNote = message(e);
+    } finally {
+      pushBusy = false;
+    }
+  }
+
+  async function testPush() {
+    pushNote = 'Sending…';
+    try {
+      const sent = await push.test();
+      pushNote = sent ? `Sent to ${sent} ${sent === 1 ? 'device' : 'devices'}.` : 'No device took it. Turn notifications off and on again here.';
+      await loadPush();
+    } catch (e) {
+      pushNote = message(e);
+    }
+  }
+
   // ---------- backups made by themselves ----------
 
   let backups = $state<Backup[]>([]);
@@ -970,6 +1016,24 @@
             </div>
             {#if notifyNote}<p class="muted" role="status">{notifyNote}</p>{/if}
           </div>
+          <div class="set stack">
+            <div class="what">
+              <strong>Notify this device</strong>
+              <span>
+                After each check that finds new chapters, this browser shows a notification, with Mango closed too. Each device turns it on or off for itself{#if pushDevices > 0}; {pushDevices}
+                  {pushDevices === 1 ? 'device has' : 'devices have'} it on now{/if}.
+              </span>
+            </div>
+            {#if pushUnable}
+              <p class="muted">{pushUnable}</p>
+            {:else}
+              <div class="how">
+                {@render toggle(pushOn, 'Notify this device', flipPush)}
+                <button class="btn" disabled={!pushDevices || pushBusy} onclick={testPush}>Send a test</button>
+              </div>
+            {/if}
+            {#if pushNote}<p class="muted" role="status">{pushNote}</p>{/if}
+          </div>
           {#if categories.length}
             {#each [['updates.categories', 'Only these categories', 'None picked: all of them.'], ['updates.excluded', 'Never these categories', 'Left out even when picked above.']] as [key, label, hint] (key)}
               <div class="set stack" role="group" aria-label={label}>
@@ -1125,6 +1189,13 @@
                 </span>
               </div>
               <code>{home}opds</code>
+            </div>
+            <div class="set">
+              <div class="what">
+                <strong>Keep the place from reading apps</strong>
+                <span>A page an app shows moves the chapter on, and its last page marks it read. Apps that fetch pages ahead may mark a chapter read a little early.</span>
+              </div>
+              <div class="how">{@render toggle(pref('opds.progress', true), 'Keep the place from reading apps', () => setPref('opds.progress', !pref('opds.progress', true)).catch((e) => (error = message(e))))}</div>
             </div>
           {/if}
         </section>

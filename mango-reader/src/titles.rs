@@ -25,6 +25,8 @@ pub const LOCKABLE: [&str; 7] = ["title", "author", "artist", "description", "ge
 pub const CUSTOM_COVER: &str = "custom:";
 /// Reading a chapter to its end marks its other uploads read too.
 pub const MARK_DUPLICATES: &str = "chapters.markDuplicates";
+/// Pages a reading app streams over OPDS move the chapter's place on. On unless set false.
+pub const OPDS_PROGRESS: &str = "opds.progress";
 /// The most scanlation groups a title keeps an order for.
 const MAX_GROUPS: usize = 100;
 pub const READER_FITS: [&str; 4] = ["width", "height", "screen", "original"];
@@ -535,18 +537,15 @@ impl Titles {
 
     /// Saves where the reader is. `read` set marks the chapter finished or not; left out, it keeps its state.
     pub async fn progress(&self, chapter: i64, page: i64, read: Option<bool>) -> Result<()> {
-        self.change(move |conn| {
-            let changed = conn.execute(
-                "UPDATE chapters SET last_page_read = ?2, read = COALESCE(?3, read), read_at = ?4 WHERE id = ?1",
-                params![chapter, page.max(0), read, now()],
-            )?;
-            crate::library::remember(conn, chapter)?;
-            if read == Some(true) && settings::get::<bool>(conn, MARK_DUPLICATES).unwrap_or(false) {
-                read_duplicates(conn, chapter)?;
-            }
-            Ok(changed)
-        })
-        .await
+        self.change(move |conn| save_place(conn, chapter, page, read)).await
+    }
+
+    /// A page a reading app fetched over OPDS-PSE, which has no other way to tell what was
+    /// read. The chapter's place moves on when the page is further on, and its last page
+    /// marks it read. A chapter read already is left as it is, as is everything when the
+    /// option is off. Answers whether this finished the chapter.
+    pub async fn streamed(&self, chapter: i64, page: i64) -> Result<bool> {
+        self.db.call(move |conn| streamed_page(conn, chapter, page)).await
     }
 
     /// Runs an update that must hit exactly one row.
@@ -792,6 +791,38 @@ fn page_marks(conn: &Connection, which: &str) -> Result<Vec<PageMark>> {
 
 /// Marks the other uploads of a chapter read along with it: the same number, from any of
 /// the title's groups or the titles merged into it.
+/// Keeps where a chapter is read to, and with `read` whether it is finished. Answers how
+/// many chapters that was: none when there is no such chapter.
+fn save_place(conn: &Connection, chapter: i64, page: i64, read: Option<bool>) -> Result<usize> {
+    let changed = conn.execute(
+        "UPDATE chapters SET last_page_read = ?2, read = COALESCE(?3, read), read_at = ?4 WHERE id = ?1",
+        params![chapter, page.max(0), read, now()],
+    )?;
+    crate::library::remember(conn, chapter)?;
+    if read == Some(true) && settings::get::<bool>(conn, MARK_DUPLICATES).unwrap_or(false) {
+        read_duplicates(conn, chapter)?;
+    }
+    Ok(changed)
+}
+
+fn streamed_page(conn: &Connection, chapter: i64, page: i64) -> Result<bool> {
+    if !settings::get::<bool>(conn, OPDS_PROGRESS).unwrap_or(true) {
+        return Ok(false);
+    }
+    let row = conn
+        .query_row("SELECT read, last_page_read, page_count FROM chapters WHERE id = ?1", [chapter], |r| {
+            Ok((r.get::<_, bool>(0)?, r.get::<_, i64>(1)?, r.get::<_, Option<i64>>(2)?))
+        })
+        .optional()?;
+    let Some((false, kept, count)) = row else { return Ok(false) };
+    let finished = count.is_some_and(|count| count > 0 && page + 1 >= count);
+    if !finished && page <= kept {
+        return Ok(false);
+    }
+    save_place(conn, chapter, page, finished.then_some(true))?;
+    Ok(finished)
+}
+
 fn read_duplicates(conn: &Connection, chapter: i64) -> Result<()> {
     let found = conn.query_row("SELECT manga_id, chapter_number FROM chapters WHERE id = ?1", [chapter], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, f64>(1)?)));
     let Some((owner, number)) = found.optional()? else { return Ok(()) };
@@ -1504,5 +1535,30 @@ mod tests {
         let marks = read_reader(&conn, chapter).unwrap().marks;
         assert_eq!(marks, [PageMark { chapter_id: chapter, chapter_name: "One".into(), page: 4, note: "the map".into(), created_at: 10 }]);
         assert_eq!(plain_name("Solo Leveling!"), plain_name("solo  leveling"));
+    }
+
+    #[test]
+    fn streamed_pages_move_the_place_on() {
+        let mut conn = database();
+        let id = save_listing(&mut conn, 7, &[manga("/a", "Alpha")]).unwrap()[0].id;
+        apply_update(&mut conn, id, &manga("/a", "Alpha"), &[chapter("/1", "One", 0)], true, true).unwrap();
+        let chapter = read_title(&conn, id).unwrap().chapters[0].id;
+        let place = |conn: &Connection| read_title(conn, id).unwrap().chapters.iter().map(|c| (c.last_page_read, c.read)).next().unwrap();
+        conn.execute("UPDATE chapters SET page_count = 5 WHERE id = ?1", [chapter]).unwrap();
+
+        assert!(!streamed_page(&conn, chapter, 2).unwrap());
+        assert_eq!(place(&conn), (2, false));
+        assert!(!streamed_page(&conn, chapter, 1).unwrap(), "going back leaves the place");
+        assert_eq!(place(&conn), (2, false));
+        assert!(streamed_page(&conn, chapter, 4).unwrap(), "the last page finishes it");
+        assert_eq!(place(&conn), (4, true));
+        conn.execute("UPDATE chapters SET read = 1, last_page_read = 0 WHERE id = ?1", [chapter]).unwrap();
+        assert!(!streamed_page(&conn, chapter, 3).unwrap());
+        assert_eq!(place(&conn), (0, true), "a chapter read already is left alone");
+
+        conn.execute("UPDATE chapters SET read = 0 WHERE id = ?1", [chapter]).unwrap();
+        settings::set(&conn, OPDS_PROGRESS, &json!(false)).unwrap();
+        assert!(!streamed_page(&conn, chapter, 4).unwrap());
+        assert_eq!(place(&conn), (0, false), "nothing moves with the option off");
     }
 }

@@ -61,6 +61,28 @@
       .catch(() => {});
   });
 
+  // Word of new chapters while Mango is open and in front: the service worker hands it here
+  // instead of to the system (public/sw.js). It shows for a while, except over the reader;
+  // the count beside Updates is asked again either way.
+  let word = $state<{ title: string; body: string; url: string } | null>(null);
+  let wordTimer: ReturnType<typeof setTimeout> | undefined;
+
+  $effect(() => {
+    if (!('serviceWorker' in navigator)) return;
+    const hear = (event: MessageEvent) => {
+      if (event.data?.type !== 'mango-push') return;
+      get<{ fresh: number }>('/updates/fresh')
+        .then((updates) => (fresh = updates.fresh))
+        .catch(() => {});
+      if (!event.data.shown) return;
+      word = { title: event.data.note.title || 'Mango', body: event.data.note.body || '', url: event.data.note.url || '#/updates' };
+      clearTimeout(wordTimer);
+      wordTimer = setTimeout(() => (word = null), 12000);
+    };
+    navigator.serviceWorker.addEventListener('message', hear);
+    return () => navigator.serviceWorker.removeEventListener('message', hear);
+  });
+
   // A hosted reader's plan: wanted for its locks and the storage-full card, never waited for.
   // Asked again now and then as screens change, since the storage fills as downloads come in.
   $effect(() => {
@@ -219,6 +241,17 @@
   </div>
 {/if}
 
+{#if word && session.signedIn && area !== 'read'}
+  <div class="heard" class:above={tabbed} role="status">
+    <strong class="display">{word.title}</strong>
+    <span>{word.body}</span>
+    <div class="acts">
+      <a class="btn ink" href={word.url} onclick={() => (word = null)}>Open</a>
+      <button class="btn" onclick={() => (word = null)}>Dismiss</button>
+    </div>
+  </div>
+{/if}
+
 {#if plan.asking && session.signedIn && area !== 'read'}
   <StorageFull />
 {/if}
@@ -228,6 +261,37 @@
 {/if}
 
 <style>
+  /* Word of new chapters while Mango is in front, in place of the system's notification. */
+  .heard {
+    position: fixed;
+    right: calc(16px + var(--safe-right));
+    bottom: calc(16px + var(--safe-bottom));
+    z-index: 40;
+    display: grid;
+    gap: 8px;
+    width: min(360px, calc(100vw - 32px));
+    padding: 14px 16px;
+    background: var(--surface);
+    color: var(--ink);
+    border: 3px solid var(--ink);
+    box-shadow: var(--sh-5);
+  }
+
+  .heard.above {
+    bottom: calc(75px + var(--safe-bottom));
+  }
+
+  .heard span {
+    white-space: pre-line;
+    max-height: 7.5em;
+    overflow: hidden;
+  }
+
+  .heard .acts {
+    display: flex;
+    gap: 8px;
+  }
+
   /* Everything but the reader. The size picked for this device scales it whole. */
   .shell {
     zoom: var(--zoom);

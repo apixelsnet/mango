@@ -8,7 +8,9 @@
 use crate::{
     db::Db,
     error::{AppError, Result},
-    net, settings,
+    net,
+    push::{Note, Push},
+    settings,
 };
 use reqwest::{Client, Url};
 use rusqlite::Connection;
@@ -22,6 +24,8 @@ pub const URL: &str = "notify.url";
 pub const KIND: &str = "notify.kind";
 /// Chapters named one by one in a message; the rest are counted.
 const NAMED: usize = 20;
+/// The same on a phone's notification, which shows a few lines.
+const PUSHED: usize = 5;
 
 /// One new chapter, as a webhook gets it.
 #[derive(Serialize, Debug, PartialEq)]
@@ -38,6 +42,8 @@ pub struct Notifier {
     db: Db,
     http: Client,
     local: bool,
+    /// The account's devices that asked for Web Push.
+    pub push: Push,
 }
 
 impl Notifier {
@@ -47,11 +53,12 @@ impl Notifier {
             .connect_timeout(Duration::from_secs(10))
             .timeout(Duration::from_secs(20));
         let http = net::guard(builder, local).build().map_err(|e| AppError::internal(e.to_string()))?;
-        Ok(Self { db, http, local })
+        Ok(Self { push: Push::new(db.clone())?, db, http, local })
     }
 
-    /// Tells of the chapters a library update found. Without an address, or without
-    /// chapters, nothing is sent. A failure is logged: an update does not fail for it.
+    /// Tells of the chapters a library update found: at the address set, and on every
+    /// device that turned on notifications. Without either, or without chapters, nothing
+    /// is sent. A failure is logged: an update does not fail for it.
     pub async fn chapters(&self, ids: Vec<i64>) {
         if ids.is_empty() {
             return;
@@ -60,13 +67,20 @@ impl Notifier {
             Ok(found) => found,
             Err(e) => return tracing::warn!("notifications: {e}"),
         };
-        let (Some((url, kind)), list) = found else { return };
+        let (target, list) = found;
         if list.is_empty() {
             return;
         }
         let title = format!("{} new {}", list.len(), if list.len() == 1 { "chapter" } else { "chapters" });
-        if let Err(e) = self.send(&url, &kind, &title, &list).await {
-            tracing::warn!("notifications: {}", e.message);
+        if let Some((url, kind)) = target {
+            if let Err(e) = self.send(&url, &kind, &title, &list).await {
+                tracing::warn!("notifications: {}", e.message);
+            }
+        }
+        let body = message(&title, &list[..list.len().min(PUSHED)]);
+        let body = if list.len() > PUSHED { format!("{body}\nand {} more", list.len() - PUSHED) } else { body };
+        if let Err(e) = self.push.send(&Note { title: &title, body: &body, url: "#/updates" }).await {
+            tracing::warn!("push: {}", e.message);
         }
     }
 

@@ -212,8 +212,8 @@ async fn titles(Me(app): Me, Query(wanted): Query<Wanted>) -> Result<Response> {
     for item in items.iter().skip((page - 1) * TITLES_PER_PAGE).take(TITLES_PER_PAGE) {
         let mut links = format!("<link rel=\"subsection\" type=\"{ACQUISITION}\" href=\"manga/{}\"/>\n", item.id);
         if item.cover.is_some() {
-            for rel in ["http://opds-spec.org/image", "http://opds-spec.org/image/thumbnail"] {
-                let _ = writeln!(links, "<link rel=\"{rel}\" type=\"image/jpeg\" href=\"manga/{}/cover\"/>", item.id);
+            for (rel, size) in [("http://opds-spec.org/image", ""), ("http://opds-spec.org/image/thumbnail", "?size=small")] {
+                let _ = writeln!(links, "<link rel=\"{rel}\" type=\"image/jpeg\" href=\"manga/{}/cover{size}\"/>", item.id);
             }
         }
         let about = format!("{} chapters, {} unread{}", item.total, item.unread, item.source_name.as_ref().map(|source| format!(" · {source}")).unwrap_or_default());
@@ -250,8 +250,9 @@ async fn title(Me(app): Me, Path(id): Path<i64>, Query(paged): Query<Paged>) -> 
             );
         }
         // A first page as the picture only where showing it asks no source for anything.
+        // Shown in a list, it is not read.
         if chapter.downloaded {
-            let _ = writeln!(links, "<link rel=\"http://opds-spec.org/image/thumbnail\" type=\"image/jpeg\" href=\"../chapters/{}/pages/0\"/>", chapter.id);
+            let _ = writeln!(links, "<link rel=\"http://opds-spec.org/image/thumbnail\" type=\"image/jpeg\" href=\"../chapters/{}/pages/0?look=1\"/>", chapter.id);
         }
         let mut about = String::from(if chapter.read { "Read" } else { "Unread" });
         if let Some(count) = chapter.page_count {
@@ -294,13 +295,28 @@ fn picture(image: crate::images::Image) -> Response {
     (headers, image.bytes).into_response()
 }
 
-async fn cover(Me(app): Me, Path(id): Path<i64>) -> Result<Response> {
-    Ok(picture(app.images.cover(id).await?))
+#[derive(Deserialize, Default)]
+#[serde(default)]
+struct Look {
+    /// `small` for a cover's small copy.
+    size: String,
+    /// Set when a page is only shown as a chapter's picture.
+    look: u8,
 }
 
-/// One page of a chapter, counted from 0.
-async fn page(Me(app): Me, Path((id, index)): Path<(i64, i64)>) -> Result<Response> {
-    Ok(picture(app.images.page(id, index).await?))
+async fn cover(Me(app): Me, Path(id): Path<i64>, Query(look): Query<Look>) -> Result<Response> {
+    Ok(picture(app.images.cover(id, look.size == "small").await?))
+}
+
+/// One page of a chapter, counted from 0. A page streamed is a page read: the chapter's
+/// place moves on, and its last page marks it read, as the reader in the browser does.
+async fn page(Me(app): Me, Path((id, index)): Path<(i64, i64)>, Query(look): Query<Look>) -> Result<Response> {
+    let image = app.images.page(id, index).await?;
+    if look.look == 0 && app.titles.streamed(id, index).await? {
+        app.downloads.finished_reading(id).await;
+        app.trackers.read_chapter(id);
+    }
+    Ok(picture(image))
 }
 
 /// For an address or a header: everything but letters, digits and a few marks as %XX.
