@@ -125,15 +125,15 @@ fn unpack(data: &[u8]) -> Result<Vec<u8>> {
     flate2::read::GzDecoder::new(data)
         .take(MAX_UNPACKED + 1)
         .read_to_end(&mut out)
-        .map_err(|e| AppError::new(502, "bad_index", format!("The store index is damaged: {e}")))?;
+        .map_err(|e| AppError::new(502, "bad_index", format!("The repository index is damaged: {e}")))?;
     if out.len() as u64 > MAX_UNPACKED {
-        return Err(AppError::new(502, "bad_index", "The store index is too large"));
+        return Err(AppError::new(502, "bad_index", "The repository index is too large"));
     }
     Ok(out)
 }
 
 fn unreadable(e: prost::DecodeError) -> AppError {
-    AppError::new(502, "bad_index", format!("This does not look like a store index: {e}"))
+    AppError::new(502, "bad_index", format!("This does not look like a repository index: {e}"))
 }
 
 #[cfg(test)]

@@ -120,8 +120,8 @@ it does, how it was built, and what was and was not tried.
 
 ### Features
 
-* **Extensions.** Add a store by its address, search the catalog, install,
-  update and remove. Every download is checked against the store's signing key.
+* **Extensions.** Add a repository by its address, search the catalog, install,
+  update and remove. Every download is checked against the repository's signing key.
 * **Browse and search.** Popular and latest lists per source, and one search
   across all of them.
 * **Reader.** Paged left-to-right and right-to-left, vertical, and webtoon long
@@ -145,7 +145,7 @@ it does, how it was built, and what was and was not tried.
 * **Tour.** A new account is walked through the app once, and the reader shows
   where a tap goes.
 * **Accounts.** A password is asked for by default. More accounts can be added,
-  each with stores, extensions, a library, reading progress, downloads and
+  each with repositories, extensions, a library, reading progress, downloads and
   settings of its own.
 * **Reading apps.** The library is an OPDS catalog: apps that read one browse it
   and fetch chapters whole or page by page.
@@ -281,9 +281,9 @@ docker compose exec mango mango reset-password && docker compose restart mango
 ```
 
 That first account is an admin. Under Settings, Account, an admin adds more
-accounts and sets their passwords. Each account has its own stores and
+accounts and sets their passwords. Each account has its own repositories and
 extensions, library, categories, reading progress, history, downloads, tracker
-sign-ins and settings: a new account starts empty and adds its own stores. With
+sign-ins and settings: a new account starts empty and adds its own repositories. With
 more than one account, signing in asks for a name too; the first account's is
 `owner`. Removing an account deletes everything it had.
 
@@ -294,15 +294,15 @@ and sends its link. Each invitation makes one account, a reader's, and holds a
 week.
 
 Extensions are code that runs on the server, so bringing one in is for an
-admin. Other accounts add stores and install what an admin already has;
+admin. Other accounts add repositories and install what an admin already has;
 `MANGO_ANYONE_INSTALLS=on` lets them install anything; then give accounts only
 to people you would let run code on the server.
 
 ### Extensions
 
-Open Extensions, add a store by the link to its `index.pb` or its `repo.json`, then search and
-install. The store's signing key is remembered when the store is added; if it
-ever changes, Mango refuses to install from that store until you accept the new
+Open Extensions, add a repository by the link to its `index.pb` or its `repo.json`, then search and
+install. The repository's signing key is remembered when the repository is added; if it
+ever changes, Mango refuses to install from that repository until you accept the new
 key. Installed sources show up under Browse.
 
 A few sources open a web view to read a page the way a browser does. For
@@ -456,12 +456,12 @@ thanks, there is a Ko-fi page:
 Mango is a reader. It comes with no sources, no extensions and no manga, and
 this repository holds none.
 
-* Extensions, and the stores that list them, are other people's work. Mango does
+* Extensions, and the repositories that list them, are other people's work. Mango does
   not make, host, choose or check them, and has no say in what they reach.
 * What you read through Mango, and whether you may where you live, is yours to
   answer for. Read from places that have the right to offer what they offer, and
   support the people who make what you read.
-* Mango is not affiliated with Mihon, Suwayomi, any extension store, AniList,
+* Mango is not affiliated with Mihon, Suwayomi, any extension repository, AniList,
   MyAnimeList, Kitsu, MangaUpdates, FlareSolverr, Cloudflare or any source, and
   none of them endorses it. Their names belong to their owners.
 * Mango comes as it is, with no warranty of any kind. The [licence](LICENSE)

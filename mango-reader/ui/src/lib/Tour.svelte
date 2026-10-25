@@ -22,7 +22,7 @@
     {
       icon: 'puzzle',
       title: 'Add a source',
-      text: 'Titles come from sources, and sources are extensions. Install one here. If no store is listed yet, add a store’s address first.',
+      text: 'Titles come from sources, and sources are extensions. Install one here. If no repository is listed yet, add a repository’s address first.',
       to: '/extensions',
       where: 'Extensions',
     },

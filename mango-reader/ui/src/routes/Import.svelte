@@ -155,7 +155,7 @@
           <li>
             <span class="main">
               <strong>{source.name}</strong>
-              <span>{source.titles} {source.titles === 1 ? 'title' : 'titles'}{source.extension ? ` · ${source.extension}` : ' · no added store has its extension'}</span>
+              <span>{source.titles} {source.titles === 1 ? 'title' : 'titles'}{source.extension ? ` · ${source.extension}` : ' · no added repository has its extension'}</span>
             </span>
             {#if source.pkg}
               <button class="btn" disabled={installing[source.id]} onclick={() => install(source)}>{installing[source.id] ? 'Installing…' : 'Install'}</button>

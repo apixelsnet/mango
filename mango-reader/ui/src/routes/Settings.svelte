@@ -967,7 +967,7 @@
             </div>
           {/if}
           <div class="set">
-            <div class="what"><strong>Extensions and stores</strong><span>Install, update and remove the extensions that fetch titles.</span></div>
+            <div class="what"><strong>Extensions and repositories</strong><span>Install, update and remove the extensions that fetch titles.</span></div>
             <div class="how"><a class="btn" href="#/extensions"><Icon name="puzzle" size={18} />Open extensions</a></div>
           </div>
         </section>
@@ -1201,7 +1201,7 @@
               <div class="set stack">
                 <div class="what">
                   <span>
-                    Each account has its own stores and extensions, library, reading progress, downloads and settings. An admin is one who
+                    Each account has its own repositories and extensions, library, reading progress, downloads and settings. An admin is one who
                     may change this list.
                   </span>
                 </div>

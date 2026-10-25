@@ -145,7 +145,7 @@
   {#if !loading && !error}
     {#if sources.every((s) => s.id === '0')}
       <Notice>
-        No online sources yet. Add a store and install an extension to get some.
+        No online sources yet. Add a repository and install an extension to get some.
         <a class="btn spot" href="#/extensions">Open extensions</a>
       </Notice>
     {/if}

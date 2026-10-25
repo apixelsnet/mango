@@ -100,3 +100,7 @@ Checked by unit tests of the file's reading, and on Linux against the real store
 ## Done when
 
 A fresh install can add a Mihon extension store, find an extension by name, install it and see its sources under Browse.
+
+## Called a repository (2026-10-25)
+
+What the reader sees says "repository", as Mihon and its forks do: Extensions, Settings, the tour, the README and the error messages. The API (`/api/stores`), the code, the database and `MANGO_STORES_LOCAL` keep "store", so nothing a script, a backup or a hosted instance relies on changes.

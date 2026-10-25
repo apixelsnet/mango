@@ -17,7 +17,7 @@ use std::{
     sync::Arc,
 };
 
-const NOT_HTTPS: &str = "Stores are fetched over HTTPS. MANGO_STORES_LOCAL=on allows plain HTTP.";
+const NOT_HTTPS: &str = "Repositories are fetched over HTTPS. MANGO_STORES_LOCAL=on allows plain HTTP.";
 const LOCAL: &str = "That address is on this machine or its network. MANGO_STORES_LOCAL=on allows it.";
 
 /// Whether an address is this machine's, its network's, or no host's at all.
