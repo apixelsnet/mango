@@ -215,12 +215,12 @@ Both workflows ran on GitHub. The release workflow, from the tag `v1.0.0`, made 
 
 Its first run failed: amd64 and arm64 are built side by side, and both unpacked crates into one shared cargo cache. Each platform now has its own.
 
-## Quicker to wake, lighter to open (2026-10-25)
+## Performance optimizations (2026-10-25)
 
-- The host's JVM keeps the classes it loaded in `host/host.jsa` when it stops, and maps them in at the next start (`-XX:+AutoCreateSharedArchive`; Java checks the archive against the jars and makes it again when they change). Measured on the Linux server, from start to the ready line: 371, 379, 382 ms without; 219, 220, 234 ms with, after one run of 415 ms that wrote it.
-- The UI fetches the screens not every visit opens when they are first opened: the reader, Settings, extensions, import, migration, stats, the main page. First paint, measured with Vite: 246 KB of script (83 KB gzipped) and 47 KB of styles before; 166 KB (58 KB) and 27 KB after, with this change's new screens added.
-- The page cache no longer writes to the disk on every hit: a file used again within an hour keeps its time. A downloaded chapter's page names are kept for the last 32 chapters read, so a page turned does not list and sort the archive again. Pages and covers are shared between the cache, the disk and the answer instead of copied.
+- **Class data sharing for the extension host.** The host JVM writes the classes it has loaded to `host/host.jsa` when it stops and maps them at the next start (`-XX:+AutoCreateSharedArchive`). The JVM validates the archive against the JAR files and regenerates it when they change. Measured on the Linux server from process start to the ready line: 371, 379 and 382 ms without the archive; 219, 220 and 234 ms with it, after an initial run of 415 ms that created it.
+- **On-demand loading of screens.** Screens that are not needed on every visit are loaded when first opened: the reader, Settings, extensions, import, migration, statistics and the welcome page. Initial load, as reported by Vite: 246 KB of JavaScript (83 KB gzipped) and 47 KB of CSS before the change; 166 KB (58 KB gzipped) and 27 KB after, including the screens added in this release.
+- **Page cache.** A cache hit no longer writes to disk: a file accessed within the last hour keeps its modification time. The sorted page list of the 32 most recently read downloaded chapters is kept in memory, so turning a page does not re-read and sort the archive index. Images are shared between the cache, the disk writer and the response rather than copied.
 
-## Release notes in sections (2026-10-25)
+## Categorized release notes (2026-10-25)
 
-A release's notes come in Added, Changed and Fixed (`.github/release.yml`), by the label of each pull request: `changelog: added`, `changelog: changed`, `changelog: fixed`, or `changelog: skip` to leave one out. The Changelog workflow labels a pull request by its title when it is opened or retitled (`feat` Added, `fix` Fixed, the rest Changed) and leaves a label set by hand alone. Pull requests from before have none and fall under Other.
+Release notes are divided into Added, Changed and Fixed sections (`.github/release.yml`) according to the label on each pull request: `changelog: added`, `changelog: changed` or `changelog: fixed`; `changelog: skip` excludes a pull request. The Changelog workflow assigns a label from the pull request title when the pull request is opened or renamed (`feat` to Added, `fix` to Fixed, all others to Changed) and does not override a label set manually. Pull requests merged before this change carry no label and appear under Other.

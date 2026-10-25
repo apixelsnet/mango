@@ -101,6 +101,6 @@ Checked by unit tests of the file's reading, and on Linux against the real store
 
 A fresh install can add a Mihon extension store, find an extension by name, install it and see its sources under Browse.
 
-## Called a repository (2026-10-25)
+## Terminology: repositories (2026-10-25)
 
-What the reader sees says "repository", as Mihon and its forks do: Extensions, Settings, the tour, the README and the error messages. The API (`/api/stores`), the code, the database and `MANGO_STORES_LOCAL` keep "store", so nothing a script, a backup or a hosted instance relies on changes.
+The user interface now refers to extension stores as "repositories", consistent with Mihon and its forks. The change applies to the Extensions screen, Settings, the guided tour, the issue forms, the README, the installation guide and the error messages returned by the server. Internal names are unchanged: the API (`/api/stores`), the source code, the database schema and the `MANGO_STORES_LOCAL` setting continue to use "store", so existing scripts, backups and hosted instances are not affected.

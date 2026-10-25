@@ -41,11 +41,11 @@ Checked in Chromium against a Mango on the Linux server, at 390×844 and 320×56
 
 Not checked: a real iPhone. The band behind the clock, the notch and home-bar spacing, and the icon on a home screen cannot be seen in a desktop browser.
 
-## With no connection, on e-ink, unseen (2026-10-25)
+## Offline reading, e-ink support and incognito mode (2026-10-25)
 
-- **Kept on this device**: a chapter's menu, or the select bar, keeps chapters in the browser's own cache (`lib/offline.ts`), with what the title page and the reader ask for, the session and the settings, and the reader's code. `public/sw.js` answers from that copy when Mango cannot be reached, and serves a kept page from it first. The page itself and its files are kept by the worker as they are fetched. Other pages under the same name are left alone, as the hosted Mango shares its name with the account pages. Signing out empties every account's copy. Browsers offer this only over HTTPS or on this machine's own address.
-- **Still screen** and **library in pages**, for e-ink; **incognito**. Settings › Appearance, kept on the device.
+- **Offline reading.** From a chapter's menu or the selection bar, chapters can be saved to the browser's cache (`lib/offline.ts`), together with the data the title page and the reader request, the session, the settings and the reader's code. The service worker (`public/sw.js`) serves this copy when Mango cannot be reached, and serves saved pages from it first. The application shell is cached by the service worker as it is fetched. Other pages under the same host name are not cached, because the hosted service shares its host name with the account pages. Signing out clears the saved chapters of every account. Browsers provide this cache only over HTTPS or on the local machine.
+- **E-ink and privacy.** "Still screen", "Library in pages" and "Incognito" are available in Settings › Appearance and are stored per device.
 
-Checked in Chromium against Linux: a chapter kept, the network cut, the page reloaded, the chapter read with all four pages.
+Verification in Chromium against a Linux build: a chapter was saved, the network was disabled, the page was reloaded and all four pages of the chapter were displayed.
 
-Not checked: a real phone, a real e-ink reader.
+Not verified: a real phone and a real e-ink device.

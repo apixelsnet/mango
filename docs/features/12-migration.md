@@ -43,6 +43,6 @@ Checked on Linux and Windows by `smoke.py` (117 checks in all), which moves the 
 
 Not checked: a title with hundreds of chapters on both sides, and a move between two real sources that number their chapters differently.
 
-## Many at once (2026-10-25)
+## Bulk migration (2026-10-25)
 
-From the library's select bar; see feature 04. Each move is the one above, one after another.
+Several titles can be migrated at once from the library's selection bar; see feature 04. Each title is migrated as described above, one after another.

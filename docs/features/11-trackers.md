@@ -61,6 +61,6 @@ Checked on Linux and Windows by `smoke.py` (109 checks in all) and in a browser:
 
 Not checked, for want of an account on any of the four: a sign-in that succeeds, MyAnimeList's search, linking, changing an entry, the push after a chapter is read, and the renewal of a token. These follow each tracker's published API and Mihon's use of it; expect the first real sign-in to find something.
 
-## Both ways (2026-10-25)
+## Two-way synchronization (2026-10-25)
 
-Refreshing a link marks read here every numbered chapter up to the one the tracker says was read, so what was read on another app counts. With "Take in what was read elsewhere" on (`trackers.pull`), every library title's links are refreshed so after each library update, two seconds apart. A merged title's chapters count for the title they are in. Checked by unit tests only; no tracker account was used.
+Refreshing a tracker link marks as read every numbered chapter up to the last chapter the tracker reports as read, so progress made in other applications is reflected in Mango. When "Take in what was read elsewhere" is enabled (`trackers.pull`), the links of every library title are refreshed after each library update, two seconds apart. Chapters of merged sources count toward the title they belong to. Verification: unit tests only; no tracker account was used.

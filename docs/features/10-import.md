@@ -86,10 +86,10 @@ Not checked: Suwayomi's local source, and an export over a slow link through the
 
 A real Mihon backup and a real Suwayomi backup both import with read progress and categories intact, and re-importing the same file changes nothing. An export opens in Mihon and in Suwayomi with the same.
 
-## Backups by themselves (2026-10-25)
+## Scheduled backups (2026-10-25)
 
-Code: `backups.rs`. Settings › Sources: never, daily, every 3 days or weekly (`backup.hours`), keeping 3 to 30 (`backup.keep`, 7 by default). Each is the same `.tachibk` as "Export a backup", made into `<data>/backups/mango-YYYYMMDD-HHMMSS.tachibk` (UTC), closed to other users; the oldest go as new ones come. `GET /api/backups`, `POST /api/backups` (now), `GET`/`DELETE /api/backups/{name}`; any other name is a 404.
+Implementation: `backups.rs`. The schedule is configured in Settings › Sources: never, daily, every three days or weekly (`backup.hours`), retaining between 3 and 30 backups (`backup.keep`, default 7). Each backup is the same `.tachibk` file produced by "Export a backup" and is written to `<data>/backups/mango-YYYYMMDD-HHMMSS.tachibk` (UTC) with owner-only permissions; the oldest backups are deleted as new ones are created. Endpoints: `GET /api/backups`, `POST /api/backups` (create now), and `GET` and `DELETE /api/backups/{name}`; any other file name returns 404.
 
-An export leaves out a cover set by hand, and takes titles merged into another as library titles of their own: Mihon has no merges, and their progress would be lost otherwise.
+Exports omit custom covers, and include titles merged into another as separate library titles: Mihon has no concept of merged titles, and their reading progress would otherwise be lost.
 
-Checked by unit tests and `smoke.py` on Linux.
+Verification: unit tests and `smoke.py` on Linux.

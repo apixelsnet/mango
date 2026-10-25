@@ -65,17 +65,17 @@ Not checked: weeks of real runs. A series that changes its rhythm is found late 
 
 An overnight update finds new chapters, auto-downloads them, and they open with the network unplugged.
 
-## Word of new chapters, and tidying (2026-10-25)
+## Notifications, grouped updates and download maintenance (2026-10-25)
 
-Code: `notify.rs`, `updates.rs`, `downloads.rs` (`retry_all`, `orphaned`), `routes/Updates.svelte`, `routes/Downloads.svelte`.
+Implementation: `notify.rs`, `updates.rs`, `downloads.rs` (`retry_all`, `orphaned`), `routes/Updates.svelte` and `routes/Downloads.svelte`.
 
-- **Notifications**: after an update run that finds chapters, a message goes to the address in Settings › Library (`notify.url`): an ntfy topic (text, with a title), a Discord webhook, or a JSON post `{event, count, chapters: [{mangaId, title, chapterId, chapter}]}`. Twenty chapters are named, the rest counted. The address is the account's to name, so it is fetched as a store is (`net.rs`): HTTPS and public addresses only, unless `MANGO_STORES_LOCAL=on`. `POST /api/notify/test` sends a test. A failure is logged; the run does not fail for it. No Web Push.
-- **Updates** groups a day's chapters by title: a title with five is one row of five, opened to show them, with one button to download them all.
-- **Retry all that failed** (`POST /api/downloads/retry`).
-- **Files of titles you left** (Settings › Downloads): titles not followed any more that still have chapters saved, with their size, and one button to delete those files (`GET`/`DELETE /api/downloads/orphans`). Their progress stays.
-- Titles merged into a library title update with it, take its categories and its "download new chapters", and their chapters show under it.
-- The Updates, Downloads and Import screens ask again every so often only while they are in view (`every` in `lib/util.ts`); the menu's count asks `GET /api/updates/fresh`, one query instead of three.
+- **Notifications.** When a library update finds new chapters, a message is sent to the address configured in Settings › Library (`notify.url`). Three formats are supported: an ntfy topic (plain text with a title), a Discord webhook, and a generic JSON webhook receiving `{event, count, chapters: [{mangaId, title, chapterId, chapter}]}`. Up to twenty chapters are listed by name and the remainder are counted. Because the address is supplied by the account, it is subject to the same restrictions as repositories (`net.rs`): HTTPS and public addresses only, unless `MANGO_STORES_LOCAL=on` is set. `POST /api/notify/test` sends a test message. A delivery failure is logged and does not cause the update to fail. Web Push is not supported.
+- **Grouped updates.** The Updates screen groups each day's chapters by title. A title with several new chapters appears as a single expandable row with a button to download all of them.
+- **Retry failed downloads.** All failed downloads can be retried at once (`POST /api/downloads/retry`).
+- **Downloads of removed titles.** Settings › Downloads lists titles that are no longer followed but still have downloaded chapters, with their total size, and can delete those files (`GET` and `DELETE /api/downloads/orphans`). Reading progress is retained.
+- Titles merged into a library title are updated with it and inherit its categories and its automatic download setting; their chapters are listed under it.
+- The Updates, Downloads and Import screens poll the server only while the page is visible (`every` in `lib/util.ts`). The update badge in the menu uses `GET /api/updates/fresh`, which performs one query instead of three.
 
-Checked by unit tests and `smoke.py` on Linux (a test sent to this machine's address is refused).
+Verification: unit tests and `smoke.py` on Linux, including the rejection of a test notification addressed to the local machine.
 
-Not checked: a real ntfy, Discord or webhook receiving a run's message.
+Not verified: delivery of an update notification to a real ntfy, Discord or webhook receiver.
