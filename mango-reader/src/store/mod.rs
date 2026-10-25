@@ -123,6 +123,8 @@ pub struct SourceInfo {
     /// The owner's choices for the source list.
     pub pinned: bool,
     pub hidden: bool,
+    /// The folder the owner put it in on Browse.
+    pub folder: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -503,14 +505,20 @@ impl Stores {
         self.db.call(|conn| read_sources(conn)).await
     }
 
-    /// Pins or hides a source in the source list. A value left out keeps its state.
-    pub async fn set_source(&self, id: i64, pinned: Option<bool>, hidden: Option<bool>) -> Result<()> {
+    /// Pins or hides a source in the source list, or puts it in a folder. A value left out
+    /// keeps its state; an empty folder takes it out of its folder.
+    pub async fn set_source(&self, id: i64, pinned: Option<bool>, hidden: Option<bool>, folder: Option<String>) -> Result<()> {
+        let folder = folder.map(|name| name.trim().to_owned());
+        if folder.as_ref().is_some_and(|name| name.chars().count() > 60) {
+            return Err(AppError::bad_request("A folder's name has 60 characters at most"));
+        }
         self.db
             .call(move |conn| {
                 conn.execute(
-                    "INSERT INTO source_prefs (source_id, pinned, hidden) VALUES (?1, COALESCE(?2, 0), COALESCE(?3, 0))
-                     ON CONFLICT(source_id) DO UPDATE SET pinned = COALESCE(?2, pinned), hidden = COALESCE(?3, hidden)",
-                    params![id, pinned, hidden],
+                    "INSERT INTO source_prefs (source_id, pinned, hidden, folder) VALUES (?1, COALESCE(?2, 0), COALESCE(?3, 0), NULLIF(?4, ''))
+                     ON CONFLICT(source_id) DO UPDATE SET pinned = COALESCE(?2, pinned), hidden = COALESCE(?3, hidden),
+                         folder = CASE WHEN ?4 IS NULL THEN folder ELSE NULLIF(?4, '') END",
+                    params![id, pinned, hidden, folder],
                 )?;
                 Ok(())
             })
@@ -1091,7 +1099,7 @@ fn query_catalog(conn: &Connection, query: &CatalogQuery) -> Result<(Vec<Catalog
 
 fn read_sources(conn: &Connection) -> Result<Vec<SourceInfo>> {
     let mut stmt = conn.prepare(
-        "SELECT s.id, s.pkg, s.name, s.lang, s.base_url, s.supports_latest, COALESCE(p.pinned, 0), COALESCE(p.hidden, 0)
+        "SELECT s.id, s.pkg, s.name, s.lang, s.base_url, s.supports_latest, COALESCE(p.pinned, 0), COALESCE(p.hidden, 0), p.folder
          FROM sources s LEFT JOIN source_prefs p ON p.source_id = s.id
          ORDER BY s.name COLLATE NOCASE, s.lang, s.id",
     )?;
@@ -1106,6 +1114,7 @@ fn read_sources(conn: &Connection) -> Result<Vec<SourceInfo>> {
                 supports_latest: r.get(5)?,
                 pinned: r.get(6)?,
                 hidden: r.get(7)?,
+                folder: r.get(8)?,
             })
         })?
         .collect::<rusqlite::Result<Vec<_>>>()?;

@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { get, type Updates } from './lib/api';
+  import { get } from './lib/api';
   import { display } from './lib/display.svelte';
   import Icon, { type IconName } from './lib/Icon.svelte';
   import Notice from './lib/Notice.svelte';
@@ -12,18 +12,24 @@
   import Downloads from './routes/Downloads.svelte';
   import UpdatesScreen from './routes/Updates.svelte';
   import Browse from './routes/Browse.svelte';
-  import Extension from './routes/Extension.svelte';
-  import Extensions from './routes/Extensions.svelte';
   import History from './routes/History.svelte';
-  import Import from './routes/Import.svelte';
   import Library from './routes/Library.svelte';
-  import Migrate from './routes/Migrate.svelte';
-  import Reader from './routes/Reader.svelte';
   import Search from './routes/Search.svelte';
-  import Settings from './routes/Settings.svelte';
   import Source from './routes/Source.svelte';
   import Title from './routes/Title.svelte';
-  import Welcome from './routes/Welcome.svelte';
+
+  // Screens not every visit opens are fetched when first opened, so the first paint waits for less.
+  const later = {
+    reader: () => import('./routes/Reader.svelte'),
+    settings: () => import('./routes/Settings.svelte'),
+    extensions: () => import('./routes/Extensions.svelte'),
+    extension: () => import('./routes/Extension.svelte'),
+    import: () => import('./routes/Import.svelte'),
+    migrate: () => import('./routes/Migrate.svelte'),
+    migrateMany: () => import('./routes/MigrateMany.svelte'),
+    stats: () => import('./routes/Stats.svelte'),
+    welcome: () => import('./routes/Welcome.svelte'),
+  };
 
   // `under` lists the first path segments that light the entry up.
   const NAV: { to: string; label: string; icon: IconName; under: string[] }[] = [
@@ -48,7 +54,7 @@
   $effect(() => {
     void area;
     if (!session.signedIn) return;
-    get<Updates>('/updates?limit=1')
+    get<{ fresh: number }>('/updates/fresh')
       .then((updates) => (fresh = updates.fresh))
       .catch(() => {});
   });
@@ -82,14 +88,16 @@
   {/if}
 {:else if !session.signedIn}
   {#if session.signup}
-    <Welcome />
+    {#await later.welcome() then { default: Welcome }}<Welcome />{/await}
   {:else}
     <SignIn />
   {/if}
 {:else if area === 'read' && parts[1]}
-  {#key parts[1]}
-    <Reader id={Number(parts[1])} />
-  {/key}
+  {#await later.reader() then { default: Reader }}
+    {#key parts[1]}
+      <Reader id={Number(parts[1])} />
+    {/key}
+  {/await}
 {:else}
   <div class="shell" class:tabbed={tabbed && !pushed}>
     {#if !pushed}
@@ -102,6 +110,9 @@
           <span class="display word">MANGO</span>
           <span class="kana" aria-hidden="true">マンゴー</span>
         </a>
+        {#if display.value.incognito}
+          <a class="tag ink incognito" href="#/settings/appearance" title="Reading here leaves no trace. Turn it off in Settings.">Incognito</a>
+        {/if}
         {#if !tabbed}
           <nav aria-label="Primary">
             {#each NAV as item (item.to)}
@@ -135,27 +146,39 @@
       {:else if area === 'history'}
         <History />
       {:else if area === 'settings'}
-        <Settings />
+        {#await later.settings() then { default: Settings }}<Settings />{/await}
       {:else if area === 'import'}
-        <Import />
+        {#await later.import() then { default: Import }}<Import />{/await}
+      {:else if area === 'stats'}
+        {#await later.stats() then { default: Stats }}<Stats />{/await}
       {:else if area === 'search'}
         {#key route.query.toString()}
-          <Search q={route.query.get('q') ?? ''} from={Number(route.query.get('for')) || null} />
+          <Search q={route.query.get('q') ?? ''} from={Number(route.query.get('for')) || null} merge={Number(route.query.get('merge')) || null} />
         {/key}
+      {:else if area === 'migrate' && parts[1] === 'many'}
+        {#await later.migrateMany() then { default: MigrateMany }}
+          {#key route.query.toString()}
+            <MigrateMany ids={(route.query.get('ids') ?? '').split(',').map(Number).filter(Boolean)} />
+          {/key}
+        {/await}
       {:else if area === 'migrate' && parts[1] && parts[2]}
-        {#key route.path}
-          <Migrate from={Number(parts[1])} to={Number(parts[2])} />
-        {/key}
+        {#await later.migrate() then { default: Migrate }}
+          {#key route.path}
+            <Migrate from={Number(parts[1])} to={Number(parts[2])} />
+          {/key}
+        {/await}
       {:else if area === 'source' && parts[1]}
         {#key parts[1]}
           <Source id={parts[1]} />
         {/key}
       {:else if area === 'extensions'}
-        <Extensions />
+        {#await later.extensions() then { default: Extensions }}<Extensions />{/await}
       {:else if area === 'extension' && parts[1]}
-        {#key parts[1]}
-          <Extension pkg={parts[1]} />
-        {/key}
+        {#await later.extension() then { default: Extension }}
+          {#key parts[1]}
+            <Extension pkg={parts[1]} />
+          {/key}
+        {/await}
       {:else if area === 'title' && parts[1]}
         {#key parts[1]}
           <Title id={Number(parts[1])} />
@@ -237,6 +260,10 @@
     font-size: 11px;
     font-weight: 900;
     letter-spacing: 0.18em;
+  }
+
+  .incognito {
+    flex: none;
   }
 
   /* The menu stays on one line and scrolls sideways if it must. */

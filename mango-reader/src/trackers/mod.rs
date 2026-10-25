@@ -13,6 +13,7 @@ mod mangaupdates;
 use crate::{
     db::{self, now, Db},
     error::{AppError, Result},
+    titles::{id_list, members},
 };
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
 use reqwest::{Client, RequestBuilder, StatusCode};
@@ -24,6 +25,10 @@ use tokio::sync::Mutex;
 
 /// Where a sign-in to MyAnimeList waits between leaving for its page and coming back.
 const PENDING: &str = "tracker.pending";
+/// After each library update, take in what the trackers say was read elsewhere.
+pub const PULL: &str = "trackers.pull";
+/// The pause between two titles when the trackers are asked in a row, to keep under their limits.
+const BETWEEN_TITLES: Duration = Duration::from_secs(2);
 const MAX_CHAPTER: f64 = 100_000.0;
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -395,9 +400,28 @@ fn store(conn: &Connection, manga: i64, track: &Track) -> Result<()> {
 }
 
 /// The highest number among a title's read chapters, in whole chapters; 0 when none is read or numbered.
+/// The chapters of titles merged into it count.
 fn reached(conn: &Connection, manga: i64) -> Result<f64> {
-    let highest: f64 = conn.query_row("SELECT COALESCE(MAX(chapter_number), 0) FROM chapters WHERE manga_id = ?1 AND read", [manga], |r| r.get(0))?;
+    let list = id_list(&members(conn, manga)?);
+    let highest: f64 =
+        conn.query_row(&format!("SELECT COALESCE(MAX(chapter_number), 0) FROM chapters WHERE manga_id IN ({list}) AND read"), [], |r| r.get(0))?;
     Ok(highest.clamp(0.0, MAX_CHAPTER).floor())
+}
+
+/// Marks read every numbered chapter up to `upto`, which a tracker says was read elsewhere.
+/// Answers how many changed.
+fn catch_up(conn: &Connection, manga: i64, upto: f64) -> Result<usize> {
+    if upto <= 0.0 {
+        return Ok(0);
+    }
+    let list = id_list(&members(conn, manga)?);
+    Ok(conn.execute(
+        &format!(
+            "UPDATE chapters SET read = 1, last_page_read = 0, read_at = ?1
+             WHERE manga_id IN ({list}) AND read = 0 AND chapter_number >= 0 AND chapter_number <= ?2"
+        ),
+        params![now(), upto],
+    )?)
 }
 
 fn infos(conn: &Connection) -> Result<Vec<Info>> {
@@ -669,7 +693,8 @@ impl Trackers {
             .await
     }
 
-    /// Looks at the tracker's entry again and settles the two sides.
+    /// Looks at the tracker's entry again and settles the two sides. Chapters the tracker
+    /// says were read elsewhere are marked read here too.
     pub async fn refresh(&self, manga: i64, kind: Kind) -> Result<Track> {
         let account = self.account(kind).await?;
         let (mut track, reached) = self.db.call(move |conn| Ok((track(conn, manga, kind)?, reached(conn, manga)?))).await?;
@@ -677,9 +702,35 @@ impl Trackers {
         self.db
             .call(move |conn| {
                 store(conn, manga, &track)?;
+                catch_up(conn, manga, track.last_chapter_read)?;
                 Ok(track)
             })
             .await
+    }
+
+    /// Refreshes every link of every library title, one title at a time. For after a
+    /// library update, so what was read on another app shows here. A failing tracker is logged.
+    pub async fn pull_all(&self) {
+        let linked = self
+            .db
+            .call(|conn| {
+                let mut stmt = conn.prepare("SELECT t.manga_id, t.tracker FROM tracks t JOIN manga m ON m.id = t.manga_id WHERE m.in_library = 1 ORDER BY 1, 2")?;
+                let rows = stmt.query_map([], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, i64>(1)?)))?.collect::<rusqlite::Result<Vec<_>>>()?;
+                Ok(rows)
+            })
+            .await
+            .unwrap_or_default();
+        for (place, (manga, tracker)) in linked.into_iter().enumerate() {
+            let Some(kind) = Kind::from_id(tracker) else { continue };
+            if place > 0 {
+                tokio::time::sleep(BETWEEN_TITLES).await;
+            }
+            match self.refresh(manga, kind).await {
+                Ok(_) => {}
+                Err(e) if e.code == "tracker_signed_out" => {}
+                Err(e) => tracing::warn!("trackers: {} for title {manga}: {e}", kind.name()),
+            }
+        }
     }
 
     /// Takes the link away. The entry on the tracker stays as it is.
@@ -706,7 +757,15 @@ impl Trackers {
     pub fn read_chapter(&self, chapter: i64) {
         let this = self.clone();
         tokio::spawn(async move {
-            let manga = this.db.call(move |conn| Ok(conn.query_row("SELECT manga_id FROM chapters WHERE id = ?1", [chapter], |r| r.get(0)).optional()?)).await;
+            // A chapter of a merged title moves the links of the title it was merged into.
+            let manga = this
+                .db
+                .call(move |conn| {
+                    Ok(conn
+                        .query_row("SELECT COALESCE(m.merged_into, m.id) FROM chapters c JOIN manga m ON m.id = c.manga_id WHERE c.id = ?1", [chapter], |r| r.get(0))
+                        .optional()?)
+                })
+                .await;
             match manga {
                 Ok(Some(manga)) => {
                     if let Err(e) = this.follow(manga).await {
@@ -845,6 +904,22 @@ mod tests {
         conn.execute("UPDATE chapters SET read = 0", []).unwrap();
         assert_eq!(reached(&conn, 1).unwrap(), 0.0);
         assert_eq!(reached(&conn, 99).unwrap(), 0.0);
+    }
+
+    #[test]
+    fn what_was_read_elsewhere_comes_in() {
+        let conn = database();
+        conn.execute("UPDATE chapters SET read = 0", []).unwrap();
+        assert_eq!(catch_up(&conn, 1, 2.0).unwrap(), 1, "chapter one; not two and a half, not the extra");
+        assert_eq!(reached(&conn, 1).unwrap(), 1.0);
+        assert_eq!(catch_up(&conn, 1, 2.0).unwrap(), 0, "nothing twice");
+        assert_eq!(catch_up(&conn, 1, 0.0).unwrap(), 0);
+        conn.execute_batch(
+            "INSERT INTO manga (id, source_id, url, title, merged_into) VALUES (2, 8, '/b', 'Alpha', 1);
+             INSERT INTO chapters (manga_id, url, name, chapter_number, source_order, fetched_at, read) VALUES (2, '/b/9', 'Nine', 9, 0, 1, 1);",
+        )
+        .unwrap();
+        assert_eq!(reached(&conn, 1).unwrap(), 9.0, "a merged title's chapters count");
     }
 
     #[test]

@@ -6,7 +6,9 @@ use crate::{
     db::{now, Db},
     error::{AppError, Result},
     images::Images,
+    library::FOLLOWED,
     settings,
+    titles::{head_of, listed_chapters},
 };
 use rusqlite::{params, Connection, OptionalExtension};
 use serde::Serialize;
@@ -46,6 +48,17 @@ pub struct Queued {
 pub struct QueueView {
     pub paused: bool,
     pub queue: Vec<Queued>,
+}
+
+/// A title outside the library that still has chapters saved.
+#[derive(Serialize, Debug, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct Orphan {
+    pub manga_id: i64,
+    pub title: String,
+    pub source_name: Option<String>,
+    pub chapters: i64,
+    pub bytes: u64,
 }
 
 /// A chapter picked from the queue, with what its file name and ComicInfo need.
@@ -138,6 +151,50 @@ impl Downloads {
                 Ok(())
             })
             .await
+    }
+
+    /// Gives every parked chapter a fresh set of tries. Answers how many there were.
+    pub async fn retry_all(&self) -> Result<usize> {
+        let again = self
+            .db
+            .call(|conn| Ok(conn.execute("UPDATE downloads SET state = 'queued', attempts = 0, retry_at = NULL, error = NULL WHERE state = 'failed'", [])?))
+            .await?;
+        self.wake.notify_one();
+        Ok(again)
+    }
+
+    /// Titles that are not followed any more and still have chapters saved, with what their files take.
+    pub async fn orphans(&self) -> Result<Vec<Orphan>> {
+        let rows = self.db.call(|conn| orphaned(conn)).await?;
+        let dir = self.dir.clone();
+        tokio::task::spawn_blocking(move || {
+            rows.into_iter()
+                .map(|(manga_id, title, source_name, files)| {
+                    let bytes = files.iter().filter_map(|file| fs::metadata(dir.join(file)).ok()).map(|meta| meta.len()).sum();
+                    Orphan { manga_id, title, source_name, chapters: files.len() as i64, bytes }
+                })
+                .collect()
+        })
+        .await
+        .map_err(|e| AppError::internal(e.to_string()))
+    }
+
+    /// Deletes the saved chapters of every title `orphans` lists. Their chapters and progress stay.
+    pub async fn delete_orphans(&self) -> Result<usize> {
+        let chapters = self
+            .db
+            .call(|conn| {
+                let mut stmt = conn.prepare(&format!(
+                    "SELECT c.id FROM chapters c JOIN manga m ON m.id = c.manga_id WHERE c.download_path IS NOT NULL AND NOT {FOLLOWED}"
+                ))?;
+                let ids = stmt.query_map([], |r| r.get(0))?.collect::<rusqlite::Result<Vec<i64>>>()?;
+                Ok(ids)
+            })
+            .await?;
+        for chapter in &chapters {
+            self.delete(*chapter).await?;
+        }
+        Ok(chapters.len())
     }
 
     /// Gives a parked chapter a fresh set of tries.
@@ -357,13 +414,39 @@ fn add(conn: &mut Connection, chapters: &[i64]) -> Result<usize> {
     Ok(added)
 }
 
+/// The unread chapters of these titles that are not saved, oldest first. A title takes in
+/// the titles merged into it, and leaves out the uploads it does not prefer.
 fn unread_of(conn: &Connection, titles: &[i64]) -> Result<Vec<i64>> {
-    let list = titles.iter().map(i64::to_string).collect::<Vec<_>>().join(",");
-    let mut stmt = conn.prepare(&format!(
-        "SELECT id FROM chapters WHERE manga_id IN ({list}) AND read = 0 AND download_path IS NULL ORDER BY manga_id, source_order DESC"
-    ))?;
-    let chapters = stmt.query_map([], |r| r.get(0))?.collect::<rusqlite::Result<Vec<i64>>>()?;
+    let mut chapters = Vec::new();
+    let mut seen = Vec::new();
+    for title in titles {
+        let Ok(head) = head_of(conn, *title) else { continue };
+        if seen.contains(&head) {
+            continue;
+        }
+        seen.push(head);
+        let listed = listed_chapters(conn, head)?;
+        chapters.extend(listed.iter().rev().filter(|c| !c.read && !c.downloaded && !c.duplicate).map(|c| c.id));
+    }
     Ok(chapters)
+}
+
+/// Titles not followed that have saved chapters: `(id, title, source, the files)`.
+fn orphaned(conn: &Connection) -> Result<Vec<(i64, String, Option<String>, Vec<String>)>> {
+    let mut stmt = conn.prepare(&format!(
+        "SELECT m.id, m.title, s.name, c.download_path FROM chapters c JOIN manga m ON m.id = c.manga_id LEFT JOIN sources s ON s.id = m.source_id
+         WHERE c.download_path IS NOT NULL AND NOT {FOLLOWED} ORDER BY m.title COLLATE NOCASE, m.id"
+    ))?;
+    let mut found: Vec<(i64, String, Option<String>, Vec<String>)> = Vec::new();
+    let mut rows = stmt.query([])?;
+    while let Some(r) = rows.next()? {
+        let (id, file): (i64, String) = (r.get(0)?, r.get(3)?);
+        match found.last_mut() {
+            Some(last) if last.0 == id => last.3.push(file),
+            _ => found.push((id, r.get(1)?, r.get(2)?, vec![file])),
+        }
+    }
+    Ok(found)
 }
 
 fn read_queue(conn: &Connection) -> Result<QueueView> {
@@ -577,6 +660,22 @@ mod tests {
         assert_eq!(saved, (Some("Src/Alpha/Ch 10.cbz".into()), Some(30)));
         assert_eq!(states(&conn).len(), 1, "a saved chapter leaves the queue");
         assert_eq!(add(&mut conn, &[10]).unwrap(), 0, "and is not queued again");
+    }
+
+    #[test]
+    fn files_of_titles_left_behind() {
+        let conn = database();
+        conn.execute_batch(
+            "INSERT INTO manga (id, source_id, url, title, in_library) VALUES (2, 7, '/b', 'Beta', 0), (3, 7, '/c', 'Merged', 0);
+             UPDATE manga SET merged_into = 1 WHERE id = 3;
+             INSERT INTO chapters (id, manga_id, url, name, source_order, fetched_at, download_path) VALUES
+                 (20, 2, 'a', 'One', 1, 0, 'S/Beta/One.cbz'), (21, 2, 'b', 'Two', 0, 0, 'S/Beta/Two.cbz'), (30, 3, 'c', 'Kept', 0, 0, 'S/M/K.cbz'),
+                 (31, 3, 'd', 'Unsaved', 1, 0, NULL);
+             UPDATE chapters SET download_path = 'S/Alpha/10.cbz' WHERE id = 10;",
+        )
+        .unwrap();
+        assert_eq!(orphaned(&conn).unwrap(), [(2, "Beta".to_owned(), None, vec!["S/Beta/One.cbz".to_owned(), "S/Beta/Two.cbz".to_owned()])]);
+        assert_eq!(unread_of(&conn, &[1, 3]).unwrap(), [31, 12], "a merged title's chapters come with its head, once");
     }
 
     #[test]

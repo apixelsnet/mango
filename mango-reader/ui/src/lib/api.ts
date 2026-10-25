@@ -90,7 +90,22 @@ export type Chapter = {
   pageCount: number | null;
   downloaded: boolean;
   bookmark: boolean;
+  /** The title it belongs to: the one shown, or one merged into it. */
+  mangaId: number;
+  /** The volume its name gives, as "Vol.2 Ch. 10" gives 2. */
+  volume: number | null;
+  /** The title shows one upload per chapter, and prefers another upload of this one. */
+  duplicate: boolean;
 };
+
+/** One of the titles a title is read from: itself, or one merged into it. */
+export type Member = { id: number; title: string; sourceName: string | null; sourceLang: string | null };
+
+/** A page kept with a note. `page` counts from 0. */
+export type PageMark = { chapterId: number; chapterName: string; page: number; note: string; createdAt: number };
+
+/** A library title that goes by the same name as another. */
+export type Namesake = { id: number; title: string; cover: string | null; sourceName: string | null };
 
 export type Title = {
   id: number;
@@ -115,6 +130,15 @@ export type Title = {
   /** How many days usually pass between two chapters, when the source's dates say. */
   releaseDays: number | null;
   categories: number[];
+  /** The detail fields edited by hand, which a refresh leaves alone. */
+  locked: string[];
+  /** Scanlation groups in the order wanted; with `dedupe` only the preferred upload of a chapter shows. */
+  scanlators: string[];
+  dedupe: boolean;
+  /** The title this one was merged into, when it was. */
+  mergedInto: number | null;
+  /** This title and the titles merged into it, in their order. */
+  members: Member[];
   chapters: Chapter[];
 };
 
@@ -152,7 +176,8 @@ export type LibraryItem = {
   categories: number[];
 };
 
-export type Category = { id: number; name: string };
+/** `parent` is the category it sits inside. */
+export type Category = { id: number; name: string; parent: number | null };
 
 export type Resume = {
   mangaId: number;
@@ -223,9 +248,38 @@ export type ReaderInfo = {
   readerMode: string | null;
   readerFit: string | null;
   readerPrefs: Record<string, unknown> | null;
+  inLibrary: boolean;
   prev: number | null;
   next: number | null;
   chapters: { id: number; name: string }[];
+  /** The pages of this chapter kept with a note. */
+  marks: PageMark[];
+};
+
+/** A title outside the library that still has chapters saved. */
+export type Orphan = { mangaId: number; title: string; sourceName: string | null; chapters: number; bytes: number };
+
+/** A backup Mango made by itself. */
+export type Backup = { name: string; bytes: number; madeAt: number };
+
+export type Count = { name: string; count: number };
+
+export type Stats = {
+  titles: number;
+  started: number;
+  finished: number;
+  chapters: number;
+  read: number;
+  downloaded: number;
+  bookmarks: number;
+  pageMarks: number;
+  days: number;
+  streak: number;
+  /** Chapters read in each of the last twelve months, the oldest first. */
+  months: Count[];
+  sources: Count[];
+  genres: Count[];
+  statuses: Count[];
 };
 
 export type Tracker = {
@@ -271,6 +325,8 @@ export type Source = {
   supportsLatest: boolean;
   pinned: boolean;
   hidden: boolean;
+  /** The folder it is in on Browse. */
+  folder: string | null;
 };
 
 /** One thing a source lets its user set. `value` is a boolean for a switch, text for a list or a text, a list of texts for a multi. */

@@ -2,7 +2,7 @@
   import { get, message, send, type Queue, type Queued } from '../lib/api';
   import Icon from '../lib/Icon.svelte';
   import Notice from '../lib/Notice.svelte';
-  import { ago } from '../lib/util';
+  import { ago, every } from '../lib/util';
 
   let data = $state<Queue | null>(null);
   let loading = $state(true);
@@ -25,11 +25,8 @@
   load();
 
   // The queue changes by itself: chapters finish, and updates add new ones. So the
-  // screen looks again every two seconds for as long as it is open.
-  $effect(() => {
-    const timer = setInterval(load, 2000);
-    return () => clearInterval(timer);
-  });
+  // screen looks again every two seconds while it is open and in view.
+  $effect(() => every(2000, load));
 
   async function act(method: string, path: string, body?: unknown) {
     try {
@@ -80,6 +77,9 @@
           <button class="btn big spot" onclick={() => act('POST', '/downloads/resume')}><Icon name="play" size={18} fill />Resume</button>
         {:else}
           <button class="btn big" onclick={() => act('POST', '/downloads/pause')}><Icon name="pause" size={18} stroke={3} />Pause</button>
+        {/if}
+        {#if queue.some((q) => q.state === 'failed')}
+          <button class="btn" onclick={() => act('POST', '/downloads/retry')}><Icon name="refresh" size={18} />Retry all that failed</button>
         {/if}
         {#if queue.length}
           <button class="btn" onclick={clear}><Icon name="trash" size={18} />{sure ? 'Really clear the queue?' : 'Clear queue'}</button>

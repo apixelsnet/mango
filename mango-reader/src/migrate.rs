@@ -79,12 +79,12 @@ fn no_title() -> AppError {
 /// Two chapters are the same one when their numbers agree to the hundredth. Without a
 /// number, as with a one-shot or a prologue, their names must.
 #[derive(PartialEq, Eq, Hash)]
-enum Key {
+pub(crate) enum Key {
     Number(i64),
     Name(String),
 }
 
-fn key(number: f64, name: &str) -> Key {
+pub(crate) fn key(number: f64, name: &str) -> Key {
     if number >= 0.0 {
         Key::Number((number * 100.0).round() as i64)
     } else {

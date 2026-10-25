@@ -1,25 +1,27 @@
 <script lang="ts">
-  import { get, message, send, type Category, type Chapter, type Title } from '../lib/api';
+  import { get, message, send, type Category, type Chapter, type Namesake, type PageMark, type Title } from '../lib/api';
   import Cover from '../lib/Cover.svelte';
   import Icon from '../lib/Icon.svelte';
   import { keep, recall } from '../lib/keep';
   import Notice from '../lib/Notice.svelte';
+  import { canKeep, forget as forgetHere, keep as keepHere, keptChapters } from '../lib/offline';
   import { pref, setPref } from '../lib/prefs.svelte';
-  import { back } from '../lib/router.svelte';
+  import { back, go } from '../lib/router.svelte';
   import Tracking from '../lib/Tracking.svelte';
   import { ago, chapterShort, langName, STATUS } from '../lib/util';
 
   const WEEK = 7 * 86400;
 
   type Sort = 'source' | 'number' | 'date';
-  type View = { sort: Sort; down: boolean };
+  /** `volumes` puts a heading over each volume's chapters. */
+  type View = { sort: Sort; down: boolean; volumes: boolean };
 
   const SORTS: [Sort, string][] = [
     ['source', 'Source order'],
     ['number', 'Number'],
     ['date', 'Date'],
   ];
-  const DEFAULT: View = { sort: 'source', down: true };
+  const DEFAULT: View = { sort: 'source', down: true, volumes: false };
 
   type Show = 'all' | 'unread' | 'downloaded' | 'bookmarked';
 
@@ -58,10 +60,23 @@
   // What the list is narrowed to lasts as long as the page: the next title opened shows whole.
   let show = $state<Show>('all');
   let group = $state('');
+  // The uploads a title that shows one per chapter does not prefer, shown anyway.
+  let others = $state(false);
+  // Library titles of the same name, found when this one was about to be added.
+  let namesakes = $state<Namesake[] | null>(null);
+  // The panels that open over the about column.
+  let panel = $state<'edit' | 'groups' | null>(null);
+  let marks = $state<PageMark[]>([]);
+  // Chapters kept on this device, and how keeping more is going.
+  let here = $state<Set<number>>(new Set());
+  let keeping = $state('');
 
-  const chapters = $derived(title?.chapters ?? []);
+  // A title that shows one upload per chapter counts chapters, not uploads.
+  const chapters = $derived((title?.chapters ?? []).filter((c) => others || !c.duplicate));
   const unread = $derived(chapters.filter((c) => !c.read).length);
   const saved = $derived(chapters.filter((c) => c.downloaded).length);
+  const duplicates = $derived((title?.chapters ?? []).filter((c) => c.duplicate).length);
+  const merged = $derived((title?.members.length ?? 0) > 1);
   // The order is kept for every title, on the server like the library's.
   const view = $derived<View>({ ...DEFAULT, ...pref<Partial<View>>('title.view', {}) });
   const groups = $derived([...new Set(chapters.map((c) => c.scanlator ?? '').filter(Boolean))].sort((a, b) => a.localeCompare(b)));
@@ -93,6 +108,8 @@
     error = null;
     try {
       const fresh = await get<Title>(`/manga/${id}`);
+      // A title merged into another is read there.
+      if (fresh.mergedInto) return go(`/title/${fresh.mergedInto}`, true);
       keep('title', fresh);
       title = fresh;
       // A title only seen in a list has no details or chapters yet.
@@ -103,6 +120,17 @@
     loading = false;
   }
   load();
+
+  // Wanted, not needed: kept pages and what is on this device show once they are known.
+  function extras() {
+    get<PageMark[]>(`/manga/${id}/marks`)
+      .then((found) => (marks = found))
+      .catch(() => {});
+    keptChapters()
+      .then((found) => (here = found))
+      .catch(() => {});
+  }
+  extras();
 
   async function refresh() {
     menu = false;
@@ -161,11 +189,137 @@
     }
   }
 
-  function toggleLibrary() {
+  /** Adds the title to the library or takes it out. Before adding, a title of the same name already there is pointed out. */
+  async function toggleLibrary(anyway = false) {
     if (!title) return;
     const t = title;
+    if (!t.inLibrary && !anyway) {
+      const found = await get<Namesake[]>(`/manga/${id}/namesakes`).catch(() => []);
+      if (found.length) {
+        namesakes = found;
+        return;
+      }
+    }
+    namesakes = null;
     t.inLibrary = !t.inLibrary;
     change(() => send('PUT', `/manga/${id}/library`, { inLibrary: t.inLibrary }));
+  }
+
+  /** Reads this title from under another, as one of its sources. */
+  async function mergeInto(head: number) {
+    try {
+      await send('POST', `/manga/${head}/merge/${id}`);
+      go(`/title/${head}`, true);
+    } catch (e) {
+      refreshError = message(e);
+    }
+  }
+
+  function unmerge(member: number) {
+    change(async () => (title = await send<Title>('DELETE', `/manga/${id}/merge/${member}`)));
+  }
+
+  // ---------- details edited by hand ----------
+
+  let form = $state({ title: '', author: '', artist: '', description: '', genres: '', status: 0 });
+
+  function startEdit() {
+    if (!title) return;
+    menu = false;
+    form = {
+      title: title.title,
+      author: title.author ?? '',
+      artist: title.artist ?? '',
+      description: title.description ?? '',
+      genres: title.genres.join(', '),
+      status: title.status,
+    };
+    panel = 'edit';
+  }
+
+  /** Sends only what was changed: each field sent is locked against the source. */
+  function saveEdit(event: SubmitEvent) {
+    event.preventDefault();
+    if (!title) return;
+    const t = title;
+    const genres = form.genres.split(',').map((g) => g.trim()).filter(Boolean);
+    const body: Record<string, unknown> = {};
+    if (form.title.trim() !== t.title) body.title = form.title;
+    if (form.author.trim() !== (t.author ?? '')) body.author = form.author;
+    if (form.artist.trim() !== (t.artist ?? '')) body.artist = form.artist;
+    if (form.description.trim() !== (t.description ?? '').trim()) body.description = form.description;
+    if (genres.join(',') !== t.genres.join(',')) body.genres = genres;
+    if (form.status !== t.status) body.status = form.status;
+    panel = null;
+    if (Object.keys(body).length) change(async () => (title = await send<Title>('PUT', `/manga/${id}/details`, body)));
+  }
+
+  function unlock() {
+    panel = null;
+    refreshing = true;
+    change(async () => (title = await send<Title>('DELETE', `/manga/${id}/details`))).finally(() => (refreshing = false));
+  }
+
+  async function setCover(file: File | undefined) {
+    if (!file) return;
+    refreshError = null;
+    try {
+      const answer = await fetch(`api/manga/${id}/cover`, { method: 'PUT', headers: { 'Content-Type': file.type || 'application/octet-stream' }, body: file });
+      const data = await answer.json().catch(() => null);
+      if (!answer.ok) throw new Error(data?.error?.message ?? `Mango answered ${answer.status}`);
+      title = data as Title;
+    } catch (e) {
+      refreshError = message(e);
+    }
+  }
+
+  // ---------- scanlation groups ----------
+
+  let order = $state<string[]>([]);
+  let dedupe = $state(false);
+
+  function startGroups() {
+    if (!title) return;
+    menu = false;
+    const named = title.scanlators.filter((g) => groups.includes(g));
+    order = [...named, ...groups.filter((g) => !named.includes(g))];
+    dedupe = title.dedupe;
+    panel = 'groups';
+  }
+
+  function moveGroup(at: number, by: number) {
+    const next = [...order];
+    const [group] = next.splice(at, 1);
+    next.splice(at + by, 0, group);
+    order = next;
+  }
+
+  function saveGroups() {
+    panel = null;
+    change(async () => (title = await send<Title>('PUT', `/manga/${id}/scanlators`, { order, dedupe })));
+  }
+
+  // ---------- kept pages and this device ----------
+
+  async function unmarkPage(mark: PageMark) {
+    marks = marks.filter((m) => m !== mark);
+    await send('DELETE', `/chapters/${mark.chapterId}/marks/${mark.page}`).catch((e) => (refreshError = message(e)));
+  }
+
+  async function keepOnDevice(list: Chapter[]) {
+    keeping = 'Keeping…';
+    try {
+      const done = await keepHere(id, list.map((c) => c.id), (pages) => (keeping = `Keeping… ${pages} pages so far`));
+      keeping = `${done} ${done === 1 ? 'chapter is' : 'chapters are'} on this device, to read with no connection.`;
+      here = await keptChapters();
+    } catch (e) {
+      keeping = `Not all of it was kept: ${message(e)}`;
+    }
+  }
+
+  async function forgetOnDevice(list: Chapter[]) {
+    await forgetHere(list.map((c) => c.id)).catch(() => {});
+    here = await keptChapters().catch(() => here);
   }
 
   function mark(list: Chapter[], read: boolean) {
@@ -293,8 +447,13 @@
         : chapter.pageCount
           ? `${chapter.pageCount} pages`
           : '';
-    return [when, chapter.scanlator, where, chapter.downloaded ? 'saved' : ''].filter(Boolean).join(' · ');
+    const from = merged ? title?.members.find((m) => m.id === chapter.mangaId)?.sourceName : null;
+    return [when, from, chapter.scanlator, where, chapter.downloaded ? 'saved' : '', here.has(chapter.id) ? 'on this device' : '', chapter.duplicate ? 'other upload' : '']
+      .filter(Boolean)
+      .join(' · ');
   }
+
+  const volumeName = (volume: number | null) => (volume === null ? 'No volume' : `Volume ${+volume.toFixed(2)}`);
 
   function isNew(chapter: Chapter): boolean {
     return !chapter.read && chapter.lastPageRead === 0 && !!title?.addedAt && chapter.fetchedAt > title.addedAt && Date.now() / 1000 - chapter.fetchedAt < WEEK;
@@ -319,7 +478,7 @@
         <button
           class="btn lift spot-on"
           aria-pressed={title.inLibrary}
-          onclick={toggleLibrary}
+          onclick={() => toggleLibrary()}
         >
           <Icon name="bookmark" fill={title.inLibrary} />{title.inLibrary ? 'In library' : 'Add to library'}
         </button>
@@ -328,9 +487,14 @@
           {#if menu}
             <div class="panel sheet">
               <button class="btn" onclick={refresh}><Icon name="refresh" size={18} />Refresh from the source</button>
-              <button class="btn" onclick={() => mark(chapters, true)}><Icon name="check" size={18} />Mark all read</button>
-              <button class="btn" onclick={() => mark(chapters, false)}>Mark all unread</button>
+              <button class="btn" onclick={() => mark(title?.chapters ?? [], true)}><Icon name="check" size={18} />Mark all read</button>
+              <button class="btn" onclick={() => mark(title?.chapters ?? [], false)}>Mark all unread</button>
+              <button class="btn" onclick={startEdit}><Icon name="sliders" size={18} />Edit details</button>
+              {#if groups.length > 1 || merged}
+                <button class="btn" onclick={startGroups}>Scanlation groups</button>
+              {/if}
               <a class="btn" href="#/search?q={encodeURIComponent(title.title)}&for={id}"><Icon name="arrow" size={18} />Move to another source</a>
+              <a class="btn" href="#/search?q={encodeURIComponent(title.title)}&merge={id}"><Icon name="plus" size={18} />Add another source</a>
               {#if title.inLibrary}
                 <button class="btn" aria-pressed={title.autoDownload} onclick={toggleAuto}>
                   {#if title.autoDownload}<Icon name="check" size={18} stroke={3} />{/if}Download new chapters
@@ -352,6 +516,24 @@
         </div>
       </div>
     </div>
+
+    {#if namesakes?.length}
+      <div class="panel warn" role="alert">
+        <strong>Already in your library, from another source:</strong>
+        <ul class="rows">
+          {#each namesakes as twin (twin.id)}
+            <li>
+              <a class="main" href="#/title/{twin.id}"><strong>{twin.title}</strong><span>{twin.sourceName ?? 'Its extension is not installed'}</span></a>
+              <button class="btn" onclick={() => mergeInto(twin.id)}>Read this as one of its sources</button>
+            </li>
+          {/each}
+        </ul>
+        <div class="tools">
+          <button class="btn ink" onclick={() => toggleLibrary(true)}>Add anyway</button>
+          <button class="btn" onclick={() => (namesakes = null)}>Cancel</button>
+        </div>
+      </div>
+    {/if}
 
     <div class="columns">
       <div class="about">
@@ -379,6 +561,78 @@
           <div><span class="display">{saved}</span><span>Saved</span></div>
         </div>
 
+        {#if panel === 'edit'}
+          <form class="panel editor" onsubmit={saveEdit}>
+            <strong class="display">EDIT DETAILS</strong>
+            <p class="muted">What you change stays as you wrote it; refreshing from the source leaves it alone.</p>
+            <label class="field"><span>Name</span><input bind:value={form.title} required maxlength="300" /></label>
+            <label class="field"><span>Author</span><input bind:value={form.author} maxlength="300" /></label>
+            <label class="field"><span>Artist</span><input bind:value={form.artist} maxlength="300" /></label>
+            <label class="field"><span>Genres, with commas between</span><input bind:value={form.genres} /></label>
+            <label class="field">
+              <span>Status</span>
+              <select bind:value={form.status}>
+                {#each STATUS as label, value (value)}<option {value}>{label}</option>{/each}
+              </select>
+            </label>
+            <label class="field"><span>Description</span><textarea rows="6" bind:value={form.description} maxlength="20000"></textarea></label>
+            <label class="btn picker">
+              <Icon name="upload" size={18} />A cover of your own
+              <input type="file" accept="image/*" onchange={(e) => setCover(e.currentTarget.files?.[0])} />
+            </label>
+            <div class="tools">
+              <button class="btn ink">Save</button>
+              <button class="btn" type="button" onclick={() => (panel = null)}>Cancel</button>
+              {#if title.locked.length}
+                <button class="btn" type="button" onclick={unlock} title="Edited: {title.locked.join(', ')}">Follow the source again</button>
+              {/if}
+            </div>
+          </form>
+        {:else if panel === 'groups'}
+          <div class="panel editor">
+            <strong class="display">SCANLATION GROUPS</strong>
+            <p class="muted">The groups whose uploads you want first. With one upload per chapter, the others are hidden and reading passes over them.</p>
+            {#if merged}
+              <p class="muted">Sources come before groups: {title.members.map((m) => m.sourceName ?? m.title).join(', ')}.</p>
+            {/if}
+            <ul class="rows">
+              {#each order as name, at (name)}
+                <li>
+                  <span class="main"><strong>{at + 1}. {name}</strong></span>
+                  <span class="tools">
+                    <button class="btn icon" aria-label="Move {name} up" disabled={at === 0} onclick={() => moveGroup(at, -1)}><Icon name="up" /></button>
+                    <button class="btn icon" aria-label="Move {name} down" disabled={at === order.length - 1} onclick={() => moveGroup(at, 1)}><Icon name="down" /></button>
+                  </span>
+                </li>
+              {/each}
+            </ul>
+            <button class="btn" aria-pressed={dedupe} onclick={() => (dedupe = !dedupe)}>
+              {#if dedupe}<Icon name="check" size={18} stroke={3} />{/if}One upload per chapter
+            </button>
+            <div class="tools">
+              <button class="btn ink" onclick={saveGroups}>Save</button>
+              <button class="btn" onclick={() => (panel = null)}>Cancel</button>
+            </div>
+          </div>
+        {/if}
+
+        {#if merged}
+          <section class="panel editor" aria-label="Sources">
+            <strong>Read from {title.members.length} sources</strong>
+            <ul class="rows">
+              {#each title.members as member, at (member.id)}
+                <li>
+                  <span class="main">
+                    <strong>{member.sourceName ?? 'Its extension is not installed'}</strong>
+                    <span>{member.title}{member.sourceLang ? ` · ${langName(member.sourceLang)}` : ''}{at === 0 ? ' · this title' : ''}</span>
+                  </span>
+                  {#if at > 0}<button class="btn" onclick={() => unmerge(member.id)}>Take out</button>{/if}
+                </li>
+              {/each}
+            </ul>
+          </section>
+        {/if}
+
         {#if title.description}
           <p class="text" class:clamp={!wholeText}>{title.description}</p>
           {#if title.description.length > 280}
@@ -391,6 +645,23 @@
           </div>
         {/if}
         <Tracking {id} title={title.title} />
+
+        {#if marks.length}
+          <section class="panel editor" aria-label="Kept pages">
+            <strong>Kept pages</strong>
+            <ul class="rows">
+              {#each marks as kept (`${kept.chapterId}:${kept.page}`)}
+                <li>
+                  <a class="main" href="#/read/{kept.chapterId}?page={kept.page}">
+                    <strong>{kept.chapterName}, page {kept.page + 1}</strong>
+                    {#if kept.note}<span>{kept.note}</span>{/if}
+                  </a>
+                  <button class="btn icon" aria-label="Let go of page {kept.page + 1} of {kept.chapterName}" onclick={() => unmarkPage(kept)}><Icon name="trash" /></button>
+                </li>
+              {/each}
+            </ul>
+          </section>
+        {/if}
       </div>
 
       <div class="chapters">
@@ -440,14 +711,26 @@
                 </select>
               </label>
             {/if}
+            <button class="btn" aria-pressed={view.volumes} onclick={() => setView({ volumes: !view.volumes })}>
+              {#if view.volumes}<Icon name="check" size={18} stroke={3} />{/if}By volume
+            </button>
+            {#if duplicates}
+              <button class="btn" aria-pressed={others} onclick={() => (others = !others)}>
+                {#if others}<Icon name="check" size={18} stroke={3} />{/if}Other uploads ({duplicates})
+              </button>
+            {/if}
           </div>
         {/if}
 
         <Notice loading={refreshing} error={refreshError} retry={refresh} />
         {#if note}<p role="status"><strong>{note}</strong> <a class="link" href="#/downloads">See downloads</a></p>{/if}
+        {#if keeping}<p role="status"><strong>{keeping}</strong></p>{/if}
 
         <ul class="rows">
-          {#each listed as chapter (chapter.id)}
+          {#each listed as chapter, at (chapter.id)}
+            {#if view.volumes && (at === 0 || listed[at - 1].volume !== chapter.volume)}
+              <li class="volume" aria-hidden="true"><strong>{volumeName(chapter.volume)}</strong></li>
+            {/if}
             <!-- svelte-ignore a11y_click_events_have_key_events, a11y_no_noninteractive_element_interactions -->
             <li
               class:done={chapter.read}
@@ -498,6 +781,13 @@
                       <button class="btn" onclick={() => setBookmark([chapter], !chapter.bookmark)}>
                         <Icon name="bookmark" size={18} fill={chapter.bookmark} />{chapter.bookmark ? 'Take the bookmark off' : 'Bookmark'}
                       </button>
+                      {#if canKeep}
+                        {#if here.has(chapter.id)}
+                          <button class="btn" onclick={() => ((opened = null), forgetOnDevice([chapter]))}>Off this device</button>
+                        {:else}
+                          <button class="btn" onclick={() => ((opened = null), keepOnDevice([chapter]))}>Keep on this device</button>
+                        {/if}
+                      {/if}
                       <button class="btn" onclick={() => startPicking(chapter)}>Select</button>
                     </div>
                   {/if}
@@ -538,6 +828,9 @@
           <button class="btn" disabled={!chosen.some((c) => c.downloaded)} onclick={deletePicked}>
             <Icon name="trash" size={18} />{sure ? 'Really delete?' : 'Delete saved'}
           </button>
+          {#if canKeep}
+            <button class="btn" disabled={!chosen.length} onclick={() => onPicked((list) => keepOnDevice([...list].reverse()))}>Keep on this device</button>
+          {/if}
         </div>
       {:else if resume}
         <a class="btn big spot" href="#/read/{resume.id}">
@@ -799,6 +1092,59 @@
     display: inline-flex;
     margin-right: 4px;
     vertical-align: -1px;
+  }
+
+  .warn {
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+    padding: 16px;
+  }
+
+  .editor {
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+    padding: 16px;
+  }
+
+  .editor .field {
+    flex-direction: column;
+    align-items: stretch;
+    gap: 6px;
+    box-shadow: none;
+  }
+
+  .editor .field span {
+    font-size: 12px;
+    font-weight: 900;
+  }
+
+  .editor textarea,
+  .editor select {
+    font: inherit;
+  }
+
+  .picker {
+    position: relative;
+    align-self: flex-start;
+  }
+
+  .picker input {
+    position: absolute;
+    inset: 0;
+    opacity: 0;
+    cursor: pointer;
+  }
+
+  .rows .volume {
+    padding: 14px 4px 6px;
+    border: 0;
+    background: none;
+    box-shadow: none;
+    font-size: 12px;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
   }
 
   .dock {

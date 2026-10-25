@@ -39,3 +39,15 @@ Not built yet: download from the bulk bar and per-title auto-download, which bel
 ## Done when
 
 A library of 2,000 titles opens, scrolls and filters without visible lag, with the host stopped.
+
+## Categories inside categories, pages, many moved at once, stats (2026-10-25)
+
+Code: `library.rs` (`set_parent`, `stats`, the library query), `routes/Library.svelte`, `routes/MigrateMany.svelte`, `routes/Stats.svelte`.
+
+- A category can sit inside another (`categories.parent_id`; `POST /api/categories` and `PUT /api/categories/{id}` take `parent`, 0 for the top). Showing the outer one shows what is inside it, however deep. One cannot end up inside itself. Settings › Library sets where each one sits; the library lists them as a tree.
+- "Library in pages" (Settings › Appearance, this device): 24, 48 or 96 titles a page, turned with buttons, for an e-ink reader that does not scroll well.
+- The select bar has "Move to other sources": `#/migrate/many?ids=`. Pick sources in an order; each title is looked for in them, the first by the same name wins, else the first found; then confirm and move, with the choices of a single move. Each move is the one of feature 12.
+- Stats (`GET /api/stats`, `#/stats`): titles, begun and read to the end, chapters read, days with reading and the streak up to today, chapters read in each of the last twelve months, library titles by source, genre and status. Days in UTC.
+- A title with titles merged into it counts their chapters, and one that shows one upload per chapter counts chapters, not uploads.
+
+Checked by unit tests and `smoke.py` on Linux, and in Chromium at both sizes.

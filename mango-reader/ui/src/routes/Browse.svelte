@@ -22,7 +22,16 @@
     sources.filter((s) => (showHidden || !s.hidden) && (s.pinned || s.id === '0' || chosen.length === 0 || chosen.includes(s.lang))),
   );
   const pinned = $derived(shown.filter((s) => s.pinned));
-  const others = $derived(shown.filter((s) => !s.pinned));
+  const others = $derived(shown.filter((s) => !s.pinned && !s.folder));
+  // The owner's folders, each with the sources in it that are not pinned.
+  const folders = $derived(
+    [...new Set(sources.map((s) => s.folder).filter((f): f is string => !!f))]
+      .sort((a, b) => a.localeCompare(b))
+      .map((name) => ({ name, sources: shown.filter((s) => !s.pinned && s.folder === name) })),
+  );
+  // The source whose folder is being picked, and the name typed for it.
+  let filing = $state<string | null>(null);
+  let folderName = $state('');
   const hiddenCount = $derived(sources.filter((s) => s.hidden).length);
 
   async function load() {
@@ -39,7 +48,14 @@
   }
   load();
 
-  async function change(source: Source, patch: { pinned?: boolean; hidden?: boolean }) {
+  function file(event: SubmitEvent, source: Source) {
+    event.preventDefault();
+    filing = null;
+    change(source, { folder: folderName.trim() });
+    source.folder = folderName.trim() || null;
+  }
+
+  async function change(source: Source, patch: { pinned?: boolean; hidden?: boolean; folder?: string }) {
     Object.assign(source, patch);
     try {
       await send('PUT', `/sources/${source.id}`, patch);
@@ -64,9 +80,28 @@
   <li>
     <a class="main" href="#/source/{source.id}">
       <strong>{source.name}</strong>
-      <span>{source.id === '0' ? 'Files in your local folder' : langName(source.lang)}{source.hidden ? ' · hidden' : ''}</span>
+      <span>{source.id === '0' ? 'Files in your local folder' : langName(source.lang)}{source.hidden ? ' · hidden' : ''}{source.folder ? ` · in ${source.folder}` : ''}</span>
     </a>
+    {#if filing === source.id}
+      <form class="filing" onsubmit={(e) => file(e, source)}>
+        <label class="field">
+          <span class="sr">Folder for {source.name}</span>
+          <!-- svelte-ignore a11y_autofocus -->
+          <input bind:value={folderName} list="folders" maxlength="60" placeholder="Folder, or empty for none" autofocus />
+        </label>
+        <button class="btn ink">Put</button>
+        <button class="btn" type="button" onclick={() => (filing = null)}>Cancel</button>
+      </form>
+    {/if}
     <span class="tools">
+      <button
+        class="btn icon"
+        aria-label="Put {source.name} in a folder"
+        title="Folder"
+        onclick={() => ((filing = filing === source.id ? null : source.id), (folderName = source.folder ?? ''))}
+      >
+        <Icon name="list" />
+      </button>
       <button
         class="btn icon spot-on"
         aria-pressed={source.pinned}
@@ -145,10 +180,24 @@
         <ul class="rows">
           {#each others as source (source.id)}{@render row(source)}{/each}
         </ul>
-        {#if others.length === 0 && pinned.length === 0}
+        {#if others.length === 0 && pinned.length === 0 && folders.every((f) => f.sources.length === 0)}
           <Notice>No source matches the languages picked.</Notice>
         {/if}
       </section>
+
+      {#each folders as folder (folder.name)}
+        {#if folder.sources.length}
+          <section>
+            <div class="section-head"><h2 class="display">{folder.name.toUpperCase()}</h2></div>
+            <ul class="rows">
+              {#each folder.sources as source (source.id)}{@render row(source)}{/each}
+            </ul>
+          </section>
+        {/if}
+      {/each}
+      <datalist id="folders">
+        {#each folders as folder (folder.name)}<option value={folder.name}></option>{/each}
+      </datalist>
     {/if}
   {/if}
 </div>
@@ -156,6 +205,16 @@
 <style>
   form {
     max-width: 560px;
+  }
+
+  .filing {
+    display: flex;
+    flex: 1 1 260px;
+    gap: 8px;
+  }
+
+  .filing .field {
+    flex: 1;
   }
 
   ul {

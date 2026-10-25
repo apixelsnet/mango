@@ -438,6 +438,15 @@ impl Host {
         command.process_group(0);
         let mut child = command
             .args(&self.cfg.jvm_args)
+            // The classes a run loaded are kept in an archive beside the host's data when it
+            // stops, and mapped in at the next start: a host woken after idling is ready sooner.
+            // Java checks the archive against the jars and makes it anew when they changed.
+            .arg("-XX:+IgnoreUnrecognizedVMOptions")
+            .arg("-XX:+AutoCreateSharedArchive")
+            .arg(format!("-XX:SharedArchiveFile={}", self.data.join("host.jsa").display()))
+            // It says at length which classes it leaves out, such as an extension's, which are signed.
+            .arg("-Xlog:cds=off")
+            .arg("-Xlog:cds+dynamic=off")
             // Without the web view Java needs no display at all.
             .args((!*web_view).then_some("-Djava.awt.headless=true"))
             .arg(format!("-Duser.home={}", self.data.display()))

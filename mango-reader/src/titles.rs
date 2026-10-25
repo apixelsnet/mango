@@ -8,20 +8,31 @@ use crate::{
     error::{AppError, Result},
     host::{Call, Host},
     local::{self, Local},
+    migrate::{key, Key},
+    settings,
 };
 use reqwest::Method;
-use rusqlite::{params, Connection, OptionalExtension, Row};
+use rusqlite::{params, types::Value as Sql, Connection, OptionalExtension, Row};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::{collections::HashMap, sync::Arc};
 
-pub const READER_MODES: [&str; 4] = ["ltr", "rtl", "vertical", "webtoon"];
+pub const READER_MODES: [&str; 5] = ["ltr", "rtl", "vertical", "webtoon", "sideways"];
+/// The detail fields that can be edited by hand. An edited one is locked: a refresh from
+/// the source leaves it as it is.
+pub const LOCKABLE: [&str; 7] = ["title", "author", "artist", "description", "genre", "status", "cover"];
+/// A cover set by hand is named in `thumbnail_url` by this, then a mark of its file.
+pub const CUSTOM_COVER: &str = "custom:";
+/// Reading a chapter to its end marks its other uploads read too.
+pub const MARK_DUPLICATES: &str = "chapters.markDuplicates";
+/// The most scanlation groups a title keeps an order for.
+const MAX_GROUPS: usize = 100;
 pub const READER_FITS: [&str; 4] = ["width", "height", "screen", "original"];
 /// The most a title's own reader settings may weigh, as JSON text.
 const MAX_READER_PREFS: usize = 4 * 1024;
 
 const CHAPTER_COLUMNS: &str =
-    "id, name, chapter_number, scanlator, date_upload, fetched_at, read, last_page_read, page_count, download_path IS NOT NULL, bookmark";
+    "id, name, chapter_number, scanlator, date_upload, fetched_at, read, last_page_read, page_count, download_path IS NOT NULL, bookmark, manga_id";
 
 const DAY_MS: i64 = 86_400_000;
 /// The longest a title is taken to wait between two chapters, in days.
@@ -112,7 +123,7 @@ pub struct Listing {
     pub has_next_page: bool,
 }
 
-#[derive(Serialize, Debug)]
+#[derive(Serialize, Debug, Clone)]
 #[serde(rename_all = "camelCase")]
 pub struct ChapterView {
     pub id: i64,
@@ -128,6 +139,56 @@ pub struct ChapterView {
     pub page_count: Option<i64>,
     pub downloaded: bool,
     pub bookmark: bool,
+    /// The title it belongs to: the one shown, or one merged into it.
+    pub manga_id: i64,
+    /// The volume its name gives, as "Vol.2 Ch. 10" gives 2.
+    pub volume: Option<f64>,
+    /// The title shows one upload per chapter, and prefers another upload of this one.
+    pub duplicate: bool,
+}
+
+/// One of the titles a title is read from: itself, or one merged into it.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Member {
+    pub id: i64,
+    pub title: String,
+    pub source_name: Option<String>,
+    pub source_lang: Option<String>,
+}
+
+/// A page kept with a note.
+#[derive(Serialize, Debug, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct PageMark {
+    pub chapter_id: i64,
+    pub chapter_name: String,
+    /// From 0, as the reader counts.
+    pub page: i64,
+    pub note: String,
+    pub created_at: i64,
+}
+
+/// A library title that goes by the same name as another, from another source.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Namesake {
+    pub id: i64,
+    pub title: String,
+    pub cover: Option<String>,
+    pub source_name: Option<String>,
+}
+
+/// Detail fields changed by hand. Each one given is locked; an empty text clears it.
+#[derive(Deserialize, Default)]
+#[serde(default)]
+pub struct Edit {
+    pub title: Option<String>,
+    pub author: Option<String>,
+    pub artist: Option<String>,
+    pub description: Option<String>,
+    pub genres: Option<Vec<String>>,
+    pub status: Option<i64>,
 }
 
 #[derive(Serialize)]
@@ -157,7 +218,17 @@ pub struct TitleView {
     pub release_days: Option<i64>,
     /// The library categories it is in.
     pub categories: Vec<i64>,
-    /// In the source's order: the first is usually the newest.
+    /// The detail fields edited by hand, which a refresh leaves alone.
+    pub locked: Vec<String>,
+    /// Scanlation groups in the order wanted. Groups not named come after them.
+    pub scanlators: Vec<String>,
+    /// Only the preferred upload of each chapter shows; the others are marked `duplicate`.
+    pub dedupe: bool,
+    /// The title this one was merged into, when it was.
+    pub merged_into: Option<i64>,
+    /// This title and the titles merged into it, in their order.
+    pub members: Vec<Member>,
+    /// In the source's order: the first is usually the newest. With titles merged in, by number.
     pub chapters: Vec<ChapterView>,
 }
 
@@ -180,10 +251,14 @@ pub struct ReaderView {
     pub reader_fit: Option<String>,
     /// The other reader settings the title keeps for itself, shaped by the UI.
     pub reader_prefs: Option<Value>,
+    pub in_library: bool,
     /// The chapter read before this one, and the one read after it.
     pub prev: Option<i64>,
     pub next: Option<i64>,
+    /// The chapters reading goes through, newest first: the uploads the title prefers.
     pub chapters: Vec<ChapterName>,
+    /// The pages of this chapter kept with a note.
+    pub marks: Vec<PageMark>,
 }
 
 pub enum Browse {
@@ -328,11 +403,13 @@ impl Titles {
     }
 
     /// Bookmarks chapters of a title, or takes their bookmarks away. Without ids, all of them.
+    /// The chapters of titles merged into it count as its own.
     pub async fn bookmark(&self, manga: i64, chapters: Option<Vec<i64>>, on: bool) -> Result<()> {
         self.db
             .call(move |conn| {
                 let Some(only) = among(&chapters) else { return Ok(()) };
-                conn.execute(&format!("UPDATE chapters SET bookmark = ?2 WHERE manga_id = ?1{only}"), params![manga, on])?;
+                let list = id_list(&members(conn, manga)?);
+                conn.execute(&format!("UPDATE chapters SET bookmark = ?1 WHERE manga_id IN ({list}){only}"), params![on])?;
                 Ok(())
             })
             .await
@@ -343,14 +420,111 @@ impl Titles {
         self.db
             .call(move |conn| {
                 let Some(only) = among(&chapters) else { return Ok(()) };
+                let list = id_list(&members(conn, manga)?);
                 conn.execute(
                     &format!(
-                        "UPDATE chapters SET read = ?2, last_page_read = 0, read_at = CASE WHEN ?2 THEN ?3 ELSE read_at END
-                         WHERE manga_id = ?1{only}"
+                        "UPDATE chapters SET read = ?1, last_page_read = 0, read_at = CASE WHEN ?1 THEN ?2 ELSE read_at END
+                         WHERE manga_id IN ({list}){only}"
                     ),
-                    params![manga, read, now()],
+                    params![read, now()],
                 )?;
                 Ok(())
+            })
+            .await
+    }
+
+    /// Changes detail fields by hand, and locks them against refreshes from the source.
+    pub async fn edit(&self, id: i64, edit: Edit) -> Result<()> {
+        self.change(move |conn| edit_details(conn, id, &edit)).await
+    }
+
+    /// Lets every detail field follow the source again. The next refresh fills them in.
+    pub async fn unlock(&self, id: i64) -> Result<()> {
+        self.change(move |conn| Ok(conn.execute("UPDATE manga SET locked = NULL WHERE id = ?1", [id])?)).await
+    }
+
+    /// Shows a cover Mango keeps, named by `mark`, in place of the source's, and locks it.
+    pub async fn set_cover(&self, id: i64, mark: String) -> Result<()> {
+        self.change(move |conn| {
+            let locked = with_locks(conn, id, &["cover"])?;
+            Ok(conn.execute("UPDATE manga SET thumbnail_url = ?2, locked = ?3 WHERE id = ?1", params![id, format!("{CUSTOM_COVER}{mark}"), locked])?)
+        })
+        .await
+    }
+
+    /// The order a title's scanlation groups are wanted in, and whether only the preferred
+    /// upload of each chapter shows.
+    pub async fn set_scanlators(&self, id: i64, order: Vec<String>, dedupe: bool) -> Result<()> {
+        let mut groups: Vec<String> = Vec::new();
+        for group in order.iter().map(|group| group.trim()).filter(|group| !group.is_empty()) {
+            if group.chars().count() > 200 {
+                return Err(AppError::bad_request("A group's name is too long"));
+            }
+            if !groups.iter().any(|known| known == group) {
+                groups.push(group.to_owned());
+            }
+        }
+        if groups.len() > MAX_GROUPS {
+            return Err(AppError::bad_request(format!("A title keeps an order for {MAX_GROUPS} groups at most")));
+        }
+        let kept = (!groups.is_empty()).then(|| json!(groups).to_string());
+        self.change(move |conn| Ok(conn.execute("UPDATE manga SET scanlators = ?2, dedupe = ?3 WHERE id = ?1", params![id, kept, dedupe])?))
+            .await
+    }
+
+    /// Merges `other` into `head`: its chapters show, update and are read under `head`.
+    pub async fn merge(&self, head: i64, other: i64) -> Result<()> {
+        self.db.call(move |conn| merge(conn, head, other)).await
+    }
+
+    /// Takes a merged title out of `head` again. It is not in the library on its own after.
+    pub async fn unmerge(&self, head: i64, other: i64) -> Result<()> {
+        self.change(move |conn| {
+            Ok(conn.execute(
+                "UPDATE manga SET merged_into = NULL, merged_at = NULL, added_at = NULL WHERE id = ?2 AND merged_into = ?1",
+                [head, other],
+            )?)
+        })
+        .await
+    }
+
+    /// Library titles that go by the same name as this one: most likely the same series.
+    pub async fn namesakes(&self, id: i64) -> Result<Vec<Namesake>> {
+        self.db.call(move |conn| namesakes(conn, id)).await
+    }
+
+    /// Keeps a page with a note, or with None lets go of it.
+    pub async fn mark_page(&self, chapter: i64, page: i64, note: Option<String>) -> Result<()> {
+        if page < 0 {
+            return Err(AppError::not_found("No such page"));
+        }
+        let note = note.map(|note| note.trim().to_owned());
+        if note.as_ref().is_some_and(|note| note.chars().count() > 2000) {
+            return Err(AppError::bad_request("A note has 2000 characters at most"));
+        }
+        self.db
+            .call(move |conn| {
+                let known = conn.query_row("SELECT 1 FROM chapters WHERE id = ?1", [chapter], |_| Ok(())).optional()?;
+                known.ok_or_else(|| AppError::new(404, "unknown_chapter", "No such chapter"))?;
+                match note {
+                    Some(note) => conn.execute(
+                        "INSERT INTO page_marks (chapter_id, page, note, created_at) VALUES (?1, ?2, ?3, ?4)
+                         ON CONFLICT(chapter_id, page) DO UPDATE SET note = excluded.note",
+                        params![chapter, page, note, now()],
+                    )?,
+                    None => conn.execute("DELETE FROM page_marks WHERE chapter_id = ?1 AND page = ?2", [chapter, page])?,
+                };
+                Ok(())
+            })
+            .await
+    }
+
+    /// The pages kept in a title's chapters, the latest kept first.
+    pub async fn page_marks(&self, manga: i64) -> Result<Vec<PageMark>> {
+        self.db
+            .call(move |conn| {
+                let list = id_list(&members(conn, manga)?);
+                page_marks(conn, &format!("c.manga_id IN ({list})"))
             })
             .await
     }
@@ -367,6 +541,9 @@ impl Titles {
                 params![chapter, page.max(0), read, now()],
             )?;
             crate::library::remember(conn, chapter)?;
+            if read == Some(true) && settings::get::<bool>(conn, MARK_DUPLICATES).unwrap_or(false) {
+                read_duplicates(conn, chapter)?;
+            }
             Ok(changed)
         })
         .await
@@ -439,13 +616,197 @@ fn number_from_name(name: &str) -> f64 {
     -1.0
 }
 
+/// The volume a chapter's name gives: "Vol.2 Ch. 10" is in volume 2.
+fn volume_from_name(name: &str) -> Option<f64> {
+    let lower = name.to_lowercase();
+    ["volume", "vol.", "vol "].iter().find_map(|mark| {
+        let rest = lower[lower.find(mark)? + mark.len()..].trim_start();
+        let end = rest.find(|c: char| !(c.is_ascii_digit() || c == '.')).unwrap_or(rest.len());
+        rest[..end].trim_end_matches('.').parse().ok()
+    })
+}
+
 /// What keeps a statement to the chapters named: nothing for all of them, None when none is named.
 fn among(chapters: &Option<Vec<i64>>) -> Option<String> {
     match chapters {
         Some(ids) if ids.is_empty() => None,
-        Some(ids) => Some(format!(" AND id IN ({})", ids.iter().map(i64::to_string).collect::<Vec<_>>().join(","))),
+        Some(ids) => Some(format!(" AND id IN ({})", id_list(ids))),
         None => Some(String::new()),
     }
+}
+
+/// Numbers only, so the list can go into a statement as it is.
+pub(crate) fn id_list(ids: &[i64]) -> String {
+    ids.iter().map(i64::to_string).collect::<Vec<_>>().join(",")
+}
+
+/// The title a title shows under: the one it was merged into, or itself.
+pub(crate) fn head_of(conn: &Connection, id: i64) -> Result<i64> {
+    conn.query_row("SELECT COALESCE(merged_into, id) FROM manga WHERE id = ?1", [id], |r| r.get(0)).optional()?.ok_or_else(no_title)
+}
+
+/// A title, then the titles merged into it in the order they came.
+pub(crate) fn members(conn: &Connection, head: i64) -> Result<Vec<i64>> {
+    let mut stmt = conn.prepare_cached("SELECT id FROM manga WHERE merged_into = ?1 ORDER BY merged_at, id")?;
+    let mut ids = vec![head];
+    for id in stmt.query_map([head], |r| r.get(0))? {
+        ids.push(id?);
+    }
+    Ok(ids)
+}
+
+/// A JSON list of names, as `locked` and `scanlators` keep them.
+fn names(text: Option<String>) -> Vec<String> {
+    text.and_then(|text| serde_json::from_str(&text).ok()).unwrap_or_default()
+}
+
+/// A title's locked fields with `more` added, in the order `LOCKABLE` gives, as stored.
+fn with_locks(conn: &Connection, id: i64, more: &[&str]) -> Result<String> {
+    let held = names(conn.query_row("SELECT locked FROM manga WHERE id = ?1", [id], |r| r.get(0)).optional()?.flatten());
+    let locked: Vec<&str> = LOCKABLE.into_iter().filter(|field| more.contains(field) || held.iter().any(|kept| kept == field)).collect();
+    Ok(json!(locked).to_string())
+}
+
+/// Writes the fields an edit gives. Answers how many titles changed: 0 for none by that id.
+fn edit_details(conn: &mut Connection, id: i64, edit: &Edit) -> Result<usize> {
+    fn text(value: &str, most: usize, what: &str) -> Result<Option<String>> {
+        let value = value.trim();
+        if value.chars().count() > most {
+            return Err(AppError::bad_request(format!("The {what} is too long")));
+        }
+        Ok((!value.is_empty()).then(|| value.to_owned()))
+    }
+    // (the field as it is locked, its column, the value)
+    let mut changes: Vec<(&str, &str, Sql)> = Vec::new();
+    if let Some(title) = &edit.title {
+        let title = text(title, 300, "name")?.ok_or_else(|| AppError::bad_request("A title needs a name"))?;
+        changes.push(("title", "title", title.into()));
+    }
+    for (field, value) in [("author", &edit.author), ("artist", &edit.artist)] {
+        if let Some(value) = value {
+            changes.push((field, field, text(value, 300, field)?.into()));
+        }
+    }
+    if let Some(description) = &edit.description {
+        changes.push(("description", "description", text(description, 20_000, "description")?.into()));
+    }
+    if let Some(genres) = &edit.genres {
+        let genres: Vec<&str> = genres.iter().map(|genre| genre.trim()).filter(|genre| !genre.is_empty()).collect();
+        if genres.len() > 60 || genres.iter().any(|genre| genre.chars().count() > 60 || genre.contains(',')) {
+            return Err(AppError::bad_request("Up to 60 genres, each of up to 60 characters and without commas"));
+        }
+        changes.push(("genre", "genre", (!genres.is_empty()).then(|| genres.join(", ")).into()));
+    }
+    if let Some(status) = edit.status {
+        if !(0..=6).contains(&status) {
+            return Err(AppError::bad_request("Not a status"));
+        }
+        changes.push(("status", "status", status.into()));
+    }
+    if changes.is_empty() {
+        return Err(AppError::bad_request("Say what to change"));
+    }
+    let tx = conn.transaction()?;
+    if tx.query_row("SELECT 1 FROM manga WHERE id = ?1", [id], |_| Ok(())).optional()?.is_none() {
+        return Ok(0);
+    }
+    for (_, column, value) in &changes {
+        tx.execute(&format!("UPDATE manga SET {column} = ?2 WHERE id = ?1"), params![id, value])?;
+    }
+    let locked = with_locks(&tx, id, &changes.iter().map(|(field, ..)| *field).collect::<Vec<_>>())?;
+    tx.execute("UPDATE manga SET locked = ?2 WHERE id = ?1", params![id, locked])?;
+    tx.commit()?;
+    Ok(1)
+}
+
+/// Every upload of a chapter but one is marked a duplicate. The one kept is from the
+/// earliest of `members`, then from the group earliest in `groups`, then listed first.
+fn prefer(chapters: &mut [ChapterView], members: &[i64], groups: &[String]) {
+    let rank = |chapter: &ChapterView| {
+        let source = members.iter().position(|id| *id == chapter.manga_id).unwrap_or(usize::MAX);
+        let group = chapter.scanlator.as_deref().and_then(|name| groups.iter().position(|wanted| wanted == name)).unwrap_or(groups.len());
+        (source, group)
+    };
+    let mut best: HashMap<Key, usize> = HashMap::new();
+    for (at, chapter) in chapters.iter().enumerate() {
+        let one = key(chapter.number, &chapter.name);
+        if best.get(&one).is_none_or(|&kept| rank(chapter) < rank(&chapters[kept])) {
+            best.insert(one, at);
+        }
+    }
+    for (at, chapter) in chapters.iter_mut().enumerate() {
+        chapter.duplicate = best.get(&key(chapter.number, &chapter.name)) != Some(&at);
+    }
+}
+
+/// Merges `other` into `head`, with the titles merged into `other` before.
+fn merge(conn: &mut Connection, head: i64, other: i64) -> Result<()> {
+    let head = head_of(conn, head)?;
+    head_of(conn, other)?;
+    if head == other {
+        return Err(AppError::bad_request("A title cannot be merged into itself"));
+    }
+    let tx = conn.transaction()?;
+    let now = now();
+    tx.execute("UPDATE manga SET merged_into = ?1 WHERE merged_into = ?2", [head, other])?;
+    // It leaves the library as a title of its own. What it had found before is not news under `head`.
+    tx.execute("UPDATE manga SET merged_into = ?1, merged_at = ?2, in_library = 0, added_at = ?2 WHERE id = ?3", params![head, now, other])?;
+    tx.execute("DELETE FROM manga_categories WHERE manga_id = ?1", [other])?;
+    tx.commit()?;
+    Ok(())
+}
+
+/// A name with only its letters and digits, in lower case: "Solo Leveling!" and "solo leveling" are one.
+fn plain_name(name: &str) -> String {
+    name.chars().filter(|c| c.is_alphanumeric()).flat_map(char::to_lowercase).collect()
+}
+
+fn namesakes(conn: &Connection, id: i64) -> Result<Vec<Namesake>> {
+    let name: String = conn.query_row("SELECT title FROM manga WHERE id = ?1", [id], |r| r.get(0)).optional()?.ok_or_else(no_title)?;
+    let wanted = plain_name(&name);
+    let mut stmt = conn.prepare(
+        "SELECT m.id, m.title, m.thumbnail_url, s.name FROM manga m LEFT JOIN sources s ON s.id = m.source_id
+         WHERE m.in_library = 1 AND m.id != ?1 ORDER BY m.title COLLATE NOCASE",
+    )?;
+    let found = stmt
+        .query_map([id], |r| {
+            let (id, thumbnail): (i64, Option<String>) = (r.get(0)?, r.get(2)?);
+            Ok(Namesake { id, title: r.get(1)?, cover: cover_url(id, thumbnail.as_deref()), source_name: r.get(3)? })
+        })?
+        .filter(|found| found.as_ref().map_or(true, |found| plain_name(&found.title) == wanted))
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    Ok(found)
+}
+
+/// Kept pages, the latest kept first, of the chapters `which` picks out by `c`.
+fn page_marks(conn: &Connection, which: &str) -> Result<Vec<PageMark>> {
+    let mut stmt = conn.prepare(&format!(
+        "SELECT p.chapter_id, c.name, p.page, p.note, p.created_at FROM page_marks p JOIN chapters c ON c.id = p.chapter_id
+         WHERE {which} ORDER BY p.created_at DESC, p.page"
+    ))?;
+    let marks = stmt
+        .query_map([], |r| Ok(PageMark { chapter_id: r.get(0)?, chapter_name: r.get(1)?, page: r.get(2)?, note: r.get(3)?, created_at: r.get(4)? }))?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    Ok(marks)
+}
+
+/// Marks the other uploads of a chapter read along with it: the same number, from any of
+/// the title's groups or the titles merged into it.
+fn read_duplicates(conn: &Connection, chapter: i64) -> Result<()> {
+    let found = conn.query_row("SELECT manga_id, chapter_number FROM chapters WHERE id = ?1", [chapter], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, f64>(1)?)));
+    let Some((owner, number)) = found.optional()? else { return Ok(()) };
+    if number < 0.0 {
+        return Ok(());
+    }
+    let list = id_list(&members(conn, head_of(conn, owner)?)?);
+    conn.execute(
+        &format!(
+            "UPDATE chapters SET read = 1, last_page_read = 0, read_at = ?2
+             WHERE manga_id IN ({list}) AND id != ?1 AND read = 0 AND ROUND(chapter_number * 100) = ROUND(?3 * 100)"
+        ),
+        params![chapter, now(), number],
+    )?;
+    Ok(())
 }
 
 /// How a title gets its chapters, read from the days they came out on, counted from the
@@ -465,9 +826,11 @@ pub(crate) fn rhythm(mut days: Vec<i64>) -> Option<(i64, i64)> {
 }
 
 fn chapter_row(r: &Row) -> rusqlite::Result<ChapterView> {
+    let name: String = r.get(1)?;
     Ok(ChapterView {
         id: r.get(0)?,
-        name: r.get(1)?,
+        volume: volume_from_name(&name),
+        name,
         number: r.get(2)?,
         scanlator: r.get(3)?,
         date_upload: r.get(4)?,
@@ -477,6 +840,8 @@ fn chapter_row(r: &Row) -> rusqlite::Result<ChapterView> {
         page_count: r.get(8)?,
         downloaded: r.get(9)?,
         bookmark: r.get(10)?,
+        manga_id: r.get(11)?,
+        duplicate: false,
     })
 }
 
@@ -490,8 +855,9 @@ fn save_listing(conn: &mut Connection, source: i64, mangas: &[WireManga]) -> Res
             "INSERT INTO manga (source_id, url, title, artist, author, description, genre, status, thumbnail_url, update_strategy, memo)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)
              ON CONFLICT(source_id, url) DO UPDATE SET
-                 title = CASE WHEN manga.initialized OR excluded.title = '' THEN manga.title ELSE excluded.title END,
-                 thumbnail_url = COALESCE(excluded.thumbnail_url, manga.thumbnail_url),
+                 title = CASE WHEN manga.initialized OR excluded.title = '' OR manga.locked LIKE '%\"title\"%' THEN manga.title ELSE excluded.title END,
+                 thumbnail_url = CASE WHEN manga.locked LIKE '%\"cover\"%' THEN manga.thumbnail_url
+                                      ELSE COALESCE(excluded.thumbnail_url, manga.thumbnail_url) END,
                  memo = CASE WHEN manga.initialized THEN manga.memo ELSE excluded.memo END
              RETURNING id, title, thumbnail_url, in_library",
         )?;
@@ -595,9 +961,27 @@ pub(crate) fn wire_chapter(conn: &Connection, chapter: i64) -> Result<(i64, Wire
     .ok_or_else(|| AppError::new(404, "unknown_chapter", "No such chapter"))
 }
 
-fn read_chapters(conn: &Connection, manga: i64) -> Result<Vec<ChapterView>> {
-    let mut stmt = conn.prepare(&format!("SELECT {CHAPTER_COLUMNS} FROM chapters WHERE manga_id = ?1 ORDER BY source_order"))?;
-    let chapters = stmt.query_map([manga], chapter_row)?.collect::<rusqlite::Result<Vec<_>>>()?;
+/// The chapters of these titles. One title's go in its source's order; several titles'
+/// go by number, newest first, and a chapter of an earlier title before the same of a later one.
+fn read_chapters(conn: &Connection, titles: &[i64]) -> Result<Vec<ChapterView>> {
+    let mut stmt = conn.prepare(&format!("SELECT {CHAPTER_COLUMNS} FROM chapters WHERE manga_id IN ({}) ORDER BY source_order", id_list(titles)))?;
+    let mut chapters = stmt.query_map([], chapter_row)?.collect::<rusqlite::Result<Vec<_>>>()?;
+    if titles.len() > 1 {
+        let rank = |chapter: &ChapterView| titles.iter().position(|id| *id == chapter.manga_id);
+        chapters.sort_by(|a, b| b.number.total_cmp(&a.number).then_with(|| rank(a).cmp(&rank(b))));
+    }
+    Ok(chapters)
+}
+
+/// Every chapter a title is read from, its own and those of the titles merged into it, with
+/// the uploads it does not prefer marked when it shows one upload per chapter.
+pub(crate) fn listed_chapters(conn: &Connection, head: i64) -> Result<Vec<ChapterView>> {
+    let titles = members(conn, head)?;
+    let (order, dedupe): (Option<String>, bool) = conn.query_row("SELECT scanlators, dedupe FROM manga WHERE id = ?1", [head], |r| Ok((r.get(0)?, r.get(1)?)))?;
+    let mut chapters = read_chapters(conn, &titles)?;
+    if dedupe {
+        prefer(&mut chapters, &titles, &names(order));
+    }
     Ok(chapters)
 }
 
@@ -606,7 +990,7 @@ pub(crate) fn read_title(conn: &Connection, id: i64) -> Result<TitleView> {
         .query_row(
             "SELECT m.id, m.source_id, s.name, s.lang, s.base_url, m.url, m.title, m.artist, m.author, m.description, m.genre,
                     m.status, m.thumbnail_url, m.in_library, m.added_at, m.initialized, m.reader_mode, m.reader_fit,
-                    m.auto_download, m.chapters_at
+                    m.auto_download, m.chapters_at, m.locked, m.scanlators, m.dedupe, m.merged_into
              FROM manga m LEFT JOIN sources s ON s.id = m.source_id WHERE m.id = ?1",
             [id],
             |r| {
@@ -635,6 +1019,11 @@ pub(crate) fn read_title(conn: &Connection, id: i64) -> Result<TitleView> {
                     chapters_at: r.get(19)?,
                     release_days: None,
                     categories: Vec::new(),
+                    locked: names(r.get(20)?),
+                    scanlators: names(r.get(21)?),
+                    dedupe: r.get(22)?,
+                    merged_into: r.get(23)?,
+                    members: Vec::new(),
                     chapters: Vec::new(),
                 })
             },
@@ -646,7 +1035,15 @@ pub(crate) fn read_title(conn: &Connection, id: i64) -> Result<TitleView> {
         let ids = stmt.query_map([id], |r| r.get(0))?.collect::<rusqlite::Result<Vec<i64>>>()?;
         ids
     };
-    title.chapters = read_chapters(conn, id)?;
+    title.members = {
+        let mut stmt = conn.prepare_cached("SELECT m.title, s.name, s.lang FROM manga m LEFT JOIN sources s ON s.id = m.source_id WHERE m.id = ?1")?;
+        let mut found = Vec::new();
+        for member in members(conn, id)? {
+            found.push(stmt.query_row([member], |r| Ok(Member { id: member, title: r.get(0)?, source_name: r.get(1)?, source_lang: r.get(2)? }))?);
+        }
+        found
+    };
+    title.chapters = listed_chapters(conn, id)?;
     let days = title.chapters.iter().filter(|c| c.date_upload > 0).map(|c| c.date_upload / DAY_MS).collect();
     title.release_days = rhythm(days).map(|(every, _)| every);
     Ok(title)
@@ -695,30 +1092,35 @@ fn stored_prefs(prefs: Option<Value>) -> Result<Option<String>> {
     }
 }
 
+/// A chapter as the reader opens it. Everything about how it is read comes from the title
+/// it shows under, which for a chapter of a merged title is the one it was merged into.
 fn read_reader(conn: &Connection, chapter: i64) -> Result<ReaderView> {
-    let (view, manga_id, title, reader_mode, reader_fit, prefs, kind) = conn
-        .query_row(
-            "SELECT c.id, c.name, c.chapter_number, c.scanlator, c.date_upload, c.fetched_at, c.read, c.last_page_read, c.page_count,
-                    c.download_path IS NOT NULL, c.bookmark, m.id, m.title, m.reader_mode, m.reader_fit, m.reader_prefs, m.genre, s.name, s.lang
-             FROM chapters c JOIN manga m ON m.id = c.manga_id LEFT JOIN sources s ON s.id = m.source_id WHERE c.id = ?1",
-            [chapter],
-            |r| {
-                let (genre, source, lang): (Option<String>, Option<String>, Option<String>) = (r.get(16)?, r.get(17)?, r.get(18)?);
-                let kind = kind_of(genre.as_deref(), source.as_deref(), lang.as_deref());
-                Ok((chapter_row(r)?, r.get::<_, i64>(11)?, r.get::<_, String>(12)?, r.get(13)?, r.get(14)?, r.get::<_, Option<String>>(15)?, kind))
-            },
-        )
-        .optional()?
-        .ok_or_else(|| AppError::new(404, "unknown_chapter", "No such chapter"))?;
+    let unknown = || AppError::new(404, "unknown_chapter", "No such chapter");
+    let owner: i64 = conn.query_row("SELECT manga_id FROM chapters WHERE id = ?1", [chapter], |r| r.get(0)).optional()?.ok_or_else(unknown)?;
+    let manga_id = head_of(conn, owner)?;
+    let (title, reader_mode, reader_fit, prefs, kind, in_library) = conn.query_row(
+        "SELECT m.title, m.reader_mode, m.reader_fit, m.reader_prefs, m.genre, s.name, s.lang, m.in_library
+         FROM manga m LEFT JOIN sources s ON s.id = m.source_id WHERE m.id = ?1",
+        [manga_id],
+        |r| {
+            let (genre, source, lang): (Option<String>, Option<String>, Option<String>) = (r.get(4)?, r.get(5)?, r.get(6)?);
+            let kind = kind_of(genre.as_deref(), source.as_deref(), lang.as_deref());
+            Ok((r.get::<_, String>(0)?, r.get(1)?, r.get(2)?, r.get::<_, Option<String>>(3)?, kind, r.get::<_, bool>(7)?))
+        },
+    )?;
     let reader_prefs = prefs.and_then(|text| serde_json::from_str(&text).ok());
 
-    let mut stmt = conn.prepare("SELECT id, name FROM chapters WHERE manga_id = ?1 ORDER BY source_order")?;
-    let chapters = stmt.query_map([manga_id], |r| Ok(ChapterName { id: r.get(0)?, name: r.get(1)? }))?.collect::<rusqlite::Result<Vec<_>>>()?;
+    let listed = listed_chapters(conn, manga_id)?;
+    let view = listed.iter().find(|c| c.id == chapter).cloned().ok_or_else(unknown)?;
+    // Reading passes over the uploads the title does not prefer, unless one of them is open.
+    let chapters: Vec<ChapterName> =
+        listed.into_iter().filter(|c| !c.duplicate || c.id == chapter).map(|c| ChapterName { id: c.id, name: c.name }).collect();
     // Sources list the newest first, so the next chapter to read is the one listed just above.
     let at = chapters.iter().position(|c| c.id == chapter).unwrap_or(0);
     let next = at.checked_sub(1).map(|i| chapters[i].id);
     let prev = chapters.get(at + 1).map(|c| c.id);
-    Ok(ReaderView { chapter: view, manga_id, title, kind, reader_mode, reader_fit, reader_prefs, prev, next, chapters })
+    let marks = page_marks(conn, &format!("p.chapter_id = {chapter}"))?;
+    Ok(ReaderView { chapter: view, manga_id, title, kind, reader_mode, reader_fit, reader_prefs, in_library, prev, next, chapters, marks })
 }
 
 /// Stores what a source answered about a title. Returns the ids of chapters that are new,
@@ -735,10 +1137,15 @@ pub(crate) fn apply_update(
     let now = now();
     let mut added = Vec::new();
     if with_details {
+        // What was edited by hand stays as it was edited.
+        let locked = names(tx.query_row("SELECT locked FROM manga WHERE id = ?1", [id], |r| r.get(0)).optional()?.flatten());
+        let kept = |field: &str| locked.iter().any(|held| held == field);
         tx.execute(
-            "UPDATE manga SET title = CASE WHEN ?2 = '' THEN title ELSE ?2 END, artist = ?3, author = ?4, description = ?5,
-                 genre = ?6, status = ?7, thumbnail_url = COALESCE(?8, thumbnail_url), update_strategy = ?9, initialized = 1,
-                 memo = ?10, details_at = ?11
+            "UPDATE manga SET title = CASE WHEN ?2 = '' OR ?12 THEN title ELSE ?2 END, artist = CASE WHEN ?13 THEN artist ELSE ?3 END,
+                 author = CASE WHEN ?14 THEN author ELSE ?4 END, description = CASE WHEN ?15 THEN description ELSE ?5 END,
+                 genre = CASE WHEN ?16 THEN genre ELSE ?6 END, status = CASE WHEN ?17 THEN status ELSE ?7 END,
+                 thumbnail_url = CASE WHEN ?18 THEN thumbnail_url ELSE COALESCE(?8, thumbnail_url) END, update_strategy = ?9,
+                 initialized = 1, memo = ?10, details_at = ?11
              WHERE id = ?1",
             params![
                 id,
@@ -751,7 +1158,14 @@ pub(crate) fn apply_update(
                 manga.thumbnail_url.as_deref().filter(|t| !t.is_empty()),
                 manga.update_strategy,
                 manga.memo.to_string(),
-                now
+                now,
+                kept("title"),
+                kept("artist"),
+                kept("author"),
+                kept("description"),
+                kept("genre"),
+                kept("status"),
+                kept("cover")
             ],
         )?;
     }
@@ -973,5 +1387,122 @@ mod tests {
         assert_eq!(web_url(Some("javascript:alert(1)".into()), "/t/1"), None);
         assert_eq!(web_url(Some("https://example.org".into()), "opaque-key"), None);
         assert_eq!(cover_url(3, Some("")), None);
+    }
+
+    #[test]
+    fn volumes_from_names() {
+        for (name, volume) in [("Vol.2 Ch. 10", Some(2.0)), ("Volume 3 - 41 A Title", Some(3.0)), ("vol 4 chapter 1", Some(4.0)), ("Chapter 9", None), ("Volatile 2", None)] {
+            assert_eq!(volume_from_name(name), volume, "{name}");
+        }
+    }
+
+    #[test]
+    fn edits_hold_against_the_source() {
+        let mut conn = database();
+        let id = save_listing(&mut conn, 7, &[manga("/a", "Alpha")]).unwrap()[0].id;
+        apply_update(&mut conn, id, &manga("/a", "Alpha"), &[], true, false).unwrap();
+        let edit = Edit { title: Some(" Alpha, Mine ".into()), author: Some(String::new()), genres: Some(vec!["Action".into(), " ".into(), "Drama".into()]), ..Edit::default() };
+        assert_eq!(edit_details(&mut conn, id, &edit).unwrap(), 1);
+        assert_eq!(edit_details(&mut conn, 999, &edit).unwrap(), 0);
+        assert!(edit_details(&mut conn, id, &Edit { title: Some("  ".into()), ..Edit::default() }).is_err(), "a name cannot be cleared");
+        assert!(edit_details(&mut conn, id, &Edit::default()).is_err());
+
+        let mut source = manga("/a", "Alpha (source)");
+        source.author = Some("Someone".into());
+        source.description = Some("From the source".into());
+        apply_update(&mut conn, id, &source, &[], true, false).unwrap();
+        save_listing(&mut conn, 7, &[manga("/a", "ALPHA")]).unwrap();
+        let title = read_title(&conn, id).unwrap();
+        assert_eq!((title.title.as_str(), title.author.as_deref(), title.description.as_deref()), ("Alpha, Mine", None, Some("From the source")));
+        assert_eq!(title.genres, ["Action", "Drama"]);
+        assert_eq!(title.locked, ["title", "author", "genre"]);
+
+        conn.execute("UPDATE manga SET thumbnail_url = 'custom:abc', locked = ?2 WHERE id = ?1", params![id, with_locks(&conn, id, &["cover"]).unwrap()]).unwrap();
+        apply_update(&mut conn, id, &source, &[], true, false).unwrap();
+        save_listing(&mut conn, 7, &[manga("/a", "Alpha")]).unwrap();
+        let thumbnail: String = conn.query_row("SELECT thumbnail_url FROM manga WHERE id = ?1", [id], |r| r.get(0)).unwrap();
+        assert_eq!(thumbnail, "custom:abc", "a cover set by hand stays");
+    }
+
+    #[test]
+    fn merged_titles_read_as_one() {
+        let mut conn = database();
+        let cards = save_listing(&mut conn, 7, &[manga("/a", "Alpha")]).unwrap();
+        let (head, other) = (cards[0].id, save_listing(&mut conn, 8, &[manga("/b", "Alpha")]).unwrap()[0].id);
+        apply_update(&mut conn, head, &manga("/a", "Alpha"), &[chapter("/a/2", "Chapter 2", 0), chapter("/a/1", "Chapter 1", 0)], true, true).unwrap();
+        apply_update(&mut conn, other, &manga("/b", "Alpha"), &[chapter("/b/3", "Chapter 3", 0), chapter("/b/2", "Chapter 2", 0)], true, true).unwrap();
+        conn.execute("UPDATE manga SET in_library = 1 WHERE id IN (?1, ?2)", [head, other]).unwrap();
+        assert_eq!(namesakes(&conn, head).unwrap().iter().map(|n| n.id).collect::<Vec<_>>(), [other]);
+
+        merge(&mut conn, head, other).unwrap();
+        assert!(merge(&mut conn, other, head).is_err(), "a title is not merged into itself, by any way round");
+        let title = read_title(&conn, head).unwrap();
+        assert_eq!(title.members.iter().map(|m| m.id).collect::<Vec<_>>(), [head, other]);
+        let listed = |conn: &Connection| read_title(conn, head).unwrap().chapters.iter().map(|c| (c.number, c.manga_id, c.duplicate)).collect::<Vec<_>>();
+        assert_eq!(listed(&conn), [(3.0, other, false), (2.0, head, false), (2.0, other, false), (1.0, head, false)]);
+        assert_eq!(read_title(&conn, other).unwrap().merged_into, Some(head));
+        let in_library: bool = conn.query_row("SELECT in_library FROM manga WHERE id = ?1", [other], |r| r.get(0)).unwrap();
+        assert!(!in_library, "a merged title is no longer in the library on its own");
+
+        // One upload per chapter: the first source's.
+        conn.execute("UPDATE manga SET dedupe = 1 WHERE id = ?1", [head]).unwrap();
+        assert_eq!(listed(&conn), [(3.0, other, false), (2.0, head, false), (2.0, other, true), (1.0, head, false)]);
+        let duplicate = read_title(&conn, head).unwrap().chapters[2].id;
+        let reader = read_reader(&conn, duplicate).unwrap();
+        assert_eq!((reader.manga_id, reader.chapters.len()), (head, 4), "an open duplicate stays in reach");
+        let first = read_title(&conn, head).unwrap().chapters[3].id;
+        let reader = read_reader(&conn, first).unwrap();
+        assert_eq!(reader.chapters.len(), 3, "otherwise reading passes over it");
+        assert_eq!(reader.next, Some(read_title(&conn, head).unwrap().chapters[1].id));
+
+        // Reading one upload to its end marks the other read when asked to.
+        settings::set(&conn, MARK_DUPLICATES, &json!(true)).unwrap();
+        let twin = read_title(&conn, head).unwrap().chapters[1].id;
+        conn.execute("UPDATE chapters SET read = 1 WHERE id = ?1", [twin]).unwrap();
+        read_duplicates(&conn, twin).unwrap();
+        assert!(read_title(&conn, head).unwrap().chapters[2].read);
+
+        conn.execute("UPDATE manga SET merged_into = NULL WHERE id = ?1", [other]).unwrap();
+        assert_eq!(read_title(&conn, head).unwrap().chapters.len(), 2);
+    }
+
+    #[test]
+    fn groups_in_order() {
+        let mut list: Vec<ChapterView> = [(1.0, "A"), (1.0, "B"), (2.0, "B"), (-1.0, "C")]
+            .iter()
+            .enumerate()
+            .map(|(id, (number, group))| ChapterView {
+                id: id as i64,
+                name: format!("Ch {number}"),
+                number: *number,
+                scanlator: Some((*group).into()),
+                date_upload: 0,
+                fetched_at: 0,
+                read: false,
+                last_page_read: 0,
+                page_count: None,
+                downloaded: false,
+                bookmark: false,
+                manga_id: 1,
+                volume: None,
+                duplicate: false,
+            })
+            .collect();
+        prefer(&mut list, &[1], &["B".into()]);
+        assert_eq!(list.iter().map(|c| c.duplicate).collect::<Vec<_>>(), [true, false, false, false]);
+        prefer(&mut list, &[1], &[]);
+        assert_eq!(list.iter().map(|c| c.duplicate).collect::<Vec<_>>(), [false, true, false, false], "no order: the first listed");
+    }
+
+    #[test]
+    fn pages_keep_notes() {
+        let mut conn = database();
+        let id = save_listing(&mut conn, 7, &[manga("/a", "Alpha")]).unwrap()[0].id;
+        apply_update(&mut conn, id, &manga("/a", "Alpha"), &[chapter("/1", "One", 0)], true, true).unwrap();
+        let chapter = read_title(&conn, id).unwrap().chapters[0].id;
+        conn.execute("INSERT INTO page_marks (chapter_id, page, note, created_at) VALUES (?1, 4, 'the map', 10)", [chapter]).unwrap();
+        let marks = read_reader(&conn, chapter).unwrap().marks;
+        assert_eq!(marks, [PageMark { chapter_id: chapter, chapter_name: "One".into(), page: 4, note: "the map".into(), created_at: 10 }]);
+        assert_eq!(plain_name("Solo Leveling!"), plain_name("solo  leveling"));
     }
 }

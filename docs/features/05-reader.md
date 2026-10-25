@@ -49,8 +49,26 @@ Code: `ui/src/lib/reader.ts` (every setting, its limits, the layers), `ui/src/li
 
 Checked in a browser on the server's build, with made-up pages in the local source: a title tagged as a webtoon opened as a long strip and one tagged manga right to left; auto-scroll moved 161 px in 2 s at 80 px/s and 200 px at 100; contrast and brightness reached the images and were kept for the title; two pages sat right then left, a wide page stood alone, and the cover offset shifted the pairs; taps on the edges turned the page; a background set for all manga went to the settings and not to the title; a page every 2 s ran off the last page into the next chapter and kept going; the sheet at phone size. `smoke.py` passes on Linux and Windows.
 
-Not checked: a real phone, the screen lock, full screen, real scans with split spreads. Not built: cropping borders, splitting a wide page in two, a strip that runs sideways, keys of one's own choosing.
+Not checked: a real phone, the screen lock, full screen, real scans with split spreads. Cropping, splitting, the sideways strip and keys of one's own came on 2026-10-25, below.
 
 ## Done when
 
 A 60-page chapter and a 200-image webtoon chapter both read end to end on desktop and phone with no stutter and correct resume.
+
+## Cropped, split, sideways, sharpened (2026-10-25)
+
+Code: `lib/pages.ts` (pages made over in a canvas), `lib/reader.ts`, `routes/Reader.svelte`.
+
+- **Cut the margins**: the plain white or black border round a scan is found in a small copy of the page (the corners must agree; a line counts as plain with under 1% of it off) and cut away, a little of it left. Nothing is cut that would gain under 3%, or leave under 40% of a side. A page over 16 million pixels is left as it is: a phone's browser would refuse the canvas.
+- **Split wide pages**: in a book, a page wider than tall is read as its two halves, the right one first right to left. Turning goes through both halves.
+- Made-over pages are blob addresses, sixteen kept at a time. The page's own size still decides what is wide.
+- **Sideways strip**: a fifth mode, pages side by side at the screen's height, scrolled across; the wheel turns it across; auto-scroll and the space between pages apply.
+- **Scaling and sharpening**: smooth, crisp or pixels (`image-rendering`), and an SVG convolution from none to strong.
+- **Keys of one's own**: Settings › Reader lists what each key does and takes a new key for any of them (`reader.keys`). Arrows, Space, Home, End and Escape keep their work.
+- **Kept pages**: the bookmark in the top bar keeps the page that is up with a note (`PUT`/`DELETE /api/chapters/{id}/marks/{page}`); B keeps or lets go without one. `#/read/{id}?page=N` opens a page.
+- **Download ahead** (Settings › Reader): opening a chapter of a library title queues the next 1 to 10.
+- **Incognito** (Settings › Appearance, this device): no place kept, no history, nothing sent to trackers, nothing downloaded ahead. The top bar says so.
+
+Checked in Chromium against Linux: a 600×900 page with 70 px margins came out 471×770; a 1200×800 spread read as its two halves and back; sharpening on; a kept page saved; the sideways strip scrolled by Space.
+
+Not checked: real scans with uneven margins, a phone's canvas limits, Safari's support of the sharpening filter.

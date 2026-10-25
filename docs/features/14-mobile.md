@@ -40,3 +40,12 @@ Settings → Appearance → This device. Kept in the browser (`mango.display`), 
 Checked in Chromium against a Mango on the Linux server, at 390×844 and 320×568: no screen scrolls sideways; library, a long title and a source's list are put back where they were left; reader and title no longer loop; the three settings hold after a reload; the wide layout is as it was at 1440×900.
 
 Not checked: a real iPhone. The band behind the clock, the notch and home-bar spacing, and the icon on a home screen cannot be seen in a desktop browser.
+
+## With no connection, on e-ink, unseen (2026-10-25)
+
+- **Kept on this device**: a chapter's menu, or the select bar, keeps chapters in the browser's own cache (`lib/offline.ts`), with what the title page and the reader ask for, the session and the settings, and the reader's code. `public/sw.js` answers from that copy when Mango cannot be reached, and serves a kept page from it first. The page itself and its files are kept by the worker as they are fetched. Other pages under the same name are left alone, as the hosted Mango shares its name with the account pages. Signing out empties every account's copy. Browsers offer this only over HTTPS or on this machine's own address.
+- **Still screen** and **library in pages**, for e-ink; **incognito**. Settings › Appearance, kept on the device.
+
+Checked in Chromium against Linux: a chapter kept, the network cut, the page reloaded, the chapter read with all four pages.
+
+Not checked: a real phone, a real e-ink reader.

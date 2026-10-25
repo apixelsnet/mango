@@ -1,5 +1,6 @@
 <script lang="ts">
   import { ApiError, get, message, send } from '../lib/api';
+  import { every } from '../lib/util';
   import Icon from '../lib/Icon.svelte';
   import Notice from '../lib/Notice.svelte';
 
@@ -65,8 +66,8 @@
   // While the import runs, the screen follows it.
   $effect(() => {
     if (!status?.running) return;
-    const timer = setInterval(async () => (status = await get<Status>('/import').catch(() => status)), 700);
-    return () => clearInterval(timer);
+    const stop = every(700, async () => (status = await get<Status>('/import').catch(() => status)));
+    return stop;
   });
 
   async function install(source: Source) {

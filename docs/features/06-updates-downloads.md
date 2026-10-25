@@ -64,3 +64,18 @@ Not checked: weeks of real runs. A series that changes its rhythm is found late 
 ## Done when
 
 An overnight update finds new chapters, auto-downloads them, and they open with the network unplugged.
+
+## Word of new chapters, and tidying (2026-10-25)
+
+Code: `notify.rs`, `updates.rs`, `downloads.rs` (`retry_all`, `orphaned`), `routes/Updates.svelte`, `routes/Downloads.svelte`.
+
+- **Notifications**: after an update run that finds chapters, a message goes to the address in Settings › Library (`notify.url`): an ntfy topic (text, with a title), a Discord webhook, or a JSON post `{event, count, chapters: [{mangaId, title, chapterId, chapter}]}`. Twenty chapters are named, the rest counted. The address is the account's to name, so it is fetched as a store is (`net.rs`): HTTPS and public addresses only, unless `MANGO_STORES_LOCAL=on`. `POST /api/notify/test` sends a test. A failure is logged; the run does not fail for it. No Web Push.
+- **Updates** groups a day's chapters by title: a title with five is one row of five, opened to show them, with one button to download them all.
+- **Retry all that failed** (`POST /api/downloads/retry`).
+- **Files of titles you left** (Settings › Downloads): titles not followed any more that still have chapters saved, with their size, and one button to delete those files (`GET`/`DELETE /api/downloads/orphans`). Their progress stays.
+- Titles merged into a library title update with it, take its categories and its "download new chapters", and their chapters show under it.
+- The Updates, Downloads and Import screens ask again every so often only while they are in view (`every` in `lib/util.ts`); the menu's count asks `GET /api/updates/fresh`, one query instead of three.
+
+Checked by unit tests and `smoke.py` on Linux (a test sent to this machine's address is refused).
+
+Not checked: a real ntfy, Discord or webhook receiving a run's message.

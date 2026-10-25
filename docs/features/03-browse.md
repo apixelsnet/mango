@@ -63,3 +63,19 @@ Checked on Linux and Windows by `smoke.py`, and by hand in a browser at a desk's
 ## Done when
 
 A title can be found by global search, opened, and added to the library.
+
+## The title page, edited and merged (2026-10-25)
+
+What Mihon's forks are asked for most, on a title's page. Code: `titles.rs` (`edit_details`, `merge`, `prefer`, `listed_chapters`), `routes/Title.svelte`; migration `012_requests.sql`.
+
+- **Edit details**, from the title's menu: name, author, artist, description, genres, status, and a cover of one's own (`PUT /api/manga/{id}/details`, `PUT /api/manga/{id}/cover` with the picture as the body, 8 MB at most, sniffed like any image). Each field changed is locked (`manga.locked`): a refresh and a source's list leave it alone. "Follow the source again" (`DELETE .../details`) unlocks them all and refreshes. A cover set by hand lives in `covers/` as `<id>-custom-<mark>`; a backup leaves it out.
+- **Another source**: "Add another source" searches every source for the title (`#/search?q=&merge=`); the title picked is merged in (`POST /api/manga/{id}/merge/{other}`, its chapters fetched first when they never were). A merged title leaves the library as a title of its own and updates, downloads and is read under the one it went into; its chapters show there, by number, with their source named. "Take out" (`DELETE .../merge/{other}`) parts them; the title taken out is not in the library after. Opening a merged title opens the one it is in.
+- **Scanlation groups**: an order of the groups wanted first, and "one upload per chapter" (`PUT /api/manga/{id}/scanlators`). With it on, every other upload of a chapter is marked `duplicate`, hidden unless "Other uploads" is picked, passed over by the reader's next and previous, and counted once in the library. Sources come before groups: the title's own first, then those merged in, in their order.
+- **By volume**: the chapter list can be headed by volume, read from names such as "Vol.2 Ch. 10" (`ChapterView.volume`).
+- **Kept pages**: pages kept from the reader, with their notes, listed under the trackers; each opens the reader on its page.
+- **Same name**: adding a title asks for library titles of the same name (`GET /api/manga/{id}/namesakes`, letters and digits compared). If there is one, it says so and offers to read this title as one of its sources, or to add it anyway.
+- Browse: a source can be put in a folder of the owner's own (`PUT /api/sources/{id}` with `folder`; empty takes it out). Folders show under the sources, after the pinned ones.
+
+Checked by unit tests (edits held through refreshes, merges and their order, the preferred upload, volumes, kept pages) and by `smoke.py` on Linux (204 checks). Checked in Chromium against a Mango on the Linux server, at 1280×860 and 390×844: edit form, merge with two sources listed and the merged title leading to its head, one upload per chapter (5 rows to 4, the library counting 4), volume headings; no screen scrolls sideways and the console stayed clean.
+
+Not checked: two real online sources merged, a cover set by hand from a phone.

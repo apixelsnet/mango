@@ -5,6 +5,7 @@
 
 mod api;
 mod auth;
+mod backups;
 mod config;
 mod db;
 mod downloads;
@@ -18,6 +19,7 @@ mod library;
 mod local;
 mod migrate;
 mod net;
+mod notify;
 mod opds;
 mod settings;
 mod spaces;

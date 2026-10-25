@@ -65,7 +65,7 @@ pub fn write(conn: &Connection) -> Result<Vec<u8>> {
     )?;
     let mut titles = conn.prepare(
         "SELECT id, source_id, url, title, artist, author, description, genre, status, thumbnail_url, added_at, reader_mode, update_strategy
-         FROM manga WHERE in_library ORDER BY id",
+         FROM manga WHERE in_library OR merged_into IS NOT NULL ORDER BY id",
     )?;
     let mut rows = titles.query([])?;
     while let Some(r) = rows.next()? {
@@ -84,7 +84,8 @@ pub fn write(conn: &Connection) -> Result<Vec<u8>> {
             description: r.get(6)?,
             genre: genre.iter().flat_map(|genre| genre.split(',')).map(str::trim).filter(|genre| !genre.is_empty()).map(str::to_owned).collect(),
             status: r.get(8)?,
-            thumbnail_url: r.get(9)?,
+            // A cover set by hand lives in Mango's own folder; another app has no way to it.
+            thumbnail_url: r.get::<_, Option<String>>(9)?.filter(|url| !url.starts_with(crate::titles::CUSTOM_COVER)),
             // Epoch milliseconds, like every time in a backup. Mango keeps seconds.
             date_added: added.unwrap_or(0) * 1000,
             chapters: chapters
@@ -159,7 +160,7 @@ pub fn write(conn: &Connection) -> Result<Vec<u8>> {
     }
 
     // The names of the sources the titles come from, so a reader can say which are missing.
-    let mut sources = conn.prepare("SELECT s.id, s.name FROM sources s WHERE s.id IN (SELECT source_id FROM manga WHERE in_library) ORDER BY s.id")?;
+    let mut sources = conn.prepare("SELECT s.id, s.name FROM sources s WHERE s.id IN (SELECT source_id FROM manga WHERE in_library OR merged_into IS NOT NULL) ORDER BY s.id")?;
     let mut rows = sources.query([])?;
     while let Some(r) = rows.next()? {
         let source = BackupSource { source_id: r.get(0)?, name: r.get(1)? };
