@@ -39,3 +39,15 @@ Not built yet: download from the bulk bar and per-title auto-download, which bel
 ## Done when
 
 A library of 2,000 titles opens, scrolls and filters without visible lag, with the host stopped.
+
+## Nested categories, pagination, bulk migration and statistics (2026-10-25)
+
+Implementation: `library.rs` (`set_parent`, `stats`, the library query), `routes/Library.svelte`, `routes/MigrateMany.svelte` and `routes/Stats.svelte`.
+
+- **Nested categories.** A category may be placed inside another (`categories.parent_id`; `POST /api/categories` and `PUT /api/categories/{id}` accept `parent`, where 0 means the top level). Selecting a category also shows the titles of all categories nested within it, at any depth. A category cannot be placed inside itself or one of its descendants. The parent is set in Settings › Library, and the library displays categories as a tree.
+- **Pagination.** The "Library in pages" option (Settings › Appearance, stored per device) shows 24, 48 or 96 titles per page with navigation buttons, which suits e-ink devices that scroll poorly.
+- **Bulk migration.** The selection bar offers "Move to other sources" (`#/migrate/many?ids=`). The user selects sources in order of preference. Each title is searched in those sources; the first result with the same name is chosen, otherwise the first result found. After review, the titles are migrated with the same options as a single migration (feature 12).
+- **Statistics.** `GET /api/stats` and `#/stats` report the number of titles, titles started and completed, chapters read, days with reading activity and the current streak, chapters read in each of the last twelve months, and library titles by source, genre and status. Days are counted in UTC.
+- A title with merged sources includes their chapters in its counts; a title showing one upload per chapter counts chapters rather than uploads.
+
+Verification: unit tests and `smoke.py` on Linux, and Chromium at both viewport sizes.

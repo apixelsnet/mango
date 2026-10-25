@@ -41,7 +41,7 @@ jobs:
               "Reader")                labels+=("area: reader") ;;
               "Library")               labels+=("area: library") ;;
               "Browse and search")     labels+=("area: browse") ;;
-              "Extensions and stores") labels+=("area: extensions") ;;
+              "Extensions and repositories" | "Extensions and stores") labels+=("area: extensions") ;;
               "Updates and downloads") labels+=("area: downloads") ;;
               "Local source")          labels+=("area: local source") ;;
               "Import and export")     labels+=("area: import/export") ;;

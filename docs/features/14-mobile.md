@@ -40,3 +40,12 @@ Settings → Appearance → This device. Kept in the browser (`mango.display`), 
 Checked in Chromium against a Mango on the Linux server, at 390×844 and 320×568: no screen scrolls sideways; library, a long title and a source's list are put back where they were left; reader and title no longer loop; the three settings hold after a reload; the wide layout is as it was at 1440×900.
 
 Not checked: a real iPhone. The band behind the clock, the notch and home-bar spacing, and the icon on a home screen cannot be seen in a desktop browser.
+
+## Offline reading, e-ink support and incognito mode (2026-10-25)
+
+- **Offline reading.** From a chapter's menu or the selection bar, chapters can be saved to the browser's cache (`lib/offline.ts`), together with the data the title page and the reader request, the session, the settings and the reader's code. The service worker (`public/sw.js`) serves this copy when Mango cannot be reached, and serves saved pages from it first. The application shell is cached by the service worker as it is fetched. Other pages under the same host name are not cached, because the hosted service shares its host name with the account pages. Signing out clears the saved chapters of every account. Browsers provide this cache only over HTTPS or on the local machine.
+- **E-ink and privacy.** "Still screen", "Library in pages" and "Incognito" are available in Settings › Appearance and are stored per device.
+
+Verification in Chromium against a Linux build: a chapter was saved, the network was disabled, the page was reloaded and all four pages of the chapter were displayed.
+
+Not verified: a real phone and a real e-ink device.

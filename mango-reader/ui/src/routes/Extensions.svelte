@@ -96,14 +96,14 @@
 <div class="page">
   <div class="page-head">
     <h1 class="display">EXTENSIONS</h1>
-    <strong>{installed.length} installed · {stores.length} {stores.length === 1 ? 'store' : 'stores'}</strong>
+    <strong>{installed.length} installed · {stores.length} {stores.length === 1 ? 'repository' : 'repositories'}</strong>
   </div>
 
   <Notice {loading} {error} />
 
   {#if !loading}
     <section>
-      <div class="section-head"><h2 class="display">STORES</h2></div>
+      <div class="section-head"><h2 class="display">REPOSITORIES</h2></div>
       <ul class="rows">
         {#each stores as store (store.id)}
           <li class="store">
@@ -122,10 +122,10 @@
             </span>
             {#if store.keyChanged}
               <div class="panel warning" role="alert">
-                <strong>This store now signs with a different key.</strong>
+                <strong>This repository now signs with a different key.</strong>
                 <span>
-                  Nothing is installed or updated from it until you decide. Accept the new key only if the store announced the change; otherwise
-                  someone may be passing off their own extensions as the store's.
+                  Nothing is installed or updated from it until you decide. Accept the new key only if the repository announced the change; otherwise
+                  someone may be passing off their own extensions as the repository's.
                 </span>
                 <code>pinned {store.signingKey}</code>
                 <code>offered {store.offeredKey}</code>
@@ -139,11 +139,11 @@
       </ul>
       <form class="add" onsubmit={addStore}>
         <label class="field">
-          <span class="sr">Address of a store's repo.json or index.pb</span>
+          <span class="sr">Address of a repository's repo.json or index.pb</span>
           <Icon name="plus" size={18} stroke={3} />
           <input type="url" bind:value={url} placeholder="https://…/index.pb" required />
         </label>
-        <button class="btn ink" disabled={busy.add}>{busy.add ? 'Adding…' : 'Add store'}</button>
+        <button class="btn ink" disabled={busy.add}>{busy.add ? 'Adding…' : 'Add repository'}</button>
       </form>
     </section>
 
@@ -163,7 +163,7 @@
               <a class="main" href="#/extension/{ext.pkg}">
                 <strong>{ext.name}</strong>
                 <span>
-                  {ext.versionName} · {ext.sources.length} {ext.sources.length === 1 ? 'source' : 'sources'}{ext.storeId === null ? ' · its store was removed' : ''}
+                  {ext.versionName} · {ext.sources.length} {ext.sources.length === 1 ? 'source' : 'sources'}{ext.storeId === null ? ' · its repository was removed' : ''}
                 </span>
               </a>
               <span class="tools">
@@ -228,7 +228,7 @@
         {/if}
       </section>
     {:else}
-      <Notice>Add a store above to see the extensions it offers.</Notice>
+      <Notice>Add a repository above to see the extensions it offers.</Notice>
     {/if}
   {/if}
 </div>

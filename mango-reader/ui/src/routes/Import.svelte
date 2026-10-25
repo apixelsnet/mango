@@ -1,5 +1,6 @@
 <script lang="ts">
   import { ApiError, get, message, send } from '../lib/api';
+  import { every } from '../lib/util';
   import Icon from '../lib/Icon.svelte';
   import Notice from '../lib/Notice.svelte';
 
@@ -65,8 +66,8 @@
   // While the import runs, the screen follows it.
   $effect(() => {
     if (!status?.running) return;
-    const timer = setInterval(async () => (status = await get<Status>('/import').catch(() => status)), 700);
-    return () => clearInterval(timer);
+    const stop = every(700, async () => (status = await get<Status>('/import').catch(() => status)));
+    return stop;
   });
 
   async function install(source: Source) {
@@ -154,7 +155,7 @@
           <li>
             <span class="main">
               <strong>{source.name}</strong>
-              <span>{source.titles} {source.titles === 1 ? 'title' : 'titles'}{source.extension ? ` · ${source.extension}` : ' · no added store has its extension'}</span>
+              <span>{source.titles} {source.titles === 1 ? 'title' : 'titles'}{source.extension ? ` · ${source.extension}` : ' · no added repository has its extension'}</span>
             </span>
             {#if source.pkg}
               <button class="btn" disabled={installing[source.id]} onclick={() => install(source)}>{installing[source.id] ? 'Installing…' : 'Install'}</button>

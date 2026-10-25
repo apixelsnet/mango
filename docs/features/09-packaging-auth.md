@@ -214,3 +214,13 @@ Not checked:
 Both workflows ran on GitHub. The release workflow, from the tag `v1.0.0`, made the five archives with `SHA256SUMS`, tried the amd64 image, and pushed the image for both platforms.
 
 Its first run failed: amd64 and arm64 are built side by side, and both unpacked crates into one shared cargo cache. Each platform now has its own.
+
+## Performance optimizations (2026-10-25)
+
+- **Class data sharing for the extension host.** The host JVM writes the classes it has loaded to `host/host.jsa` when it stops and maps them at the next start (`-XX:+AutoCreateSharedArchive`). The JVM validates the archive against the JAR files and regenerates it when they change. Measured on the Linux server from process start to the ready line: 371, 379 and 382 ms without the archive; 219, 220 and 234 ms with it, after an initial run of 415 ms that created it.
+- **On-demand loading of screens.** Screens that are not needed on every visit are loaded when first opened: the reader, Settings, extensions, import, migration, statistics and the welcome page. Initial load, as reported by Vite: 246 KB of JavaScript (83 KB gzipped) and 47 KB of CSS before the change; 166 KB (58 KB gzipped) and 27 KB after, including the screens added in this release.
+- **Page cache.** A cache hit no longer writes to disk: a file accessed within the last hour keeps its modification time. The sorted page list of the 32 most recently read downloaded chapters is kept in memory, so turning a page does not re-read and sort the archive index. Images are shared between the cache, the disk writer and the response rather than copied.
+
+## Categorized release notes (2026-10-25)
+
+Release notes are divided into Added, Changed and Fixed sections (`.github/release.yml`) according to the label on each pull request: `changelog: added`, `changelog: changed` or `changelog: fixed`; `changelog: skip` excludes a pull request. The Changelog workflow assigns a label from the pull request title when the pull request is opened or renamed (`feat` to Added, `fix` to Fixed, all others to Changed) and does not override a label set manually. Pull requests merged before this change carry no label and appear under Other.

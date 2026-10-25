@@ -5,10 +5,29 @@
 
 <script lang="ts">
   import { untrack } from 'svelte';
-  import { get, message, send, type ReaderInfo } from '../lib/api';
+  import { get, message, send, type PageMark, type ReaderInfo } from '../lib/api';
+  import { display } from '../lib/display.svelte';
   import Icon from '../lib/Icon.svelte';
+  import { makeOver, type Part } from '../lib/pages';
   import ReaderPrefs from '../lib/ReaderPrefs.svelte';
-  import { filterOf, FITS, KINDS, merge, MODES, owned, profile, setProfile, zone, type Kind, type Mode, type Own, type Prefs } from '../lib/reader';
+  import {
+    filterOf,
+    FITS,
+    keymap,
+    keyName,
+    KINDS,
+    merge,
+    MODES,
+    owned,
+    profile,
+    setProfile,
+    sharpenKernel,
+    zone,
+    type Kind,
+    type Mode,
+    type Own,
+    type Prefs,
+  } from '../lib/reader';
   import { pref, prefs, setPref } from '../lib/prefs.svelte';
   import { go, route, up } from '../lib/router.svelte';
   import Zones from '../lib/Zones.svelte';
@@ -39,6 +58,15 @@
   let strip = $state<HTMLElement>();
   let vw = $state(0);
   let vh = $state(0);
+  // A wide page split in two: which half is up, the first in reading order or the second.
+  let half = $state<0 | 1>(0);
+  // Pages made over in the browser, cropped or halved: their blob addresses by page, part and setting.
+  let views = $state<Record<string, string>>({});
+  // Pages kept with a note, and the note being written for the page that is up.
+  let marks = $state<PageMark[]>([]);
+  let noting = $state<string | null>(null);
+  // Nothing of this reading is kept: no place, no history, nothing for trackers.
+  const incognito = $derived(display.value.incognito);
 
   // ---------- settings: the kind of series, then what this title says for itself ----------
 
@@ -61,7 +89,9 @@
     setPref('tour.zones', true).catch(() => {});
   }
 
-  const paged = $derived(mode !== 'webtoon');
+  const paged = $derived(mode !== 'webtoon' && mode !== 'sideways');
+  const sideways = $derived(mode === 'sideways');
+  const keys = $derived(keymap());
   const pages = $derived(Array.from({ length: count }, (_, i) => i));
   const two = $derived((mode === 'rtl' || mode === 'ltr') && (p.spread === 'on' || (p.spread === 'auto' && vw > vh * 1.2)));
   /** With two pages up: which pages share the screen, in reading order. */
@@ -79,6 +109,33 @@
   const shown = $derived(leaves?.find((leaf) => leaf.includes(index)) ?? [index]);
   /** The last page on screen: how far the reading got. */
   const reached = $derived(shown[shown.length - 1]);
+  const marked = $derived(marks.find((mark) => mark.page === reached) ?? null);
+
+  /** Whether a page is read as its two halves. Only one page at a time is split, and only a wide one. */
+  const splitting = (i: number) => paged && p.split && !two && !!wide[i];
+  const partOf = (i: number): Part => (splitting(i) ? (half === 0 ? 'first' : 'second') : 'whole');
+  const viewKey = (i: number, part: Part) => `${i}:${part}:${p.crop}:${mode === 'rtl'}:${tries[i] ?? 0}`;
+  /** A page as it is shown: made over when it is ready, the page itself until then. */
+  const look = (i: number, part: Part = partOf(i)) => views[viewKey(i, part)] ?? src(i);
+
+  function prepare(i: number, part: Part) {
+    const key = viewKey(i, part);
+    if (views[key]) return;
+    makeOver(src(i), p.crop, part, mode === 'rtl').then((url) => url && (views[key] = url));
+  }
+
+  $effect(() => {
+    if (!ready || !(p.crop || p.split)) return;
+    const wanted: [number, Part][] = [];
+    if (paged) {
+      for (const i of [...shown, reached + 1]) if (i >= 0 && i < count) wanted.push([i, partOf(i)]);
+      // The other half too, so turning to it is quick.
+      if (splitting(index)) wanted.push([index, half === 0 ? 'second' : 'first']);
+    } else {
+      for (const i of pages) if (near[i]) wanted.push([i, 'whole']);
+    }
+    untrack(() => wanted.forEach(([i, part]) => prepare(i, part)));
+  });
 
   const src = (i: number, chapter = id) => `api/chapters/${chapter}/pages/${i}${tries[i] ? `?try=${tries[i]}` : ''}`;
   const clamp = (z: number) => Math.min(4, Math.max(0.5, z));
@@ -139,7 +196,15 @@
     count = total;
     if (ready || !info) return;
     const chapter = info.chapter;
-    index = route.query.get('at') === 'end' ? total - 1 : chapter.read ? 0 : Math.min(Math.max(chapter.lastPageRead, 0), total - 1);
+    // A kept page is opened by its number; otherwise where the reading got to.
+    const asked = Number(route.query.get('page'));
+    index = route.query.get('at') === 'end'
+      ? total - 1
+      : route.query.has('page') && Number.isInteger(asked)
+        ? between(asked, 0, total - 1)
+        : chapter.read
+          ? 0
+          : Math.min(Math.max(chapter.lastPageRead, 0), total - 1);
     saved = index;
     ready = true;
   }
@@ -152,6 +217,8 @@
     try {
       info = await get<ReaderInfo>(`/chapters/${id}`);
       own = owned(info);
+      marks = info.marks;
+      fetchAhead(info);
       if (info.chapter.pageCount) open(info.chapter.pageCount);
       open((await counting).count);
     } catch (e) {
@@ -160,18 +227,33 @@
   }
   load();
 
+  /** Queues the next few chapters for download, as many as Settings asks, for a title in the library. */
+  function fetchAhead(info: ReaderInfo) {
+    const ahead = pref<number>('reader.downloadAhead', 0);
+    if (!ahead || !info.inLibrary || incognito) return;
+    // Newest first, so the chapters after this one are those listed above it.
+    const at = info.chapters.findIndex((chapter) => chapter.id === id);
+    const next = info.chapters.slice(Math.max(0, at - ahead), Math.max(0, at)).map((chapter) => chapter.id);
+    if (next.length) send('POST', '/downloads', { chapters: next }).catch(() => {});
+  }
+
   // ---------- moving ----------
 
-  function show(i: number) {
+  /** Opens a page, on its first half when it is split, or on its second with `last`. */
+  function show(i: number, last = false) {
     index = Math.max(0, Math.min(count - 1, i));
+    half = last && splitting(index) ? 1 : 0;
     zoom = 1;
     note = '';
     if (paged) stage?.scrollTo({ top: 0, left: 0 });
-    else strip?.querySelector(`[data-page="${index}"]`)?.scrollIntoView();
+    else strip?.querySelector(`[data-page="${index}"]`)?.scrollIntoView({ block: 'start', inline: 'start' });
   }
 
   function next() {
-    if (reached < count - 1) show(reached + 1);
+    if (splitting(index) && half === 0) {
+      half = 1;
+      stage?.scrollTo({ top: 0, left: 0 });
+    } else if (reached < count - 1) show(reached + 1);
     else if (info?.next) go(`/read/${info.next}`, true);
     else {
       note = 'That was the last chapter.';
@@ -180,7 +262,10 @@
   }
 
   function prev() {
-    if (shown[0] > 0) show(shown[0] - 1);
+    if (splitting(index) && half === 1) {
+      half = 0;
+      stage?.scrollTo({ top: 0, left: 0 });
+    } else if (shown[0] > 0) show(shown[0] - 1, true);
     else if (info?.prev) go(`/read/${info.prev}?at=end`, true);
     else note = 'This is the first chapter.';
   }
@@ -193,12 +278,35 @@
     return direction > 0 ? at + view < size - 2 : at > 2;
   }
 
-  /** Space and its kin: scroll within a tall page first, turn at its end. */
+  /** Space and its kin: scroll within a tall page first, turn at its end. A sideways strip scrolls across. */
   function advance(direction: 1 | -1) {
     const box = paged ? stage : strip;
-    if (!paged || room('y', direction)) box?.scrollBy({ top: ((box.clientHeight * p.step) / 100) * direction, behavior: 'smooth' });
+    if (sideways) box?.scrollBy({ left: ((box.clientWidth * p.step) / 100) * direction, behavior: 'smooth' });
+    else if (!paged || room('y', direction)) box?.scrollBy({ top: ((box.clientHeight * p.step) / 100) * direction, behavior: 'smooth' });
     else if (direction > 0) next();
     else prev();
+  }
+
+  // ---------- kept pages ----------
+
+  /** Keeps the page that is up with the note written, or lets it go with null. */
+  async function keepPage(text: string | null) {
+    const page = reached;
+    noting = null;
+    try {
+      if (text === null) {
+        await send('DELETE', `/chapters/${id}/marks/${page}`);
+        marks = marks.filter((mark) => mark.page !== page);
+        say('Page removed');
+      } else {
+        await send('PUT', `/chapters/${id}/marks/${page}`, { note: text });
+        const kept = { chapterId: id, chapterName: info?.chapter.name ?? '', page, note: text.trim(), createdAt: Date.now() / 1000 };
+        marks = [...marks.filter((mark) => mark.page !== page), kept];
+        say('Page saved');
+      }
+    } catch (e) {
+      say(message(e));
+    }
   }
 
   // ---------- remembering ----------
@@ -209,7 +317,7 @@
   function save(now: boolean) {
     clearTimeout(saving);
     const page = reached;
-    if (!ready || page === saved) return;
+    if (!ready || page === saved || incognito) return;
     const write = () => {
       saved = page;
       const body = page >= count - 1 ? { page, read: true } : { page };
@@ -260,23 +368,24 @@
   // ---------- webtoon: only nearby images exist ----------
 
   $effect(() => {
-    if (!ready || mode !== 'webtoon' || !strip || !count) return;
+    if (!ready || paged || !strip || !count) return;
     const box = strip;
+    const across = sideways;
     const page = (entry: IntersectionObserverEntry) => Number((entry.target as HTMLElement).dataset.page);
     const loader = new IntersectionObserver((entries) => entries.forEach((e) => (near[page(e)] = e.isIntersecting)), {
       root: box,
-      rootMargin: '250% 0px',
+      rootMargin: across ? '0px 250%' : '250% 0px',
     });
     // The page crossing the middle of the screen is the one being read.
     const tracker = new IntersectionObserver((entries) => entries.forEach((e) => e.isIntersecting && (index = page(e))), {
       root: box,
-      rootMargin: '-50% 0px -50% 0px',
+      rootMargin: across ? '0px -50% 0px -50%' : '-50% 0px -50% 0px',
     });
     for (const frame of box.querySelectorAll('[data-page]')) {
       loader.observe(frame);
       tracker.observe(frame);
     }
-    untrack(() => box.querySelector(`[data-page="${index}"]`)?.scrollIntoView());
+    untrack(() => box.querySelector(`[data-page="${index}"]`)?.scrollIntoView({ block: 'start', inline: 'start' }));
     return () => {
       loader.disconnect();
       tracker.disconnect();
@@ -326,7 +435,12 @@
     const box = strip;
     if (!box) return;
     const pace = speed;
-    let at = box.scrollTop;
+    // A sideways strip runs across, the long strip down.
+    const across = sideways;
+    const position = () => (across ? box.scrollLeft : box.scrollTop);
+    const move = (to: number) => (across ? (box.scrollLeft = to) : (box.scrollTop = to));
+    const atEnd = () => (across ? box.scrollLeft + box.clientWidth >= box.scrollWidth - 2 : box.scrollTop + box.clientHeight >= box.scrollHeight - 2);
+    let at = position();
     let last = performance.now();
     let rested = 0;
     let frame = 0;
@@ -336,10 +450,10 @@
       frame = requestAnimationFrame(tick);
       if (held) return;
       // Scrolled by hand meanwhile: carry on from there.
-      if (Math.abs(box.scrollTop - at) > 2) at = box.scrollTop;
+      if (Math.abs(position() - at) > 2) at = position();
       at += pace * passed;
-      box.scrollTop = at;
-      if (box.scrollTop + box.clientHeight < box.scrollHeight - 2) rested = 0;
+      move(at);
+      if (!atEnd()) rested = 0;
       else if ((rested += passed) > 1.5) {
         rested = -Infinity;
         autoEnd();
@@ -452,6 +566,12 @@
       zoom = clamp(zoom * (event.deltaY < 0 ? 1.1 : 0.9));
       return;
     }
+    // A mouse wheel turns a sideways strip across.
+    if (sideways && strip && Math.abs(event.deltaY) > Math.abs(event.deltaX)) {
+      event.preventDefault();
+      strip.scrollBy({ left: event.deltaY });
+      return;
+    }
     if (!paged || room('y', Math.sign(event.deltaY))) return;
     const now = Date.now();
     if (now < wheelRest) return;
@@ -463,11 +583,73 @@
     }
   }
 
+  /** What a key the owner can set does; see `ACTIONS` in lib/reader.ts. */
+  function act(action: ReturnType<typeof keys.get>): boolean {
+    switch (action) {
+      case 'next':
+        advance(1);
+        break;
+      case 'prev':
+        advance(-1);
+        break;
+      case 'nextChapter':
+        if (info?.next) go(`/read/${info.next}`, true);
+        break;
+      case 'prevChapter':
+        if (info?.prev) go(`/read/${info.prev}`, true);
+        break;
+      case 'menu':
+        overlay = !overlay;
+        break;
+      case 'settings':
+        panel = !panel;
+        overlay = false;
+        break;
+      case 'auto':
+        toggleAuto();
+        break;
+      case 'faster':
+        pace(1);
+        break;
+      case 'slower':
+        pace(-1);
+        break;
+      case 'spread':
+        if (mode === 'rtl' || mode === 'ltr') {
+          change({ spread: two ? 'off' : 'on' });
+          say(two ? 'One page' : 'Two pages');
+        }
+        break;
+      case 'zoomIn':
+        zoom = clamp(zoom * 1.2);
+        break;
+      case 'zoomOut':
+        zoom = clamp(zoom / 1.2);
+        break;
+      case 'zoomReset':
+        zoom = 1;
+        break;
+      case 'mark':
+        keepPage(marked ? null : '');
+        break;
+      case 'fit': {
+        const [next, label] = FITS[(FITS.findIndex(([name]) => name === fit) + 1) % FITS.length];
+        change({ fit: next });
+        say(label);
+        break;
+      }
+      default:
+        return false;
+    }
+    return true;
+  }
+
   function key(event: KeyboardEvent) {
     if (event.metaKey || event.ctrlKey || event.altKey) return;
     const on = event.target instanceof Element ? event.target : null;
     if (event.key === 'Escape') {
-      if (zones) closeZones();
+      if (noting !== null) noting = null;
+      else if (zones) closeZones();
       else if (panel) panel = false;
       else if (overlay) overlay = false;
       else if (info) up(`/title/${info.mangaId}`);
@@ -491,24 +673,16 @@
         break;
       case 'ArrowDown':
         if (mode === 'vertical' && !room('y', 1)) next();
+        else if (sideways) box?.scrollBy({ left: 120 });
         else box?.scrollBy({ top: 120 });
         break;
       case 'ArrowUp':
         if (mode === 'vertical' && !room('y', -1)) prev();
+        else if (sideways) box?.scrollBy({ left: -120 });
         else box?.scrollBy({ top: -120 });
         break;
       case ' ':
         advance(event.shiftKey ? -1 : 1);
-        break;
-      case 'PageDown':
-      case 'j':
-      case 'J':
-        advance(1);
-        break;
-      case 'PageUp':
-      case 'k':
-      case 'K':
-        advance(-1);
         break;
       case 'Home':
         show(0);
@@ -516,52 +690,8 @@
       case 'End':
         show(count - 1);
         break;
-      case 'm':
-      case 'M':
-      case 'Enter':
-        overlay = !overlay;
-        break;
-      case 's':
-      case 'S':
-        panel = !panel;
-        overlay = false;
-        break;
-      case 'a':
-      case 'A':
-        toggleAuto();
-        break;
-      case ']':
-        pace(1);
-        break;
-      case '[':
-        pace(-1);
-        break;
-      case 'd':
-      case 'D':
-        if (mode === 'rtl' || mode === 'ltr') {
-          change({ spread: two ? 'off' : 'on' });
-          say(two ? 'Two pages' : 'One page');
-        }
-        break;
-      case '+':
-      case '=':
-        zoom = clamp(zoom * 1.2);
-        break;
-      case '-':
-        zoom = clamp(zoom / 1.2);
-        break;
-      case '0':
-        zoom = 1;
-        break;
-      case 'f':
-      case 'F': {
-        const [next, label] = FITS[(FITS.findIndex(([name]) => name === fit) + 1) % FITS.length];
-        change({ fit: next });
-        say(label);
-        break;
-      }
       default:
-        return;
+        if (!act(keys.get(keyName(event.key)))) return;
     }
     event.preventDefault();
   }
@@ -570,7 +700,12 @@
 <svelte:window onkeydown={key} onpagehide={() => save(true)} bind:innerWidth={vw} bind:innerHeight={vh} />
 <svelte:document onfullscreenchange={() => (full = !!document.fullscreenElement)} />
 
-<div class="reader" data-ground={p.ground} style:--filter={filterOf(p)}>
+<div class="reader" data-ground={p.ground} data-scaling={p.scaling} style:--filter={filterOf(p)}>
+  {#if p.sharpen > 0}
+    <svg class="defs" aria-hidden="true" width="0" height="0">
+      <filter id="mango-sharpen"><feConvolveMatrix order="3" kernelMatrix={sharpenKernel(p.sharpen)} preserveAlpha="true" /></filter>
+    </svg>
+  {/if}
   {#if error}
     <div class="center">
       <div class="panel message" role="alert">
@@ -607,7 +742,13 @@
                 <button class="btn" onclick={() => retry(i)}>Try again</button>
               </div>
             {:else}
-              <img src={src(i)} alt="Page {i + 1} of {count}" draggable="false" onload={(e) => seen(i, e.currentTarget as HTMLImageElement)} onerror={() => (broken[i] = true)} />
+              <img
+                src={look(i)}
+                alt="Page {i + 1} of {count}{splitting(i) ? `, ${half === 0 ? 'first' : 'second'} half` : ''}"
+                draggable="false"
+                onload={(e) => look(i) === src(i) && seen(i, e.currentTarget as HTMLImageElement)}
+                onerror={() => (broken[i] = true)}
+              />
             {/if}
           {/each}
         </div>
@@ -617,6 +758,7 @@
     <!-- svelte-ignore a11y_click_events_have_key_events, a11y_no_static_element_interactions -->
     <div
       class="strip"
+      class:sideways
       bind:this={strip}
       onclick={tap}
       onwheel={wheel}
@@ -625,14 +767,21 @@
       ontouchcancel={() => (held = false)}
     >
       {#each pages as i (i)}
-        <div class="frame" data-page={i} style:aspect-ratio={shapes[i] ?? '2 / 3'} style:max-width="{p.width * zoom}px" style:margin-bottom="{p.gap}px">
+        <div
+          class="frame"
+          data-page={i}
+          style:aspect-ratio={shapes[i] ?? '2 / 3'}
+          style:max-width={sideways ? null : `${p.width * zoom}px`}
+          style:margin-bottom={sideways ? null : `${p.gap}px`}
+          style:margin-right={sideways ? `${p.gap}px` : null}
+        >
           {#if broken[i]}
             <div class="panel message">
               <strong>Page {i + 1} did not load.</strong>
               <button class="btn" onclick={() => retry(i)}>Try again</button>
             </div>
           {:else if near[i]}
-            <img src={src(i)} alt="Page {i + 1} of {count}" draggable="false" onload={(e) => measured(i, e.currentTarget as HTMLImageElement)} onerror={() => (broken[i] = true)} />
+            <img src={look(i, 'whole')} alt="Page {i + 1} of {count}" draggable="false" onload={(e) => measured(i, e.currentTarget as HTMLImageElement)} onerror={() => (broken[i] = true)} />
           {/if}
         </div>
       {/each}
@@ -654,7 +803,21 @@
       <div class="progress" class:rtl={mode === 'rtl'} aria-hidden="true"><span style:width="{((reached + 1) / count) * 100}%"></span></div>
     {/if}
     {#if p.number && !overlay && !panel}
-      <span class="hud" aria-hidden="true">{shown.length > 1 ? `${shown[0] + 1}–${reached + 1}` : reached + 1} / {count}</span>
+      <span class="hud" aria-hidden="true">{shown.length > 1 ? `${shown[0] + 1}–${reached + 1}` : reached + 1} / {count}{marked ? ' · saved' : ''}</span>
+    {/if}
+    {#if noting !== null}
+      <form class="note" onsubmit={(e) => (e.preventDefault(), keepPage(noting ?? ''))}>
+        <label>
+          <span>A note for page {reached + 1}</span>
+          <!-- svelte-ignore a11y_autofocus -->
+          <input bind:value={noting} maxlength="2000" placeholder="What is on this page" autofocus />
+        </label>
+        <div class="tools">
+          <button class="btn ink">Save</button>
+          {#if marked}<button class="btn" type="button" onclick={() => keepPage(null)}>Remove</button>{/if}
+          <button class="btn" type="button" onclick={() => (noting = null)}>Cancel</button>
+        </div>
+      </form>
     {/if}
     {#if flash}<span class="flash" role="status">{flash}</span>{/if}
   {/if}
@@ -667,8 +830,16 @@
       </a>
       <div class="what">
         <strong>{info.title}</strong>
-        <span>{info.chapter.name}</span>
+        <span>{info.chapter.name}{incognito ? ' · Incognito: nothing is kept' : ''}</span>
       </div>
+      <button
+        class="btn icon"
+        aria-label={marked ? `Page ${reached + 1} is saved: change its note` : `Save page ${reached + 1} with a note`}
+        aria-pressed={!!marked}
+        onclick={() => ((noting = marked?.note ?? ''), (overlay = false))}
+      >
+        <Icon name="bookmark" fill={!!marked} />
+      </button>
       {#if document.fullscreenEnabled}
         <button class="btn icon" aria-label="Full screen" aria-pressed={full} onclick={fullscreen}><Icon name="expand" /></button>
       {/if}
@@ -904,6 +1075,72 @@
     height: 100%;
     filter: var(--filter);
     user-select: none;
+  }
+
+  /* The sideways strip: pages side by side at the screen's height, scrolled across. */
+  .strip.sideways {
+    display: flex;
+    align-items: stretch;
+    overflow-x: auto;
+    overflow-y: hidden;
+  }
+
+  .sideways .frame {
+    flex: none;
+    width: auto;
+    height: 100%;
+    margin: 0;
+  }
+
+  .sideways .tail {
+    flex: none;
+    align-items: center;
+    padding: 16px 48px;
+  }
+
+  .reader[data-scaling='crisp'] img {
+    image-rendering: crisp-edges;
+  }
+
+  .reader[data-scaling='pixelated'] img {
+    image-rendering: pixelated;
+  }
+
+  .defs {
+    position: absolute;
+  }
+
+  .note {
+    position: absolute;
+    top: 50%;
+    left: 50%;
+    z-index: 3;
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+    width: min(440px, calc(100% - 32px));
+    padding: 16px;
+    border: 3px solid var(--ink);
+    background: var(--paper);
+    color: var(--ink);
+    box-shadow: var(--sh-5);
+    transform: translate(-50%, -50%);
+  }
+
+  .note label {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    font-weight: 900;
+  }
+
+  .note input {
+    min-height: 44px;
+    padding: 0 12px;
+    border: 3px solid var(--ink);
+    background: var(--surface);
+    color: var(--ink);
+    font: inherit;
   }
 
   .tail {

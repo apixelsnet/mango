@@ -9,6 +9,7 @@
 use crate::{
     api::AppState,
     auth::{Auth, Who, OWNER},
+    backups::Backups,
     db::Db,
     downloads::Downloads,
     error::{AppError, Result},
@@ -16,6 +17,7 @@ use crate::{
     images::Images,
     import::Importer,
     local::Local,
+    notify::Notifier,
     store::{blocklist::Blocklist, Fleet, Rules, Stores},
     titles::Titles,
     trackers::Trackers,
@@ -48,8 +50,8 @@ pub struct Shared {
 
 struct Open {
     app: AppState,
-    /// The library's background work: the cache sweep, the download queue, the update
-    /// schedule, and keeping its stores and extensions current and clear of the blocklist.
+    /// The library's background work: the cache sweep, the download queue, the update and
+    /// backup schedules, and keeping its stores and extensions current and clear of the blocklist.
     tasks: Vec<JoinHandle<()>>,
 }
 
@@ -113,11 +115,15 @@ impl Spaces {
         let titles = Titles::new(db.clone(), shared.host.clone(), shared.local.clone());
         let images = Images::new(db.clone(), shared.host.clone(), shared.local.clone(), &dir, shared.cache_mb);
         let downloads = Downloads::new(db.clone(), images.clone(), &dir, shared.keep_free_mb);
-        let updates = Updates::new(db.clone(), titles.clone(), downloads.clone());
+        let trackers = Trackers::new(db.clone())?;
+        let notifier = Notifier::new(db.clone(), shared.store_rules.local)?;
+        let updates = Updates::new(db.clone(), titles.clone(), downloads.clone(), notifier.clone(), trackers.clone());
+        let backups = Backups::new(db.clone(), &dir);
         let tasks = vec![
             tokio::spawn(images.clone().sweep_forever()),
             tokio::spawn(downloads.clone().run()),
             tokio::spawn(updates.clone().schedule()),
+            tokio::spawn(backups.clone().schedule()),
             tokio::spawn(stores.clone().keep_in_sync(shared.host.subscribe())),
             tokio::spawn(stores.clone().refresh_on_schedule(shared.stores_refresh_hours)),
             tokio::spawn(stores.clone().keep_blocked_out()),
@@ -125,7 +131,9 @@ impl Spaces {
         let app = AppState {
             me: Who::default(),
             importer: Importer::new(db.clone()),
-            trackers: Trackers::new(db.clone())?,
+            trackers,
+            notifier,
+            backups,
             auth: self.auth.clone(),
             releases: shared.releases.clone(),
             host: shared.host.clone(),

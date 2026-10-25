@@ -3,6 +3,7 @@ import { mount } from 'svelte';
 import App from './App.svelte';
 import { initDisplay } from './lib/display.svelte';
 import { loadPrefs } from './lib/prefs.svelte';
+import { startWorker } from './lib/offline';
 import { loadSession, session } from './lib/session.svelte';
 import { adoptServerTheme, initTheme } from './lib/theme.svelte';
 
@@ -27,3 +28,5 @@ loadSession().then(() => {
 });
 
 mount(App, { target: document.getElementById('app')! });
+// Chapters kept on this device are read through it when Mango cannot be reached.
+startWorker();

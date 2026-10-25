@@ -42,6 +42,22 @@
   --cover-most: 29%;
 }
 
+/* For an e-ink screen: nothing moves, nothing fades, no shadow smears the next frame. */
+:root[data-still='on'] *,
+:root[data-still='on'] *::before,
+:root[data-still='on'] *::after {
+  animation: none !important;
+  transition: none !important;
+  scroll-behavior: auto !important;
+}
+
+:root[data-still='on'] {
+  --sh-3: none;
+  --sh-4: none;
+  --sh-5: none;
+  --sh-8: none;
+}
+
 :root[data-covers='large'] {
   --cover: 200px;
   --cover-most: 46%;

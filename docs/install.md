@@ -162,7 +162,7 @@ found, or prints a lower number:
 On Linux, your package manager has it, for example
 `sudo apt install openjdk-21-jre-headless`.
 
-Then open **Extensions** in Mango, add a store by its link, and install the
+Then open **Extensions** in Mango, add a repository by its link, and install the
 sources you want. More in the README:
 https://github.com/apixelsnet/mango#extensions
 

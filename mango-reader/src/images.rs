@@ -10,9 +10,11 @@ use crate::{
     error::{AppError, Result},
     host::{Call, Host},
     local::{self, Local},
-    titles::{fnv, wire_chapter, WirePage},
+    titles::{fnv, wire_chapter, WirePage, CUSTOM_COVER},
 };
+use axum::body::Bytes;
 use reqwest::Method;
+use sha2::{Digest, Sha256};
 use rusqlite::{params, OptionalExtension};
 use serde::Deserialize;
 use serde_json::json;
@@ -45,19 +47,53 @@ const COVER_BOX: (u16, u16) = (600, 900);
 const PROGRESSIVE_MAX_PIXELS: u32 = 16_000_000;
 /// Covers are shrunk one at a time in the whole process, so a page of them cannot add up.
 static SHRINKING: StdMutex<()> = StdMutex::new(());
+/// A cached file used again within this long keeps the time it had. The sweep only has to
+/// tell the old from the new, and a page turned is then not also a write to the disk.
+const TOUCH_AFTER: Duration = Duration::from_secs(3600);
+/// How many downloaded chapters keep their page names in memory.
+const ARCHIVES_KEPT: usize = 32;
+/// The largest cover that can be set by hand.
+pub const MAX_COVER: usize = 8 << 20;
 
+/// A picture, shared rather than copied between the cache, the disk and the answer.
 pub struct Image {
-    pub bytes: Vec<u8>,
+    pub bytes: Bytes,
     pub content_type: &'static str,
 }
 
 impl Image {
     /// Accepts only what is recognisably an image, so a source cannot hand the browser a page of its own.
-    fn checked(bytes: Vec<u8>) -> Result<Self> {
+    fn checked(bytes: impl Into<Bytes>) -> Result<Self> {
+        let bytes = bytes.into();
         match sniff(&bytes) {
             Some(content_type) => Ok(Self { bytes, content_type }),
             None => Err(AppError::new(502, "source_error", "The source did not send an image")),
         }
+    }
+}
+
+/// The page names of the CBZ files read lately, in reading order, so that turning a page
+/// does not list and sort a whole archive again. Known by path and the file's time.
+#[derive(Clone, Default)]
+struct Archives(Arc<StdMutex<HashMap<PathBuf, (SystemTime, Arc<Vec<String>>)>>>);
+
+impl Archives {
+    fn names(&self, path: &Path, modified: SystemTime, archive: &zip::ZipArchive<fs::File>) -> Arc<Vec<String>> {
+        let mut held = self.0.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some((at, names)) = held.get(path) {
+            if *at == modified {
+                return names.clone();
+            }
+        }
+        let mut names: Vec<String> =
+            archive.file_names().filter(|name| !name.ends_with('/') && !name.eq_ignore_ascii_case("ComicInfo.xml")).map(str::to_owned).collect();
+        names.sort();
+        let names = Arc::new(names);
+        if held.len() >= ARCHIVES_KEPT {
+            held.clear();
+        }
+        held.insert(path.to_owned(), (modified, names.clone()));
+        names
     }
 }
 
@@ -106,6 +142,7 @@ pub struct Images {
     early: Arc<Notify>,
     lists: Arc<StdMutex<HashMap<i64, PageList>>>,
     locks: KeyedLock,
+    archives: Archives,
 }
 
 impl Images {
@@ -122,6 +159,7 @@ impl Images {
             early: Arc::default(),
             lists: Arc::default(),
             locks: KeyedLock::default(),
+            archives: Archives::default(),
         }
     }
 
@@ -139,6 +177,11 @@ impl Images {
         let Some((source, Some(url), in_library, key)) = row else {
             return Err(AppError::not_found("This title has no cover"));
         };
+        // A cover set by hand is kept in the covers folder, for a local title as for any other.
+        if let Some(mark) = url.strip_prefix(CUSTOM_COVER) {
+            let bytes = read(self.custom_cover(manga, mark)).await.ok_or_else(|| AppError::not_found("This title's own cover is gone"))?;
+            return Image::checked(bytes);
+        }
         // A local title's cover is read from its folder each time; there is nothing to fetch or keep.
         if source == local::SOURCE {
             let local = self.local.clone();
@@ -161,7 +204,7 @@ impl Images {
         };
         let mut image = Image::checked(bytes)?;
         if fetched || in_library {
-            let bytes = std::mem::take(&mut image.bytes);
+            let bytes = Vec::from(std::mem::take(&mut image.bytes));
             image = Image::checked(tokio::task::spawn_blocking(move || shrink(bytes)).await.map_err(|_| AppError::internal("Could not read the cover"))?)?;
         }
         if in_library {
@@ -175,7 +218,7 @@ impl Images {
     /// Puts a file in the cache. One bigger than an eighth of the cap is only passed on,
     /// as it would push out most of the rest. A tenth of the cap put in since the last
     /// sweep calls the next one early, so a fast browse cannot run far past the cap.
-    async fn stash(&self, path: PathBuf, bytes: Vec<u8>) {
+    async fn stash(&self, path: PathBuf, bytes: Bytes) {
         let size = bytes.len() as u64;
         if size > self.max_bytes / 8 {
             return;
@@ -189,6 +232,37 @@ impl Images {
     /// Where a library title's cover is kept once it was shown.
     pub fn kept_cover(&self, manga: i64, url: &str) -> PathBuf {
         self.covers.join(format!("{manga}-{:08x}", fnv(url)))
+    }
+
+    fn custom_cover(&self, manga: i64, mark: &str) -> PathBuf {
+        self.covers.join(format!("{manga}-custom-{mark}"))
+    }
+
+    /// Keeps a cover given by hand, made smaller when it is a big JPEG, in place of any
+    /// given before. Answers the mark that names it, for `Titles::set_cover`.
+    pub async fn save_cover(&self, manga: i64, bytes: Vec<u8>) -> Result<String> {
+        if bytes.len() > MAX_COVER {
+            return Err(AppError::new(413, "too_large", "A cover may be 8 MB at most"));
+        }
+        if sniff(&bytes).is_none() {
+            return Err(AppError::bad_request("That is not a picture Mango can show"));
+        }
+        let small = tokio::task::spawn_blocking(move || shrink(bytes)).await.map_err(|_| AppError::internal("Could not read the cover"))?;
+        let mark = hex::encode(&Sha256::digest(&small)[..8]);
+        let (dir, path) = (self.covers.clone(), self.custom_cover(manga, &mark));
+        let keep = path.file_name().map(|name| name.to_owned());
+        write(path, Bytes::from(small)).await;
+        let _ = tokio::task::spawn_blocking(move || {
+            let older = format!("{manga}-custom-");
+            for entry in fs::read_dir(&dir).into_iter().flatten().flatten() {
+                let name = entry.file_name();
+                if name.to_str().is_some_and(|text| text.starts_with(&older)) && Some(&name) != keep.as_ref() {
+                    let _ = fs::remove_file(entry.path());
+                }
+            }
+        })
+        .await;
+        Ok(mark)
     }
 
     /// How many pages a chapter has. Known chapters answer from the database; others ask the source.
@@ -226,7 +300,8 @@ impl Images {
         match self.kept(chapter).await? {
             // A downloaded chapter is read from its file. The source is never asked.
             Kept::File(saved) => {
-                let bytes = tokio::task::spawn_blocking(move || read_cbz(&saved, index as usize)).await.ok().flatten();
+                let archives = self.archives.clone();
+                let bytes = tokio::task::spawn_blocking(move || read_cbz(&saved, index as usize, &archives)).await.ok().flatten();
                 return Image::checked(bytes.ok_or_else(|| AppError::not_found("No such page in the downloaded chapter"))?);
             }
             Kept::Local { title, chapter: name } => {
@@ -402,22 +477,25 @@ fn turned(exif: &[u8]) -> bool {
 }
 
 /// One page out of a CBZ. Pages are its entries in name order; ComicInfo.xml is not one.
-fn read_cbz(path: &Path, index: usize) -> Option<Vec<u8>> {
-    let mut archive = zip::ZipArchive::new(fs::File::open(path).ok()?).ok()?;
-    let mut names: Vec<String> =
-        archive.file_names().filter(|name| !name.ends_with('/') && !name.eq_ignore_ascii_case("ComicInfo.xml")).map(str::to_owned).collect();
-    names.sort();
+fn read_cbz(path: &Path, index: usize, archives: &Archives) -> Option<Vec<u8>> {
+    let file = fs::File::open(path).ok()?;
+    let modified = file.metadata().and_then(|meta| meta.modified()).ok()?;
+    let mut archive = zip::ZipArchive::new(file).ok()?;
+    let names = archives.names(path, modified, &archive);
     let mut bytes = Vec::new();
     archive.by_name(names.get(index)?).ok()?.read_to_end(&mut bytes).ok()?;
     Some(bytes)
 }
 
-/// Reads a cached file and marks it as used now, which is what the sweep goes by.
+/// Reads a cached file. One not used for a while is marked as used now, which is what the sweep goes by.
 async fn read(path: PathBuf) -> Option<Vec<u8>> {
     tokio::task::spawn_blocking(move || {
         let bytes = fs::read(&path).ok().filter(|bytes| !bytes.is_empty())?;
-        if let Ok(file) = fs::OpenOptions::new().write(true).open(&path) {
-            let _ = file.set_modified(SystemTime::now());
+        let stale = fs::metadata(&path).and_then(|meta| meta.modified()).map_or(true, |at| at.elapsed().is_ok_and(|age| age > TOUCH_AFTER));
+        if stale {
+            if let Ok(file) = fs::OpenOptions::new().write(true).open(&path) {
+                let _ = file.set_modified(SystemTime::now());
+            }
         }
         Some(bytes)
     })
@@ -427,7 +505,7 @@ async fn read(path: PathBuf) -> Option<Vec<u8>> {
 }
 
 /// Writes a file whole or not at all. A failure only costs a refetch, so it is logged and dropped.
-async fn write(path: PathBuf, bytes: Vec<u8>) {
+async fn write(path: PathBuf, bytes: Bytes) {
     let outcome = tokio::task::spawn_blocking(move || -> std::io::Result<()> {
         if let Some(dir) = path.parent() {
             fs::create_dir_all(dir)?;
@@ -542,6 +620,39 @@ mod tests {
         assert!(turned(&exif(true, 6)) && turned(&exif(false, 3)));
         assert!(!turned(&exif(true, 1)) && !turned(&exif(false, 1)));
         assert!(!turned(b"Exif\0\0junk"));
+    }
+
+    #[test]
+    fn a_used_file_is_touched_only_when_old() {
+        let file = std::env::temp_dir().join(format!("mango-touch-{:08x}", fnv(&format!("{:?}", Instant::now()))));
+        fs::write(&file, b"page").unwrap();
+        let runtime = tokio::runtime::Builder::new_current_thread().build().unwrap();
+        let recent = SystemTime::now() - Duration::from_secs(60);
+        fs::OpenOptions::new().write(true).open(&file).unwrap().set_modified(recent).unwrap();
+        assert_eq!(runtime.block_on(read(file.clone())).as_deref(), Some(b"page".as_slice()));
+        assert_eq!(fs::metadata(&file).unwrap().modified().unwrap(), recent, "used lately: left as it was");
+        let old = SystemTime::now() - TOUCH_AFTER * 2;
+        fs::OpenOptions::new().write(true).open(&file).unwrap().set_modified(old).unwrap();
+        runtime.block_on(read(file.clone()));
+        assert!(fs::metadata(&file).unwrap().modified().unwrap() > old + TOUCH_AFTER, "used after long: now");
+        fs::remove_file(&file).unwrap();
+    }
+
+    #[test]
+    fn a_cbz_is_listed_once() {
+        let file = std::env::temp_dir().join(format!("mango-cbz-{:08x}.cbz", fnv(&format!("{:?}", Instant::now()))));
+        let mut zip = zip::ZipWriter::new(fs::File::create(&file).unwrap());
+        for (name, body) in [("002.png", "two"), ("ComicInfo.xml", "info"), ("001.png", "one")] {
+            zip.start_file(name, zip::write::SimpleFileOptions::default()).unwrap();
+            std::io::Write::write_all(&mut zip, body.as_bytes()).unwrap();
+        }
+        zip.finish().unwrap();
+        let archives = Archives::default();
+        assert_eq!(read_cbz(&file, 0, &archives).as_deref(), Some(b"one".as_slice()));
+        assert_eq!(read_cbz(&file, 1, &archives).as_deref(), Some(b"two".as_slice()));
+        assert_eq!(read_cbz(&file, 2, &archives), None, "ComicInfo.xml is no page");
+        assert_eq!(archives.0.lock().unwrap().len(), 1);
+        fs::remove_file(&file).unwrap();
     }
 
     #[test]

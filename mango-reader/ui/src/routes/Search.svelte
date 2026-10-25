@@ -19,14 +19,16 @@
 
   // With `from`, the search picks the title that one moves to: a card leads to the
   // comparison of the two, and the title itself is left out of what is found.
-  let { q, from = null }: { q: string; from?: number | null } = $props();
+  // With `merge`, it picks a title to read as another source of that one.
+  let { q, from = null, merge = null }: { q: string; from?: number | null; merge?: number | null } = $props();
+  const away = $derived(from ?? merge);
 
   type Kept = { key: string; rows: Row[]; scope: string; left: number };
 
   /** Come back to, a search shows what it found, instead of asking every source again. */
   function before(): Kept | null {
     const was = route.returned ? recall<Kept>('search') : null;
-    return was?.key === `${q}|${from}` ? was : null;
+    return was?.key === `${q}|${from}|${merge}` ? was : null;
   }
   const kept = before();
 
@@ -40,7 +42,7 @@
     const stop = new AbortController();
     const timer = setTimeout(() => stop.abort(), PATIENCE_MS);
     try {
-      row.items = (await get<Listing>(`/sources/${row.source.id}/search?q=${encodeURIComponent(q)}`, stop.signal)).items.filter((card) => card.id !== from);
+      row.items = (await get<Listing>(`/sources/${row.source.id}/search?q=${encodeURIComponent(q)}`, stop.signal)).items.filter((card) => card.id !== away);
       row.state = 'done';
     } catch (e) {
       row.error = stop.signal.aborted ? 'No answer after 30 seconds.' : message(e);
@@ -75,7 +77,23 @@
     await Promise.all(Array.from({ length: Math.min(AT_ONCE, due.length) }, worker));
   }
   run();
-  onDestroy(() => keep('search', $state.snapshot({ key: `${q}|${from}`, rows, scope, left })));
+  onDestroy(() => keep('search', $state.snapshot({ key: `${q}|${from}|${merge}`, rows, scope, left })));
+
+  let merging = $state(false);
+
+  /** Reads the picked title as another source of `merge`. Its chapters are fetched first, which can take a while. */
+  async function addSource(card: Card) {
+    if (!merge || merging) return;
+    merging = true;
+    error = null;
+    try {
+      await send('POST', `/manga/${merge}/merge/${card.id}`);
+      go(`/title/${merge}`, true);
+    } catch (e) {
+      error = message(e);
+    }
+    merging = false;
+  }
 
   async function toggle(card: Card) {
     card.inLibrary = !card.inLibrary;
@@ -91,30 +109,31 @@
   function again(event: SubmitEvent) {
     event.preventDefault();
     const text = String(new FormData(event.currentTarget as HTMLFormElement).get('q') ?? '').trim();
-    if (text) go(`/search?q=${encodeURIComponent(text)}${from ? `&for=${from}` : ''}`);
+    if (text) go(`/search?q=${encodeURIComponent(text)}${from ? `&for=${from}` : ''}${merge ? `&merge=${merge}` : ''}`);
   }
 </script>
 
 <div class="page">
   <div class="page-head">
-    <h1 class="display">{from ? 'MOVE' : 'SEARCH'}</h1>
+    <h1 class="display">{from ? 'MOVE' : merge ? 'ADD A SOURCE' : 'SEARCH'}</h1>
     <strong>“{q}” in {scope || '…'}</strong>
   </div>
 
   <div class="pick">
     {#if from}<strong>Pick the title to move to. Nothing changes until you confirm.</strong>{/if}
+    {#if merge}<strong>{merging ? 'Adding it…' : 'Pick the same title on another source. Its chapters then show with this one’s.'}</strong>{/if}
     <form class="field" role="search" onsubmit={again}>
       <Icon name="search" size={18} stroke={3} />
       <input
         type="search"
         name="q"
         value={q}
-        placeholder={from ? 'Try another name' : 'Search all sources'}
-        aria-label={from ? 'Search for another name' : 'Search all sources'}
+        placeholder={away ? 'Try another name' : 'Search all sources'}
+        aria-label={away ? 'Search for another name' : 'Search all sources'}
         enterkeyhint="search"
       />
     </form>
-    {#if from}<a class="btn" href="#/title/{from}"><Icon name="back" size={16} stroke={3} />Back to the title</a>{/if}
+    {#if away}<a class="btn" href="#/title/{away}"><Icon name="back" size={16} stroke={3} />Back to the title</a>{/if}
   </div>
 
   <Notice {error} />
@@ -144,7 +163,12 @@
       {:else if row.state === 'done'}
         <div class="strip">
           {#each row.items as card (card.id)}
-            <TitleCard {...card} href={from ? `#/migrate/${from}/${card.id}` : undefined} onLibrary={from ? undefined : () => toggle(card)} />
+            <TitleCard
+              {...card}
+              href={from ? `#/migrate/${from}/${card.id}` : undefined}
+              pick={merge ? () => addSource(card) : undefined}
+              onLibrary={away ? undefined : () => toggle(card)}
+            />
           {/each}
         </div>
       {:else}

@@ -49,8 +49,26 @@ Code: `ui/src/lib/reader.ts` (every setting, its limits, the layers), `ui/src/li
 
 Checked in a browser on the server's build, with made-up pages in the local source: a title tagged as a webtoon opened as a long strip and one tagged manga right to left; auto-scroll moved 161 px in 2 s at 80 px/s and 200 px at 100; contrast and brightness reached the images and were kept for the title; two pages sat right then left, a wide page stood alone, and the cover offset shifted the pairs; taps on the edges turned the page; a background set for all manga went to the settings and not to the title; a page every 2 s ran off the last page into the next chapter and kept going; the sheet at phone size. `smoke.py` passes on Linux and Windows.
 
-Not checked: a real phone, the screen lock, full screen, real scans with split spreads. Not built: cropping borders, splitting a wide page in two, a strip that runs sideways, keys of one's own choosing.
+Not checked: a real phone, the screen lock, full screen, real scans with split spreads. Margin cropping, page splitting, the sideways strip and custom key bindings were added on 2026-10-25; see below.
 
 ## Done when
 
 A 60-page chapter and a 200-image webtoon chapter both read end to end on desktop and phone with no stutter and correct resume.
+
+## Cropping, page splitting, sideways strip and image enhancement (2026-10-25)
+
+Implementation: `lib/pages.ts` (page processing on a canvas), `lib/reader.ts` and `routes/Reader.svelte`.
+
+- **Crop margins.** Plain white or black borders are detected on a downscaled copy of the page and removed, leaving a small margin. The four corners must agree on the border colour, and a row or column counts as plain when fewer than 1% of its pixels differ. No crop is applied if it would remove less than 3% of the area or leave less than 40% of either dimension. Pages larger than 16 megapixels are left unchanged, as mobile browsers may refuse a canvas of that size.
+- **Split wide pages.** In the paged modes, a page wider than it is tall is shown as two halves in reading order (the right half first in right-to-left mode). Page navigation passes through both halves.
+- Processed pages are served as blob URLs; up to sixteen are retained at a time. Whether a page is wide is determined from the original image.
+- **Sideways strip.** A fifth reading mode places pages side by side at screen height with horizontal scrolling. The mouse wheel scrolls horizontally, and auto-scroll and page spacing apply.
+- **Scaling and sharpening.** Scaling may be set to smooth, crisp or pixelated (`image-rendering`). Sharpening applies an SVG convolution filter with an adjustable strength.
+- **Custom key bindings.** Settings › Reader lists each reader action with its key and allows it to be reassigned (`reader.keys`). The arrow keys, Space, Home, End and Escape cannot be reassigned.
+- **Saved pages.** The bookmark button in the top bar saves the current page with an optional note (`PUT` and `DELETE /api/chapters/{id}/marks/{page}`); the B key saves or removes a page without a note. `#/read/{id}?page=N` opens a chapter at a given page.
+- **Download ahead.** When enabled in Settings › Reader, opening a chapter of a library title queues the next one to ten chapters for download.
+- **Incognito mode.** When enabled in Settings › Appearance (stored per device), reading progress, history and tracker updates are not recorded, and no chapters are downloaded ahead. The top bar indicates that the mode is active.
+
+Verification in Chromium against a Linux build: a 600×900 page with 70-pixel margins was cropped to 471×770; a 1200×800 spread was shown as two halves in both directions; sharpening was applied; a saved page was stored; and the sideways strip scrolled with the Space key.
+
+Not verified: real scans with uneven margins, canvas limits on mobile devices, and Safari support for the sharpening filter.

@@ -1,10 +1,10 @@
 <script lang="ts">
-  import { get, message, send, type Category, type Tracker } from '../lib/api';
-  import { COVERS, display, MENUS, setDisplay, SIZES } from '../lib/display.svelte';
+  import { get, message, send, type Backup, type Category, type Orphan, type Tracker } from '../lib/api';
+  import { COVERS, display, MENUS, PAGES, setDisplay, SIZES } from '../lib/display.svelte';
   import Icon, { type IconName } from '../lib/Icon.svelte';
   import Notice from '../lib/Notice.svelte';
   import { pref, setPref } from '../lib/prefs.svelte';
-  import { KINDS, profile, setProfile, type Kind } from '../lib/reader';
+  import { ACTIONS, FIXED, keyName, KINDS, profile, setProfile, type Action, type Kind } from '../lib/reader';
   import ReaderPrefs from '../lib/ReaderPrefs.svelte';
   import { route } from '../lib/router.svelte';
   import { session, signOut } from '../lib/session.svelte';
@@ -451,7 +451,108 @@
   });
   const counted = (n: number, word: string) => `${n} ${word}${n === 1 ? '' : 's'}`;
   const sized = (bytes: number) => (bytes >= 1 << 30 ? `${(bytes / (1 << 30)).toFixed(1)} GB` : `${Math.max(1, Math.round(bytes / (1 << 20)))} MB`);
+
+  // ---------- titles left behind with files ----------
+
+  let orphans = $state<Orphan[]>([]);
+  let clearing = $state(false);
+  $effect(() => {
+    if (tab.id !== 'downloads') return;
+    get<Orphan[]>('/downloads/orphans')
+      .then((found) => (orphans = found))
+      .catch(() => (orphans = []));
+  });
+
+  async function clearOrphans() {
+    if (!clearing) {
+      clearing = true;
+      return;
+    }
+    clearing = false;
+    error = null;
+    try {
+      await send('DELETE', '/downloads/orphans');
+      orphans = [];
+    } catch (e) {
+      error = message(e);
+    }
+  }
+
+  // ---------- notifications ----------
+
+  let notifyNote = $state('');
+
+  async function testNotify() {
+    notifyNote = 'Sending…';
+    try {
+      await send('POST', '/notify/test');
+      notifyNote = 'Sent. If nothing arrived, check the address.';
+    } catch (e) {
+      notifyNote = message(e);
+    }
+  }
+
+  // ---------- backups made by themselves ----------
+
+  let backups = $state<Backup[]>([]);
+  let backingUp = $state(false);
+
+  async function loadBackups() {
+    backups = (await get<{ backups: Backup[] }>('/backups')).backups;
+  }
+
+  $effect(() => {
+    if (tab.id === 'sources') loadBackups().catch(() => {});
+  });
+
+  async function backUpNow() {
+    backingUp = true;
+    error = null;
+    try {
+      await send('POST', '/backups');
+      await loadBackups();
+    } catch (e) {
+      error = message(e);
+    }
+    backingUp = false;
+  }
+
+  function removeBackup(name: string) {
+    attempt(async () => {
+      await send('DELETE', `/backups/${name}`);
+      await loadBackups();
+    });
+  }
+
+  // ---------- keys of one's own ----------
+
+  // The action waiting for its new key.
+  let listening = $state<Action | null>(null);
+  const ownKeys = $derived(pref<Partial<Record<Action, string[]>>>('reader.keys', {}));
+  const keysOf = (action: (typeof ACTIONS)[number]) => ownKeys[action.id] ?? action.keys;
+  const shownKey = (key: string) => (key === ' ' ? 'Space' : key.length === 1 ? key.toUpperCase() : key);
+
+  /** The next key pressed goes to the action listened for; another action that had it loses it. */
+  function takeKey(event: KeyboardEvent) {
+    if (!listening) return;
+    event.preventDefault();
+    if (event.key === 'Escape') {
+      listening = null;
+      return;
+    }
+    if (FIXED.includes(event.key) || ['Shift', 'Control', 'Alt', 'Meta'].includes(event.key)) return;
+    const key = keyName(event.key);
+    const next: Partial<Record<Action, string[]>> = {};
+    for (const action of ACTIONS) {
+      const kept = keysOf(action).filter((k) => keyName(k) !== key);
+      next[action.id] = action.id === listening ? [key] : kept;
+    }
+    listening = null;
+    setPref('reader.keys', next).catch((e) => (error = message(e)));
+  }
 </script>
+
+<svelte:window onkeydown={takeKey} />
 
 {#snippet toggle(on: boolean, label: string, press: () => void)}
   <button class="switch" role="switch" aria-checked={on} aria-label={label} onclick={press}>
@@ -602,6 +703,25 @@
             </div>
           </div>
           <div class="set">
+            <div class="what"><strong>Still screen</strong><span>Nothing moves or fades, and there are no shadows: for an e-ink reader, which shows every frame of a movement.</span></div>
+            <div class="how">{@render toggle(d.still, 'Still screen', () => setDisplay({ still: !d.still }))}</div>
+          </div>
+          <div class="set">
+            <div class="what"><strong>Library in pages</strong><span>A page of titles at a time, turned with buttons, instead of one long list.</span></div>
+            <div class="how">
+              <select class="btn" aria-label="Library in pages" value={String(d.pages)} onchange={(e) => setDisplay({ pages: Number(e.currentTarget.value) })}>
+                {#each PAGES as [value, label] (value)}<option value={String(value)}>{label}</option>{/each}
+              </select>
+            </div>
+          </div>
+          <div class="set">
+            <div class="what">
+              <strong>Incognito</strong>
+              <span>Reading on this device leaves no trace: no place kept, no history, nothing sent to trackers, nothing downloaded ahead.</span>
+            </div>
+            <div class="how">{@render toggle(d.incognito, 'Incognito', () => setDisplay({ incognito: !d.incognito }))}</div>
+          </div>
+          <div class="set">
             <div class="what">
               <strong>On a phone's home screen</strong>
               <span>Add Mango to it from the browser's share menu, and it opens as an app of its own, without the address bar.</span>
@@ -649,6 +769,42 @@
           </div>
         </section>
         <ReaderPrefs value={profile(kind)} onchange={(patch) => setProfile(kind, patch)} />
+
+        <section class="card">
+          <h3>While reading</h3>
+          <div class="set">
+            <div class="what"><strong>Download ahead</strong><span>Opening a chapter of a library title queues the next few for download, so they read with no wait or no connection.</span></div>
+            <div class="how">
+              <select class="btn" aria-label="Chapters downloaded ahead" value={String(pref('reader.downloadAhead', 0))} onchange={(e) => setPref('reader.downloadAhead', Number(e.currentTarget.value))}>
+                <option value="0">None</option>
+                {#each [1, 2, 3, 5, 10] as n (n)}<option value={String(n)}>The next {n}</option>{/each}
+              </select>
+            </div>
+          </div>
+          <div class="set">
+            <div class="what"><strong>Mark other uploads read</strong><span>Reading a chapter to its end marks its uploads by other groups, or from other sources of the title, read too.</span></div>
+            <div class="how">{@render toggle(pref('chapters.markDuplicates', false), 'Mark other uploads read', () => flip('chapters.markDuplicates'))}</div>
+          </div>
+        </section>
+
+        <section class="card">
+          <h3>Keys</h3>
+          <p class="muted">What each key does in the reader. Arrows, Space, Home, End and Escape keep their own work.</p>
+          <ul class="rows">
+            {#each ACTIONS as action (action.id)}
+              <li>
+                <span class="main"><strong>{action.label}</strong><span>{keysOf(action).map(shownKey).join(', ') || 'No key'}</span></span>
+                <button class="btn" aria-pressed={listening === action.id} onclick={() => (listening = listening === action.id ? null : action.id)}>
+                  {listening === action.id ? 'Press a key…' : 'Change'}
+                </button>
+              </li>
+            {/each}
+          </ul>
+          <div class="set">
+            <div class="what"><strong>Start over</strong><span>Every key back to what Mango ships.</span></div>
+            <div class="how"><button class="btn" onclick={() => setPref('reader.keys', null)}>Reset keys</button></div>
+          </div>
+        </section>
       {:else if tab.id === 'library'}
         <section class="card">
           <h3>Categories</h3>
@@ -664,6 +820,15 @@
                 {:else}
                   <span class="main"><strong>{c.name}</strong></span>
                   <span class="tools">
+                    <select
+                      class="btn"
+                      aria-label="Where {c.name} sits"
+                      value={String(c.parent ?? 0)}
+                      onchange={(e) => attempt(() => send('PUT', `/categories/${c.id}`, { parent: Number(e.currentTarget.value) }))}
+                    >
+                      <option value="0">At the top</option>
+                      {#each categories.filter((other) => other.id !== c.id) as other (other.id)}<option value={String(other.id)}>Inside {other.name}</option>{/each}
+                    </select>
                     <button class="btn icon" aria-label="Move {c.name} up" disabled={index === 0} onclick={() => move(index, -1)}><Icon name="up" /></button>
                     <button class="btn icon" aria-label="Move {c.name} down" disabled={index === categories.length - 1} onclick={() => move(index, 1)}><Icon name="down" /></button>
                     <button class="btn" onclick={() => ((editing = c.id), (renamed = c.name))}>Rename</button>
@@ -708,6 +873,28 @@
             </div>
             <div class="how">{@render toggle(pref('updates.smart', false), 'Wait for the day a chapter is expected', () => flip('updates.smart'))}</div>
           </div>
+          <div class="set stack">
+            <div class="what">
+              <strong>Tell me of new chapters</strong>
+              <span>
+                After each check that finds new chapters, Mango sends word to this address: an ntfy topic, a Discord channel's webhook, or any address that takes a JSON
+                post. It has to be on the internet and HTTPS, unless whoever runs this Mango allowed otherwise.
+              </span>
+            </div>
+            <div class="how">
+              <label class="field grow">
+                <span class="sr">Address for notifications</span>
+                <input type="url" value={pref('notify.url', '')} placeholder="https://ntfy.sh/your-topic" autocomplete="off" onchange={(e) => setPref('notify.url', e.currentTarget.value.trim() || null)} />
+              </label>
+              <select class="btn" aria-label="Kind of address" value={pref('notify.kind', 'ntfy')} onchange={(e) => setPref('notify.kind', e.currentTarget.value)}>
+                <option value="ntfy">ntfy</option>
+                <option value="discord">Discord</option>
+                <option value="webhook">Webhook (JSON)</option>
+              </select>
+              <button class="btn" disabled={!pref('notify.url', '')} onclick={testNotify}>Send a test</button>
+            </div>
+            {#if notifyNote}<p class="muted" role="status">{notifyNote}</p>{/if}
+          </div>
           {#if categories.length}
             {#each [['updates.categories', 'Only these categories', 'None picked: all of them.'], ['updates.excluded', 'Never these categories', 'Left out even when picked above.']] as [key, label, hint] (key)}
               <div class="set stack" role="group" aria-label={label}>
@@ -750,6 +937,22 @@
               {/if}
             </div>
           </div>
+          <div class="set">
+            <div class="what">
+              <strong>Files of titles you left</strong>
+              <span>
+                {#if orphans.length}
+                  {counted(orphans.length, 'title')} no longer in the library still {orphans.length === 1 ? 'has' : 'have'} chapters saved:
+                  {orphans.map((o) => `${o.title} (${counted(o.chapters, 'chapter')}, ${sized(o.bytes)})`).join(', ')}. Their reading progress stays.
+                {:else}
+                  None: every saved chapter belongs to a title in the library.
+                {/if}
+              </span>
+            </div>
+            <div class="how">
+              <button class="btn" disabled={!orphans.length} onclick={clearOrphans}><Icon name="trash" size={18} />{clearing ? 'Really delete them?' : 'Delete those files'}</button>
+            </div>
+          </div>
         </section>
       {:else if tab.id === 'sources'}
         <section class="card">
@@ -764,7 +967,7 @@
             </div>
           {/if}
           <div class="set">
-            <div class="what"><strong>Extensions and stores</strong><span>Install, update and remove the extensions that fetch titles.</span></div>
+            <div class="what"><strong>Extensions and repositories</strong><span>Install, update and remove the extensions that fetch titles.</span></div>
             <div class="how"><a class="btn" href="#/extensions"><Icon name="puzzle" size={18} />Open extensions</a></div>
           </div>
         </section>
@@ -826,8 +1029,49 @@
             </div>
             <div class="how"><a class="btn" href="api/export" download><Icon name="upload" size={18} />Export a backup</a></div>
           </div>
+          <div class="set">
+            <div class="what"><strong>Back up by itself</strong><span>The same file, made on a schedule and kept on this server. The oldest go as new ones come.</span></div>
+            <div class="how">
+              <select class="btn" aria-label="How often to back up" value={String(pref('backup.hours', 0))} onchange={(e) => setPref('backup.hours', Number(e.currentTarget.value))}>
+                <option value="0">Never</option>
+                <option value="24">Once a day</option>
+                <option value="72">Every 3 days</option>
+                <option value="168">Once a week</option>
+              </select>
+              <select class="btn" aria-label="How many backups to keep" value={String(pref('backup.keep', 7))} onchange={(e) => setPref('backup.keep', Number(e.currentTarget.value))}>
+                {#each [3, 7, 14, 30] as n (n)}<option value={String(n)}>Keep {n}</option>{/each}
+              </select>
+              <button class="btn" disabled={backingUp} onclick={backUpNow}>{backingUp ? 'Backing up…' : 'Back up now'}</button>
+            </div>
+          </div>
+          {#if backups.length}
+            <ul class="rows">
+              {#each backups as backup (backup.name)}
+                <li>
+                  <span class="main"><strong>{new Date(backup.madeAt * 1000).toLocaleString()}</strong><span>{sized(backup.bytes)}</span></span>
+                  <span class="tools">
+                    <a class="btn" href="api/backups/{backup.name}" download><Icon name="download" size={18} />Download</a>
+                    <button class="btn icon" aria-label="Delete the backup of {new Date(backup.madeAt * 1000).toLocaleString()}" onclick={() => removeBackup(backup.name)}><Icon name="trash" /></button>
+                  </span>
+                </li>
+              {/each}
+            </ul>
+          {/if}
         </section>
       {:else if tab.id === 'trackers'}
+        <section class="card">
+          <h3>Both ways</h3>
+          <div class="set">
+            <div class="what">
+              <strong>Take in what was read elsewhere</strong>
+              <span>
+                After each check for new chapters, every linked title asks its trackers how far it was read, and marks those chapters read here too. Refreshing a link
+                does the same at once.
+              </span>
+            </div>
+            <div class="how">{@render toggle(pref('trackers.pull', false), 'Take in what was read elsewhere', () => flip('trackers.pull'))}</div>
+          </div>
+        </section>
         {#each trackers as t (t.id)}
           <section class="card">
             <h3>{t.name}</h3>
@@ -957,7 +1201,7 @@
               <div class="set stack">
                 <div class="what">
                   <span>
-                    Each account has its own stores and extensions, library, reading progress, downloads and settings. An admin is one who
+                    Each account has its own repositories and extensions, library, reading progress, downloads and settings. An admin is one who
                     may change this list.
                   </span>
                 </div>

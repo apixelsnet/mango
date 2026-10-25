@@ -1,0 +1,23 @@
+# How GitHub sorts a release's notes, which the Release workflow asks it to write
+# (`--generate-notes`). A pull request goes in the first section whose label it has.
+# The Changelog workflow gives every pull request one of the three by its title;
+# change the label by hand to move it.
+
+changelog:
+  exclude:
+    labels:
+      - "changelog: skip"
+  categories:
+    - title: Added
+      labels:
+        - "changelog: added"
+    - title: Changed
+      labels:
+        - "changelog: changed"
+    - title: Fixed
+      labels:
+        - "changelog: fixed"
+    # Pull requests from before the labels, or that no label reached.
+    - title: Other
+      labels:
+        - "*"

@@ -381,7 +381,7 @@ check("and knows the chapters around it", len(reader["chapters"]) == len(title["
 call("PUT", f"/chapters/{cid}/progress", {"page": count - 1, "read": True})
 check("a finished chapter is marked read", call("GET", f"/chapters/{cid}")[0]["chapter"]["read"])
 call("PUT", f"/manga/{card['id']}/reader", {"mode": "webtoon", "fit": "screen", "prefs": {"contrast": 120, "kind": "manhwa"}})
-call("PUT", f"/manga/{card['id']}/reader", {"mode": "sideways"}, expect=400)
+call("PUT", f"/manga/{card['id']}/reader", {"mode": "upside-down"}, expect=400)
 call("PUT", f"/manga/{card['id']}/reader", {"prefs": [1]}, expect=400)
 kept = call("GET", f"/chapters/{cid}")[0]
 check("the reading mode is kept for the title", kept["readerMode"] == "webtoon" and kept["readerFit"] == "screen")
@@ -466,7 +466,8 @@ links = [l.get("href") for l in entries.get(f"urn:mango:manga:{card['id']}", [])
 check("the library lists the title with its cover", f"manga/{card['id']}" in links and f"manga/{card['id']}/cover" in links)
 check("a search finds nothing it should not", not xml.etree.ElementTree.fromstring(opds("/v1.2/library?q=zzzzqqqq")[2]).findall(ATOM + "entry"))
 status, got, picture, _ = opds(f"/v1.2/manga/{card['id']}/cover")
-check("the cover comes through", status == 200 and picture == cover)
+# The same cover the app shows now: a source may give a title another cover once its details are fetched.
+check("the cover comes through", status == 200 and picture == raw("GET", f"{base}/manga/{card['id']}/cover")[2])
 feed = xml.etree.ElementTree.fromstring(opds(f"/v1.2/manga/{card['id']}")[2])
 entries = {e.find(ATOM + "id").text: e for e in feed.findall(ATOM + "entry")}
 links = {l.get("rel"): l for l in entries[f"urn:mango:chapter:{cid}"].findall(ATOM + "link")}
@@ -956,6 +957,81 @@ if db_path:
     check("its tracker link moves too", links[0] == [] and [l["mediaId"] for l in links[1]] == [30013])
 call("POST", "/library/bulk", {"ids": [mine["id"], other["id"]], "action": "remove"})
 call("DELETE", f"/categories/{mine['categories'][0]}")
+
+
+def put_bytes(path, data, kind):
+    req = urllib.request.Request(base + path, data=data, method="PUT", headers={"Content-Type": kind})
+    try:
+        with opener.open(req, timeout=60) as res:
+            return res.status, res.read()
+    except urllib.error.HTTPError as err:
+        return err.code, err.read()
+
+
+print("details, sources and pages")
+edited = call("PUT", f"/manga/{card['id']}/details", {"title": "Smoke Edited", "genres": ["Action", " ", "Drama"]})[0]
+check("details edited by hand are kept", (edited["title"], edited["genres"], edited["locked"]) == ("Smoke Edited", ["Action", "Drama"], ["title", "genre"]))
+check("and a refresh leaves them", call("POST", f"/manga/{card['id']}/refresh")[0]["title"] == "Smoke Edited")
+call("PUT", f"/manga/{card['id']}/details", {"title": "  "}, expect=400)
+picture = bytes([0x89]) + b"PNG" + bytes([13, 10, 26, 10]) + b"a cover of my own"
+status, answer = put_bytes(f"/manga/{card['id']}/cover", picture, "image/png")
+own = json.loads(answer)
+check("a cover of one's own is shown", status == 200 and raw("GET", f"{site}/{own['cover']}")[2] == picture and "cover" in own["locked"])
+check("something that is not a picture is refused", put_bytes(f"/manga/{card['id']}/cover", b"<svg onload=x>", "image/svg+xml")[0] == 400)
+back = call("DELETE", f"/manga/{card['id']}/details")[0]
+check("the source has them back when asked", back["locked"] == [] and back["title"] != "Smoke Edited")
+
+groups = call("PUT", f"/manga/{card['id']}/scanlators", {"order": ["B", "A", "A", " "], "dedupe": True})[0]
+check("an order of groups is kept", (groups["scanlators"], groups["dedupe"]) == (["B", "A"], True))
+call("PUT", f"/manga/{card['id']}/scanlators", {"order": [], "dedupe": False})
+
+own_chapters = len(call("GET", f"/manga/{card['id']}")[0]["chapters"])
+joined = call("POST", f"/manga/{card['id']}/merge/{other['id']}")[0]
+theirs = len(call("GET", f"/manga/{other['id']}")[0]["chapters"])
+check("a title merged in reads as one of its sources", [m["id"] for m in joined["members"]] == [card["id"], other["id"]] and len(joined["chapters"]) == own_chapters + theirs)
+item = next((i for i in call("GET", "/library")[0]["items"] if i["id"] == card["id"]), None)
+check("the library counts its chapters, and it is no title of its own", item is not None and item["total"] == own_chapters + theirs and all(i["id"] != other["id"] for i in call("GET", "/library")[0]["items"]))
+check("and it knows where it went", call("GET", f"/manga/{other['id']}")[0]["mergedInto"] == card["id"])
+call("POST", f"/manga/{card['id']}/merge/{card['id']}", expect=400)
+call("DELETE", f"/manga/{card['id']}/merge/{other['id']}")
+check("taken out, it is apart again", len(call("GET", f"/manga/{card['id']}")[0]["members"]) == 1)
+check("titles of the same name are named", isinstance(call("GET", f"/manga/{other['id']}/namesakes")[0], list))
+
+call("PUT", f"/chapters/{cid}/marks/2", {"note": "the map"})
+reader = call("GET", f"/chapters/{cid}")[0]
+check("a page is kept with a note", [(m["page"], m["note"]) for m in reader["marks"]] == [(2, "the map")] and len(call("GET", f"/manga/{card['id']}/marks")[0]) == 1)
+call("DELETE", f"/chapters/{cid}/marks/2")
+check("and let go of", call("GET", f"/chapters/{cid}")[0]["marks"] == [])
+call("PUT", f"/chapters/{cid}/marks/-1", {"note": "x"}, expect=404)
+
+outer = call("POST", "/categories", {"name": "Smoke Outer"})[0]
+inner = call("POST", "/categories", {"name": "Smoke Inner", "parent": outer["id"]})[0]
+call("PUT", f"/categories/{outer['id']}", {"parent": inner["id"]}, expect=400)
+check("a category sits inside another", inner["parent"] == outer["id"])
+for category in (inner, outer):
+    call("DELETE", f"/categories/{category['id']}")
+call("PUT", f"/sources/{sid}", {"folder": "Smoke Folder"})
+check("a source goes in a folder", next(s for s in call("GET", "/sources")[0]["sources"] if s["id"] == str(sid))["folder"] == "Smoke Folder")
+call("PUT", f"/sources/{sid}", {"folder": ""})
+
+print("stats, backups and word of new chapters")
+stats = call("GET", "/stats")[0]
+check("the stats add up", stats["titles"] >= 1 and len(stats["months"]) == 12 and stats["read"] >= 1)
+check("the menu's count asks for little", "fresh" in call("GET", "/updates/fresh")[0])
+check("chapters that gave up can all try again", "queued" in call("POST", "/downloads/retry")[0])
+check("titles left with files are listed", isinstance(call("GET", "/downloads/orphans")[0], list))
+made = call("POST", "/backups")[0]
+status, _, file, _ = raw("GET", f"{base}/backups/{made['name']}")
+check("a backup is made and kept", made["name"] in [b["name"] for b in call("GET", "/backups")[0]["backups"]] and status == 200 and file[:2] == bytes([0x1F, 0x8B]))
+call("GET", "/backups/..%2Fmango.db", expect=404)
+call("DELETE", f"/backups/{made['name']}")
+call("PUT", "/settings", {"notify.url": "https://127.0.0.1/smoke"})
+call("POST", "/notify/test", expect=400)
+call("PUT", "/settings", {"notify.url": None})
+status, got, _, _ = raw("GET", f"{site}/sw.js")
+check("the service worker is served", status == 200 and "javascript" in got["Content-Type"])
+if data_dir:
+    check("the host kept its classes for its next start", os.path.exists(os.path.join(data_dir, "host", "host.jsa")))
 
 print("remove")
 call("DELETE", f"/chapters/{cid}/download")

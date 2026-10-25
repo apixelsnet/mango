@@ -1,10 +1,12 @@
 <script lang="ts">
-  import { get, message, send, type Library, type LibraryItem } from '../lib/api';
+  import { get, message, send, type Category, type Library, type LibraryItem } from '../lib/api';
   import Cover from '../lib/Cover.svelte';
+  import { display } from '../lib/display.svelte';
   import Icon from '../lib/Icon.svelte';
   import { keep, recall } from '../lib/keep';
   import Notice from '../lib/Notice.svelte';
   import { pref, prefs, setPref } from '../lib/prefs.svelte';
+  import { go } from '../lib/router.svelte';
   import TitleCard from '../lib/TitleCard.svelte';
   import { startTour, tour } from '../lib/guide.svelte';
 
@@ -39,6 +41,8 @@
   let picked = $state<Record<number, boolean>>({});
   let filters = $state(false);
   let sure = $state(false);
+  // With the library a page at a time, the page on show, from 0.
+  let page = $state(0);
 
   // A new account lands here with an empty library: the tour starts by itself, once.
   // An account that has titles already found its way, and is not shown it unasked.
@@ -47,12 +51,45 @@
   });
 
   const view = $derived<View>({ ...DEFAULT, ...pref<Partial<View>>('library.view', {}) });
+
+  /** The categories in their tree: each one after the one it sits inside, with how deep it is. */
+  const tree = $derived.by(() => {
+    const all = data?.categories ?? [];
+    const out: { category: Category; depth: number }[] = [];
+    const known = new Set(all.map((c) => c.id));
+    const place = (parent: number | null, depth: number) => {
+      for (const category of all.filter((c) => (c.parent !== null && known.has(c.parent) ? c.parent : null) === parent)) {
+        if (out.some((entry) => entry.category.id === category.id)) continue;
+        out.push({ category, depth });
+        place(category.id, depth + 1);
+      }
+    };
+    place(null, 0);
+    return out;
+  });
+
+  /** A category and every category inside it, however deep: showing one shows what is inside. */
+  const within = $derived.by(() => {
+    if (category === null) return null;
+    const ids = new Set([category]);
+    for (let grown = true; grown; ) {
+      grown = false;
+      for (const c of data?.categories ?? []) {
+        if (c.parent !== null && ids.has(c.parent) && !ids.has(c.id)) {
+          ids.add(c.id);
+          grown = true;
+        }
+      }
+    }
+    return ids;
+  });
+
   const shown = $derived.by(() => {
     if (!data) return [];
     const needle = text.trim().toLowerCase();
     const list = data.items.filter(
       (item) =>
-        (category === null || item.categories.includes(category)) &&
+        (within === null || item.categories.some((id) => within.has(id))) &&
         (!needle || item.title.toLowerCase().includes(needle)) &&
         (!view.unread || item.unread > 0) &&
         (!view.downloaded || item.downloaded > 0) &&
@@ -67,6 +104,20 @@
   });
   const chosen = $derived(Object.keys(picked).filter((id) => picked[Number(id)]).map(Number));
   const filtering = $derived(view.unread || view.downloaded || view.completed);
+  const size = $derived(display.value.pages);
+  const pages = $derived(size ? Math.max(1, Math.ceil(shown.length / size)) : 1);
+  const onPage = $derived(size ? shown.slice(Math.min(page, pages - 1) * size, (Math.min(page, pages - 1) + 1) * size) : shown);
+
+  // Narrowing the list starts it from its first page.
+  $effect(() => {
+    void [category, text, view];
+    page = 0;
+  });
+
+  function turn(to: number) {
+    page = Math.max(0, Math.min(pages - 1, to));
+    scrollTo({ top: 0 });
+  }
 
   async function load() {
     error = null;
@@ -130,12 +181,13 @@
       {#if data}
         <strong>{data.items.length} {data.items.length === 1 ? 'title' : 'titles'} · {data.categories.length} {data.categories.length === 1 ? 'category' : 'categories'}</strong>
       {/if}
+      <a class="btn" href="#/stats">Stats</a>
     </div>
     {#if data?.categories.length}
       <div class="tools slide" role="group" aria-label="Category">
         <button class="btn pill" aria-pressed={category === null} onclick={() => (category = null)}>All</button>
-        {#each data.categories as c (c.id)}
-          <button class="btn pill" aria-pressed={category === c.id} onclick={() => (category = c.id)}>{c.name}</button>
+        {#each tree as { category: c, depth } (c.id)}
+          <button class="btn pill" aria-pressed={category === c.id} onclick={() => (category = c.id)}>{'› '.repeat(depth)}{c.name}</button>
         {/each}
       </div>
     {/if}
@@ -218,12 +270,13 @@
             <button class="btn" disabled={!chosen.length} onclick={() => act({ action: 'read' })}>Mark read</button>
             <button class="btn" disabled={!chosen.length} onclick={() => act({ action: 'unread' })}>Mark unread</button>
             <button class="btn" disabled={!chosen.length} onclick={() => act({ action: 'download' })}><Icon name="download" size={18} />Download unread</button>
+            <button class="btn" disabled={!chosen.length} onclick={() => go(`/migrate/many?ids=${chosen.join(',')}`)}><Icon name="arrow" size={18} />Move to other sources</button>
             {#if data.categories.length}
               <label>
                 <span class="sr">Add to a category</span>
                 <select class="btn" disabled={!chosen.length} onchange={(e) => e.currentTarget.value && act({ action: 'categories', categories: [Number(e.currentTarget.value)] })}>
                   <option value="">Add to category…</option>
-                  {#each data.categories as c (c.id)}<option value={c.id}>{c.name}</option>{/each}
+                  {#each tree as { category: c, depth } (c.id)}<option value={c.id}>{'› '.repeat(depth)}{c.name}</option>{/each}
                 </select>
               </label>
             {/if}
@@ -236,7 +289,7 @@
           <Notice>No title matches.</Notice>
         {:else if view.layout === 'grid'}
           <div class="grid">
-            {#each shown as item (item.id)}
+            {#each onPage as item (item.id)}
               <!-- svelte-ignore a11y_click_events_have_key_events, a11y_no_static_element_interactions -->
               <div class="slot" class:picked={picked[item.id]} onclickcapture={(e) => pick(e, item.id)}>
                 <TitleCard id={item.id} title={item.title} cover={item.cover} unread={item.unread}>
@@ -250,7 +303,7 @@
           </div>
         {:else}
           <ul class="rows">
-            {#each shown as item (item.id)}
+            {#each onPage as item (item.id)}
               <!-- svelte-ignore a11y_click_events_have_key_events, a11y_no_noninteractive_element_interactions -->
               <li class:picked={picked[item.id]} onclickcapture={(e) => pick(e, item.id)}>
                 <a class="main" href="#/title/{item.id}">
@@ -262,6 +315,13 @@
               </li>
             {/each}
           </ul>
+        {/if}
+        {#if pages > 1}
+          <nav class="pager" aria-label="Pages of the library">
+            <button class="btn" disabled={page === 0} onclick={() => turn(page - 1)}><Icon name="back" size={18} stroke={3} />Before</button>
+            <strong>Page {Math.min(page, pages - 1) + 1} of {pages}</strong>
+            <button class="btn" disabled={page >= pages - 1} onclick={() => turn(page + 1)}>After<Icon name="forward" size={18} stroke={3} /></button>
+          </nav>
         {/if}
       </section>
     {/if}
@@ -474,5 +534,12 @@
     margin: 0;
     padding: 0;
     list-style: none;
+  }
+
+  .pager {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 16px;
   }
 </style>

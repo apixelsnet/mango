@@ -3,21 +3,23 @@
 
 use crate::{
     auth::{self, Account, AccountChange, Auth, Invite, Who},
+    backups::{Backups, Saved},
     db::Db,
-    downloads::{Downloads, QueueView},
+    downloads::{Downloads, Orphan, QueueView},
     updates::{Status, Updates, UpdatesView},
     version::{self, Releases},
     error::{AppError, Result},
     export, files,
     host::{Host, Solver},
-    images::{Image, Images},
+    images::{Image, Images, MAX_COVER},
     import::{self, Importer, Preview},
-    library::{self, Bulk, Category, LibraryView},
+    library::{self, Bulk, Category, LibraryView, Stats},
     migrate::{self, Comparison, Outcome},
+    notify::Notifier,
     opds, settings,
     spaces::Spaces,
     store::{CatalogItem, CatalogQuery, Installed, StoreInfo, Stores},
-    titles::{Browse, Listing, ReaderView, TitleView, Titles},
+    titles::{Browse, Edit, Listing, Namesake, PageMark, ReaderView, TitleView, Titles},
     trackers::{self, Change, Credentials, Kind, Pick, Track, Trackers},
     ui,
 };
@@ -58,6 +60,8 @@ pub struct AppState {
     pub updates: Updates,
     pub importer: Importer,
     pub trackers: Trackers,
+    pub notifier: Notifier,
+    pub backups: Backups,
     /// The local source's folder, shown in Settings so the owner knows where to put files.
     pub local_dir: String,
 }
@@ -103,7 +107,12 @@ pub fn router(state: Spaces) -> Router {
         .route("/sources/{id}/{kind}", get(browse))
         .route("/manga/{id}", get(title))
         .route("/manga/{id}/refresh", post(refresh_title))
-        .route("/manga/{id}/cover", get(cover))
+        .route("/manga/{id}/cover", get(cover).put(set_cover).layer(DefaultBodyLimit::max(MAX_COVER + 1024)))
+        .route("/manga/{id}/details", put(edit_details).delete(unlock_details))
+        .route("/manga/{id}/scanlators", put(set_scanlators))
+        .route("/manga/{id}/merge/{other}", post(merge_title).delete(unmerge_title))
+        .route("/manga/{id}/namesakes", get(namesakes))
+        .route("/manga/{id}/marks", get(title_marks))
         .route("/manga/{id}/library", put(set_library))
         .route("/manga/{id}/reader", put(set_reader))
         .route("/manga/{id}/chapters", put(mark_chapters))
@@ -111,19 +120,25 @@ pub fn router(state: Spaces) -> Router {
         .route("/chapters/{id}/pages", get(pages))
         .route("/chapters/{id}/pages/{index}", get(page))
         .route("/chapters/{id}/progress", put(progress))
+        .route("/chapters/{id}/marks/{page}", put(mark_page).delete(unmark_page))
         .route("/library", get(library))
         .route("/library/bulk", post(bulk))
+        .route("/stats", get(stats))
         .route("/categories", get(list_categories).post(add_category).put(order_categories))
         .route("/categories/{id}", put(rename_category).delete(remove_category))
         .route("/manga/{id}/categories", put(set_categories))
         .route("/history", get(history).delete(clear_history))
         .route("/history/{chapter}", delete(forget))
         .route("/updates", get(updates))
+        .route("/updates/fresh", get(fresh_updates))
         .route("/updates/run", post(run_updates))
+        .route("/notify/test", post(test_notify))
         .route("/downloads", get(downloads).post(queue_downloads).delete(clear_downloads))
         .route("/downloads/order", put(order_downloads))
         .route("/downloads/pause", post(pause_downloads))
         .route("/downloads/resume", post(resume_downloads))
+        .route("/downloads/retry", post(retry_downloads))
+        .route("/downloads/orphans", get(orphans).delete(delete_orphans))
         .route("/downloads/{chapter}", delete(cancel_download))
         .route("/downloads/{chapter}/retry", post(retry_download))
         .route("/chapters/{id}/download", delete(delete_download))
@@ -134,6 +149,8 @@ pub fn router(state: Spaces) -> Router {
         .route("/export", get(export_library))
         .route("/export/files", get(export_files))
         .route("/export/files/size", get(files_size))
+        .route("/backups", get(list_backups).post(make_backup))
+        .route("/backups/{name}", get(backup_file).delete(remove_backup))
         .route("/trackers", get(list_trackers))
         .route("/trackers/{id}/authorize", post(authorize_tracker))
         .route("/trackers/{id}/login", post(login_tracker).delete(logout_tracker))
@@ -528,10 +545,12 @@ async fn sources(Me(app): Me) -> Result<Json<Value>> {
 struct SourceChange {
     pinned: Option<bool>,
     hidden: Option<bool>,
+    /// The folder on Browse; empty takes the source out of its folder.
+    folder: Option<String>,
 }
 
 async fn change_source(Me(app): Me, Path(id): Path<i64>, Json(body): Json<SourceChange>) -> Result<Json<Value>> {
-    app.stores.set_source(id, body.pinned, body.hidden).await?;
+    app.stores.set_source(id, body.pinned, body.hidden, body.folder).await?;
     Ok(done())
 }
 
@@ -593,6 +612,79 @@ async fn refresh_title(Me(app): Me, Path(id): Path<i64>) -> Result<Json<TitleVie
 async fn cover(Me(app): Me, Path(id): Path<i64>, RawQuery(version): RawQuery) -> Result<Response> {
     let image = app.images.cover(id).await?;
     Ok(picture(image, if version.is_some() { FOREVER } else { "no-cache" }))
+}
+
+/// A cover given by hand, as the picture itself, in place of the source's.
+async fn set_cover(Me(app): Me, Path(id): Path<i64>, file: Bytes) -> Result<Json<TitleView>> {
+    app.titles.get(id).await?;
+    let mark = app.images.save_cover(id, file.to_vec()).await?;
+    app.titles.set_cover(id, mark).await?;
+    Ok(Json(app.titles.get(id).await?))
+}
+
+async fn edit_details(Me(app): Me, Path(id): Path<i64>, Json(edit): Json<Edit>) -> Result<Json<TitleView>> {
+    app.titles.edit(id, edit).await?;
+    Ok(Json(app.titles.get(id).await?))
+}
+
+/// Lets the details follow the source again, and asks the source for them.
+async fn unlock_details(Me(app): Me, Path(id): Path<i64>) -> Result<Json<TitleView>> {
+    app.titles.unlock(id).await?;
+    Ok(Json(app.titles.refresh(id).await?))
+}
+
+#[derive(Deserialize)]
+struct Groups {
+    #[serde(default)]
+    order: Vec<String>,
+    #[serde(default)]
+    dedupe: bool,
+}
+
+async fn set_scanlators(Me(app): Me, Path(id): Path<i64>, Json(body): Json<Groups>) -> Result<Json<TitleView>> {
+    app.titles.set_scanlators(id, body.order, body.dedupe).await?;
+    Ok(Json(app.titles.get(id).await?))
+}
+
+/// Merges another title into this one. The other's source is asked for its chapters first
+/// when it never was, so they show at once.
+async fn merge_title(Me(app): Me, Path((id, other)): Path<(i64, i64)>) -> Result<Json<TitleView>> {
+    let found = app.titles.get(other).await?;
+    if id != other && found.chapters_at.is_none() {
+        app.titles.fetch(other, !found.initialized, true).await?;
+    }
+    app.titles.merge(id, other).await?;
+    Ok(Json(app.titles.get(id).await?))
+}
+
+async fn unmerge_title(Me(app): Me, Path((id, other)): Path<(i64, i64)>) -> Result<Json<TitleView>> {
+    app.titles.unmerge(id, other).await?;
+    Ok(Json(app.titles.get(id).await?))
+}
+
+/// Library titles by the same name, to warn before one series is added twice.
+async fn namesakes(Me(app): Me, Path(id): Path<i64>) -> Result<Json<Vec<Namesake>>> {
+    Ok(Json(app.titles.namesakes(id).await?))
+}
+
+async fn title_marks(Me(app): Me, Path(id): Path<i64>) -> Result<Json<Vec<PageMark>>> {
+    Ok(Json(app.titles.page_marks(id).await?))
+}
+
+#[derive(Deserialize, Default)]
+#[serde(default)]
+struct Note {
+    note: String,
+}
+
+async fn mark_page(Me(app): Me, Path((id, page)): Path<(i64, i64)>, Json(body): Json<Note>) -> Result<Json<Value>> {
+    app.titles.mark_page(id, page, Some(body.note)).await?;
+    Ok(done())
+}
+
+async fn unmark_page(Me(app): Me, Path((id, page)): Path<(i64, i64)>) -> Result<Json<Value>> {
+    app.titles.mark_page(id, page, None).await?;
+    Ok(done())
 }
 
 #[derive(Deserialize)]
@@ -681,9 +773,21 @@ async fn updates(Me(app): Me, Query(slice): Query<Slice>) -> Result<Json<Updates
     Ok(Json(app.updates.view(slice.limit.unwrap_or(200)).await?))
 }
 
+/// Only the number beside Updates in the menu, which every screen change asks for.
+async fn fresh_updates(Me(app): Me) -> Result<Json<Value>> {
+    let fresh = app.db.call(|conn| crate::updates::fresh(conn)).await?;
+    Ok(Json(json!({ "fresh": fresh })))
+}
+
 /// Starts a library update, unless one is running. Answers at once.
 async fn run_updates(Me(app): Me) -> Json<Status> {
     Json(app.updates.start())
+}
+
+/// Sends a message to the address set for notifications, so it can be tried.
+async fn test_notify(Me(app): Me) -> Result<Json<Value>> {
+    app.notifier.test().await?;
+    Ok(done())
 }
 
 async fn downloads(Me(app): Me) -> Result<Json<QueueView>> {
@@ -721,6 +825,20 @@ async fn cancel_download(Me(app): Me, Path(chapter): Path<i64>) -> Result<Json<V
 async fn retry_download(Me(app): Me, Path(chapter): Path<i64>) -> Result<Json<Value>> {
     app.downloads.retry(chapter).await?;
     Ok(done())
+}
+
+/// Every chapter that gave up gets its tries again.
+async fn retry_downloads(Me(app): Me) -> Result<Json<Value>> {
+    Ok(Json(json!({ "queued": app.downloads.retry_all().await? })))
+}
+
+/// Titles outside the library that still have chapters saved.
+async fn orphans(Me(app): Me) -> Result<Json<Vec<Orphan>>> {
+    Ok(Json(app.downloads.orphans().await?))
+}
+
+async fn delete_orphans(Me(app): Me) -> Result<Json<Value>> {
+    Ok(Json(json!({ "deleted": app.downloads.delete_orphans().await? })))
 }
 
 async fn order_downloads(Me(app): Me, Json(body): Json<Ids>) -> Result<Json<Value>> {
@@ -825,6 +943,32 @@ async fn files_size(Me(app): Me) -> Result<Json<files::Size>> {
     Ok(Json(files::size(&files::plan(&app.db, &app.images, app.downloads.dir()).await?)))
 }
 
+// ---------- backups made on a schedule ----------
+
+async fn list_backups(Me(app): Me) -> Json<Value> {
+    Json(json!({ "backups": app.backups.list().await }))
+}
+
+async fn make_backup(Me(app): Me) -> Result<Json<Saved>> {
+    Ok(Json(app.backups.make().await?))
+}
+
+async fn backup_file(Me(app): Me, Path(name): Path<String>) -> Result<Response> {
+    let path = app.backups.file(&name)?;
+    let file = tokio::task::spawn_blocking(move || std::fs::read(path)).await.map_err(|e| AppError::internal(e.to_string()))??;
+    let headers = [
+        (header::CONTENT_TYPE, "application/octet-stream".to_owned()),
+        (header::CONTENT_DISPOSITION, format!("attachment; filename=\"{name}\"")),
+        (header::CACHE_CONTROL, "no-store".to_owned()),
+    ];
+    Ok((headers, file).into_response())
+}
+
+async fn remove_backup(Me(app): Me, Path(name): Path<String>) -> Result<Json<Value>> {
+    app.backups.delete(&name).await?;
+    Ok(done())
+}
+
 // ---------- trackers ----------
 
 fn tracker(id: i64) -> Result<Kind> {
@@ -897,6 +1041,10 @@ async fn library(Me(app): Me) -> Result<Json<LibraryView>> {
     Ok(Json(app.db.call(|conn| library::read(conn)).await?))
 }
 
+async fn stats(Me(app): Me) -> Result<Json<Stats>> {
+    Ok(Json(app.db.call(|conn| library::stats(conn)).await?))
+}
+
 #[derive(Deserialize)]
 struct BulkChange {
     /// Title ids.
@@ -931,20 +1079,39 @@ async fn bulk(Me(app): Me, Json(body): Json<BulkChange>) -> Result<Json<Value>> 
 }
 
 #[derive(Deserialize)]
-struct Named {
+struct NewCategory {
     name: String,
+    /// The category it goes inside.
+    parent: Option<i64>,
+}
+
+/// A name, a place, or both. A parent of 0 puts the category at the top.
+#[derive(Deserialize)]
+struct CategoryChange {
+    name: Option<String>,
+    parent: Option<i64>,
 }
 
 async fn list_categories(Me(app): Me) -> Result<Json<Value>> {
     Ok(Json(json!({ "categories": app.db.call(|conn| library::categories(conn)).await? })))
 }
 
-async fn add_category(Me(app): Me, Json(body): Json<Named>) -> Result<Json<Category>> {
-    Ok(Json(app.db.call(move |conn| library::add_category(conn, &body.name)).await?))
+async fn add_category(Me(app): Me, Json(body): Json<NewCategory>) -> Result<Json<Category>> {
+    Ok(Json(app.db.call(move |conn| library::add_category(conn, &body.name, body.parent)).await?))
 }
 
-async fn rename_category(Me(app): Me, Path(id): Path<i64>, Json(body): Json<Named>) -> Result<Json<Value>> {
-    app.db.call(move |conn| library::rename_category(conn, id, &body.name)).await?;
+async fn rename_category(Me(app): Me, Path(id): Path<i64>, Json(body): Json<CategoryChange>) -> Result<Json<Value>> {
+    app.db
+        .call(move |conn| {
+            if let Some(name) = &body.name {
+                library::rename_category(conn, id, name)?;
+            }
+            if let Some(parent) = body.parent {
+                library::set_parent(conn, id, Some(parent).filter(|parent| *parent > 0))?;
+            }
+            Ok(())
+        })
+        .await?;
     Ok(done())
 }
 

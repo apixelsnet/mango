@@ -63,3 +63,19 @@ Checked on Linux and Windows by `smoke.py`, and by hand in a browser at a desk's
 ## Done when
 
 A title can be found by global search, opened, and added to the library.
+
+## Title page: editing, merging and chapter preferences (2026-10-25)
+
+Implementation: `titles.rs` (`edit_details`, `merge`, `prefer`, `listed_chapters`) and `routes/Title.svelte`. Schema changes are in migration `012_requests.sql`.
+
+- **Editing details.** The title menu opens a form for the name, author, artist, description, genres and status (`PUT /api/manga/{id}/details`). A custom cover may be uploaded (`PUT /api/manga/{id}/cover`, with the image as the request body, up to 8 MB; the content is validated as an image). Each edited field is recorded in `manga.locked` and is preserved when the title is refreshed or appears in a source listing. "Follow the source again" (`DELETE /api/manga/{id}/details`) removes all locks and refreshes the title. Custom covers are stored in `covers/` as `<id>-custom-<hash>` and are excluded from backups.
+- **Merging sources.** "Add another source" searches all sources for the title (`#/search?q=&merge=`). The selected title is merged into the current one (`POST /api/manga/{id}/merge/{other}`); its chapters are fetched first if they have never been fetched. A merged title is removed from the library as a separate entry; it is updated, downloaded and read as part of the title it was merged into, and its chapters are listed there by number with their source shown. "Take out" (`DELETE /api/manga/{id}/merge/{other}`) reverses the merge; the separated title is not returned to the library. Opening a merged title redirects to the title that contains it.
+- **Scanlation groups.** The user may define a preferred order of scanlation groups and enable "one upload per chapter" (`PUT /api/manga/{id}/scanlators`). When enabled, every upload other than the preferred one is marked `duplicate`: it is hidden unless "Other uploads" is selected, skipped by the reader's next and previous actions, and counted once in the library. Source order takes precedence over group order: the title's own source first, followed by merged sources in the order they were added.
+- **Volumes.** The chapter list can be grouped under volume headings. The volume is derived from chapter names such as "Vol.2 Ch. 10" (`ChapterView.volume`).
+- **Saved pages.** Pages saved from the reader, together with their notes, are listed below the tracker section. Each entry opens the reader at the saved page.
+- **Duplicate detection.** Before a title is added to the library, the server is queried for library titles with the same name (`GET /api/manga/{id}/namesakes`; names are compared by their letters and digits only). If a match exists, the user is informed and may either read the new title as an additional source of the existing one or add it anyway.
+- **Source folders.** On the Browse screen, a source can be assigned to a user-defined folder (`PUT /api/sources/{id}` with `folder`; an empty value removes the assignment). Folders are listed below the pinned sources.
+
+Verification: unit tests cover locked fields across refreshes, merging and member order, preferred-upload selection, volume parsing and saved pages; `smoke.py` passed all 204 checks on Linux. In Chromium against a Linux build, at 1280×860 and 390×844, the following were confirmed: the edit form; a merge showing both sources and the merged title redirecting to its parent; "one upload per chapter" reducing five rows to four, with the library reporting four chapters; and volume headings. No screen scrolled horizontally and no console errors were logged.
+
+Not verified: a merge of two real online sources, and a custom cover uploaded from a phone.

@@ -63,3 +63,26 @@ export function whenVisible(node: HTMLElement, run: () => void) {
     },
   };
 }
+
+/**
+ * Runs `run` every `ms` while the page is in view, and once more when it comes back into
+ * view. A tab left open in the background then asks Mango nothing: on a hosted Mango that
+ * lets an idle instance sleep. Returns what stops it.
+ */
+export function every(ms: number, run: () => void): () => void {
+  let timer: ReturnType<typeof setInterval> | undefined;
+  const start = () => {
+    clearInterval(timer);
+    timer = document.hidden ? undefined : setInterval(run, ms);
+  };
+  const back = () => {
+    if (!document.hidden) run();
+    start();
+  };
+  start();
+  document.addEventListener('visibilitychange', back);
+  return () => {
+    clearInterval(timer);
+    document.removeEventListener('visibilitychange', back);
+  };
+}

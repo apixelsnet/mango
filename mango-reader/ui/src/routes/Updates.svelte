@@ -3,7 +3,7 @@
   import Icon from '../lib/Icon.svelte';
   import { keep, recall } from '../lib/keep';
   import Notice from '../lib/Notice.svelte';
-  import { ago, dayKey, dayLabel } from '../lib/util';
+  import { ago, dayKey, dayLabel, every } from '../lib/util';
 
   // What was here last time shows at once; the list is then asked for again.
   const kept = recall<Updates>('updates');
@@ -12,14 +12,20 @@
   let error = $state<string | null>(null);
   let note = $state('');
   let showErrors = $state(false);
+  // The titles whose new chapters of a day are shown one by one, by `day:title`.
+  let opened = $state<Record<string, boolean>>({});
 
   const running = $derived(data?.status.running ?? false);
+  // By day, then by title within the day: a title that got five chapters is one row of five.
   const days = $derived.by(() => {
-    const groups: { day: number; items: UpdateItem[] }[] = [];
+    const groups: { day: number; titles: { mangaId: number; items: UpdateItem[] }[] }[] = [];
     for (const item of data?.items ?? []) {
       const day = dayKey(item.fetchedAt);
-      if (groups.at(-1)?.day === day) groups.at(-1)!.items.push(item);
-      else groups.push({ day, items: [item] });
+      if (groups.at(-1)?.day !== day) groups.push({ day, titles: [] });
+      const titles = groups.at(-1)!.titles;
+      const same = titles.find((title) => title.mangaId === item.mangaId);
+      if (same) same.items.push(item);
+      else titles.push({ mangaId: item.mangaId, items: [item] });
     }
     return groups;
   });
@@ -37,12 +43,20 @@
   }
   load();
 
-  // While a run is going, the screen follows it.
+  // While a run is going, the screen follows it, as long as it is in view.
   $effect(() => {
     if (!running) return;
-    const timer = setInterval(load, 2000);
-    return () => clearInterval(timer);
+    return every(2000, load);
   });
+
+  async function downloadAll(items: UpdateItem[]) {
+    try {
+      const answer = await send<{ queued: number }>('POST', '/downloads', { chapters: items.filter((i) => !i.downloaded).map((i) => i.chapterId) });
+      note = `${items[0].title}: ${answer.queued} ${answer.queued === 1 ? 'chapter' : 'chapters'} queued for download.`;
+    } catch (e) {
+      error = message(e);
+    }
+  }
 
   async function run() {
     note = '';
@@ -98,23 +112,51 @@
     </section>
   {/if}
 
+  {#snippet row(item: UpdateItem)}
+    <li class:done={item.read}>
+      <a class="main" href="#/title/{item.mangaId}">
+        <strong>{item.title}</strong>
+        <span>{item.chapterName}{item.sourceName ? ` · ${item.sourceName}` : ''}{item.read ? ' · read' : ''}{item.downloaded ? ' · saved' : ''}</span>
+      </a>
+      <span class="tools">
+        {#if !item.downloaded}
+          <button class="btn icon" aria-label="Download {item.chapterName} of {item.title}" onclick={() => download(item)}><Icon name="download" /></button>
+        {/if}
+        <a class="btn" href="#/read/{item.chapterId}">Read<Icon name="arrow" size={18} stroke={3} /></a>
+      </span>
+    </li>
+  {/snippet}
+
   {#each days as group (group.day)}
     <section>
       <div class="section-head"><h2 class="display">{dayLabel(group.day)}</h2></div>
       <ul class="rows">
-        {#each group.items as item (item.chapterId)}
-          <li class:done={item.read}>
-            <a class="main" href="#/title/{item.mangaId}">
-              <strong>{item.title}</strong>
-              <span>{item.chapterName}{item.sourceName ? ` · ${item.sourceName}` : ''}{item.read ? ' · read' : ''}{item.downloaded ? ' · saved' : ''}</span>
-            </a>
-            <span class="tools">
-              {#if !item.downloaded}
-                <button class="btn icon" aria-label="Download {item.chapterName} of {item.title}" onclick={() => download(item)}><Icon name="download" /></button>
-              {/if}
-              <a class="btn" href="#/read/{item.chapterId}">Read<Icon name="arrow" size={18} stroke={3} /></a>
-            </span>
-          </li>
+        {#each group.titles as title (title.mangaId)}
+          {@const key = `${group.day}:${title.mangaId}`}
+          {#if title.items.length === 1}
+            {@render row(title.items[0])}
+          {:else}
+            {@const first = title.items[title.items.length - 1]}
+            {@const unread = title.items.filter((i) => !i.read)}
+            <li class:done={unread.length === 0}>
+              <a class="main" href="#/title/{title.mangaId}">
+                <strong>{first.title}</strong>
+                <span>{title.items.length} new chapters{unread.length && unread.length < title.items.length ? `, ${unread.length} unread` : ''}{first.sourceName ? ` · ${first.sourceName}` : ''}</span>
+              </a>
+              <span class="tools">
+                {#if title.items.some((i) => !i.downloaded)}
+                  <button class="btn icon" aria-label="Download the new chapters of {first.title}" onclick={() => downloadAll(title.items)}><Icon name="download" /></button>
+                {/if}
+                <button class="btn icon" aria-label={opened[key] ? 'Hide the chapters' : 'Show the chapters'} aria-expanded={!!opened[key]} onclick={() => (opened[key] = !opened[key])}>
+                  <Icon name={opened[key] ? 'up' : 'down'} />
+                </button>
+                <a class="btn" href="#/read/{(unread.at(-1) ?? first).chapterId}">Read<Icon name="arrow" size={18} stroke={3} /></a>
+              </span>
+            </li>
+            {#if opened[key]}
+              {#each title.items as item (item.chapterId)}{@render row(item)}{/each}
+            {/if}
+          {/if}
         {/each}
       </ul>
     </section>

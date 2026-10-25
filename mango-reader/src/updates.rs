@@ -10,8 +10,11 @@ use crate::{
     db::{now, Db},
     downloads::Downloads,
     error::Result,
+    library::FOLLOWED,
+    notify::Notifier,
     settings,
     titles::{cover_url, rhythm, Titles, MAX_RELEASE_DAYS},
+    trackers::{self, Trackers},
 };
 use rusqlite::{params, Connection};
 use serde::Serialize;
@@ -96,12 +99,16 @@ pub struct Updates {
     db: Db,
     titles: Titles,
     downloads: Downloads,
+    notifier: Notifier,
+    trackers: Trackers,
     status: Arc<StdMutex<Status>>,
+    /// The chapters the run going on has found so far.
+    found: Arc<StdMutex<Vec<i64>>>,
 }
 
 impl Updates {
-    pub fn new(db: Db, titles: Titles, downloads: Downloads) -> Self {
-        Self { db, titles, downloads, status: Arc::default() }
+    pub fn new(db: Db, titles: Titles, downloads: Downloads, notifier: Notifier, trackers: Trackers) -> Self {
+        Self { db, titles, downloads, notifier, trackers, status: Arc::default(), found: Arc::default() }
     }
 
     pub fn status(&self) -> Status {
@@ -181,6 +188,12 @@ impl Updates {
         }
         while sources.join_next().await.is_some() {}
 
+        let found = std::mem::take(&mut *self.found.lock().unwrap_or_else(|e| e.into_inner()));
+        self.notifier.chapters(found).await;
+        let pull = self.db.call(|conn| Ok(settings::get::<bool>(conn, trackers::PULL).unwrap_or(false))).await.unwrap_or(false);
+        if pull {
+            self.trackers.pull_all().await;
+        }
         let _ = self.db.call(|conn| settings::set(conn, LAST_RUN, &now().into())).await;
         self.note(|status| {
             status.running = false;
@@ -215,6 +228,7 @@ impl Updates {
             })
             .await;
         let new = outcome.unwrap_or_default();
+        self.found.lock().unwrap_or_else(|e| e.into_inner()).extend(&new);
         self.note(|status| {
             status.done += 1;
             status.found += new.len();
@@ -240,10 +254,12 @@ struct Plan {
 /// Titles whose extension is not installed are left out; there is no one to ask.
 fn plan(conn: &Connection, today: i64) -> Result<Plan> {
     let ids = |key: &str| settings::get::<Vec<i64>>(conn, key).unwrap_or_default().iter().map(i64::to_string).collect::<Vec<_>>().join(",");
-    let mut sql = String::from(
-        "SELECT m.source_id, m.id, m.auto_download, m.chapters_at FROM manga m JOIN sources s ON s.id = m.source_id
-         WHERE m.in_library = 1
-           AND NOT (m.update_strategy = 'ONLY_FETCH_ONCE' AND EXISTS (SELECT 1 FROM chapters WHERE manga_id = m.id))",
+    // A title merged into another updates with it, and goes by that one's categories and downloads.
+    let mut sql = format!(
+        "SELECT m.source_id, m.id, COALESCE((SELECT auto_download FROM manga WHERE id = m.merged_into), m.auto_download), m.chapters_at
+         FROM manga m JOIN sources s ON s.id = m.source_id
+         WHERE {FOLLOWED}
+           AND NOT (m.update_strategy = 'ONLY_FETCH_ONCE' AND EXISTS (SELECT 1 FROM chapters WHERE manga_id = m.id))"
     );
     if settings::get::<bool>(conn, SKIP_COMPLETED).unwrap_or(false) {
         sql += " AND m.status NOT IN (2, 4)";
@@ -253,10 +269,10 @@ fn plan(conn: &Connection, today: i64) -> Result<Plan> {
     }
     let (only, never) = (ids(ONLY), ids(NEVER));
     if !only.is_empty() {
-        sql += &format!(" AND EXISTS (SELECT 1 FROM manga_categories WHERE manga_id = m.id AND category_id IN ({only}))");
+        sql += &format!(" AND EXISTS (SELECT 1 FROM manga_categories WHERE manga_id = COALESCE(m.merged_into, m.id) AND category_id IN ({only}))");
     }
     if !never.is_empty() {
-        sql += &format!(" AND NOT EXISTS (SELECT 1 FROM manga_categories WHERE manga_id = m.id AND category_id IN ({never}))");
+        sql += &format!(" AND NOT EXISTS (SELECT 1 FROM manga_categories WHERE manga_id = COALESCE(m.merged_into, m.id) AND category_id IN ({never}))");
     }
     sql += " ORDER BY m.source_id, m.id";
 
@@ -283,10 +299,10 @@ fn plan(conn: &Connection, today: i64) -> Result<Plan> {
 /// The rhythm of each library title whose chapters carry enough dates: `(days between two, day of the latest)`.
 /// A date still to come is a source's mistake and is not counted.
 fn rhythms(conn: &Connection, today: i64) -> Result<HashMap<i64, (i64, i64)>> {
-    let mut stmt = conn.prepare(
+    let mut stmt = conn.prepare(&format!(
         "SELECT DISTINCT c.manga_id, c.date_upload / 86400000 FROM chapters c JOIN manga m ON m.id = c.manga_id
-         WHERE m.in_library = 1 AND c.date_upload > 0 AND c.date_upload / 86400000 <= ?1",
-    )?;
+         WHERE {FOLLOWED} AND c.date_upload > 0 AND c.date_upload / 86400000 <= ?1"
+    ))?;
     let mut days: HashMap<i64, Vec<i64>> = HashMap::new();
     for row in stmt.query_map([today], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, i64>(1)?)))? {
         let (manga, day) = row?;
@@ -318,15 +334,21 @@ fn expected(every: i64, latest: i64, asked: Option<i64>, today: i64) -> bool {
     today <= opened + 2 * GRACE || asked < opened
 }
 
-/// A chapter counts as an update when Mango first saw it after its title joined the library.
-const IS_UPDATE: &str = "m.in_library = 1 AND c.fetched_at > COALESCE(m.added_at, 0)";
+/// A chapter counts as an update when Mango first saw it after its title joined the library,
+/// or after it was merged into a library title.
+fn is_update() -> String {
+    format!("{FOLLOWED} AND c.fetched_at > COALESCE(m.added_at, 0)")
+}
 
+/// Chapters of a merged title show under the title it was merged into.
 fn list(conn: &Connection, limit: i64) -> Result<(Vec<UpdateItem>, Vec<UpdateError>)> {
     let mut stmt = conn.prepare(&format!(
-        "SELECT c.id, c.name, c.fetched_at, c.read, c.download_path IS NOT NULL, m.id, m.title, m.thumbnail_url, s.name
-         FROM chapters c JOIN manga m ON m.id = c.manga_id LEFT JOIN sources s ON s.id = m.source_id
-         WHERE {IS_UPDATE}
-         ORDER BY c.fetched_at DESC, m.title, c.source_order LIMIT ?1"
+        "SELECT c.id, c.name, c.fetched_at, c.read, c.download_path IS NOT NULL, h.id, h.title, h.thumbnail_url, s.name
+         FROM chapters c JOIN manga m ON m.id = c.manga_id JOIN manga h ON h.id = COALESCE(m.merged_into, m.id)
+         LEFT JOIN sources s ON s.id = m.source_id
+         WHERE {}
+         ORDER BY c.fetched_at DESC, h.title, c.source_order LIMIT ?1",
+        is_update()
     ))?;
     let items = stmt
         .query_map([limit.clamp(1, 1000)], |r| {
@@ -346,19 +368,20 @@ fn list(conn: &Connection, limit: i64) -> Result<(Vec<UpdateItem>, Vec<UpdateErr
         })?
         .collect::<rusqlite::Result<Vec<_>>>()?;
 
-    let mut stmt = conn.prepare(
+    let mut stmt = conn.prepare(&format!(
         "SELECT e.manga_id, m.title, e.error, e.at FROM update_errors e JOIN manga m ON m.id = e.manga_id
-         WHERE m.in_library = 1 ORDER BY m.title COLLATE NOCASE",
-    )?;
+         WHERE {FOLLOWED} ORDER BY m.title COLLATE NOCASE"
+    ))?;
     let errors = stmt
         .query_map([], |r| Ok(UpdateError { manga_id: r.get(0)?, title: r.get(1)?, error: r.get(2)?, at: r.get(3)? }))?
         .collect::<rusqlite::Result<Vec<_>>>()?;
     Ok((items, errors))
 }
 
-fn fresh(conn: &Connection) -> Result<i64> {
+/// Unread chapters found in the last week: the number beside Updates in the menu.
+pub(crate) fn fresh(conn: &Connection) -> Result<i64> {
     Ok(conn.query_row(
-        &format!("SELECT COUNT(*) FROM chapters c JOIN manga m ON m.id = c.manga_id WHERE {IS_UPDATE} AND c.read = 0 AND c.fetched_at > ?1"),
+        &format!("SELECT COUNT(*) FROM chapters c JOIN manga m ON m.id = c.manga_id WHERE {} AND c.read = 0 AND c.fetched_at > ?1", is_update()),
         [now() - FRESH_SECS],
         |r| r.get(0),
     )?)
@@ -483,5 +506,20 @@ mod tests {
         assert_eq!(items.iter().map(|i| i.chapter_name.as_str()).collect::<Vec<_>>(), ["Read", "New"]);
         assert_eq!(errors.iter().map(|e| e.title.as_str()).collect::<Vec<_>>(), ["Completed"], "only library titles report errors");
         assert_eq!(fresh(&conn).unwrap(), 1, "the menu counts what is new and unread");
+    }
+
+    #[test]
+    fn a_merged_title_updates_with_its_head() {
+        let conn = database();
+        // "Not in library" is merged into "Ongoing": it is asked, takes its auto-download, and its chapters show under it.
+        conn.execute("UPDATE manga SET merged_into = 1, added_at = 100 WHERE id = 4", []).unwrap();
+        conn.execute("INSERT INTO chapters (id, manga_id, url, name, source_order, fetched_at) VALUES (40, 4, 'x', 'Merged', 0, 9999999999)", []).unwrap();
+        let plan = plan(&conn, TODAY).unwrap();
+        assert!(plan.sources.iter().any(|(source, titles)| *source == 8 && titles.contains(&(4, true))));
+        let (items, _) = list(&conn, 50).unwrap();
+        let merged = items.iter().find(|i| i.chapter_id == 40).unwrap();
+        assert_eq!((merged.manga_id, merged.title.as_str()), (1, "Ongoing"));
+        set(&conn, ONLY, json!([1]));
+        assert!(planned(&conn).iter().any(|(_, titles)| titles.contains(&4)), "in its head's category");
     }
 }

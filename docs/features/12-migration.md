@@ -42,3 +42,7 @@ Code: `mango-reader/src/migrate.rs`; UI in `routes/Migrate.svelte`, the pick mod
 Checked on Linux and Windows by `smoke.py` (117 checks in all), which moves the title of a source that does not exist onto a real one with its category, tracker link and progress. Checked in a browser on Linux: menu, search, comparison with its warning when the new source stops earlier, and the move.
 
 Not checked: a title with hundreds of chapters on both sides, and a move between two real sources that number their chapters differently.
+
+## Bulk migration (2026-10-25)
+
+Several titles can be migrated at once from the library's selection bar; see feature 04. Each title is migrated as described above, one after another.

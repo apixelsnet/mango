@@ -11,6 +11,7 @@
     unread = 0,
     onLibrary,
     href,
+    pick,
     meta,
   }: {
     id: number;
@@ -22,13 +23,15 @@
     onLibrary?: () => void;
     /** Where the card leads, when not to the title's own page. */
     href?: string;
+    /** Given, a press on the card does this instead of leading anywhere. */
+    pick?: () => void;
     meta?: Snippet;
   } = $props();
 </script>
 
 <div class="card">
   <div class="art">
-    <a class="face" href={href ?? `#/title/${id}`}>
+    <a class="face" href={href ?? `#/title/${id}`} onclick={(e) => pick && (e.preventDefault(), pick())}>
       <Cover src={cover} {title} />
       <span class="name"><span>{title}</span></span>
     </a>

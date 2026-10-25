@@ -8,6 +8,12 @@ export type Display = {
   covers: 'small' | 'medium' | 'large';
   /** The menu as tabs along the bottom: on a narrow screen, always, or never. */
   tabs: 'auto' | 'on' | 'off';
+  /** Nothing moves or fades: for an e-ink screen, which shows each frame of a movement. */
+  still: boolean;
+  /** The library a page at a time, this many titles to a page; 0 shows it whole. */
+  pages: number;
+  /** Reading here leaves no trace: no progress, no history, nothing sent to trackers. */
+  incognito: boolean;
 };
 
 export const SIZES: [number, string][] = [
@@ -27,7 +33,14 @@ export const MENUS: [Display['tabs'], string][] = [
   ['off', 'Top'],
 ];
 
-export const DEFAULT_DISPLAY: Display = { size: 1, covers: 'medium', tabs: 'auto' };
+export const PAGES: [number, string][] = [
+  [0, 'All at once'],
+  [24, '24 a page'],
+  [48, '48 a page'],
+  [96, '96 a page'],
+];
+
+export const DEFAULT_DISPLAY: Display = { size: 1, covers: 'medium', tabs: 'auto', still: false, pages: 0, incognito: false };
 
 const KEY = 'mango.display';
 /** Narrower than this, the menu moves to the bottom by itself. */
@@ -40,6 +53,9 @@ function sound(raw: unknown): Display {
     size: SIZES.some(([size]) => size === d.size) ? d.size : DEFAULT_DISPLAY.size,
     covers: COVERS.some(([covers]) => covers === d.covers) ? d.covers : DEFAULT_DISPLAY.covers,
     tabs: MENUS.some(([tabs]) => tabs === d.tabs) ? d.tabs : DEFAULT_DISPLAY.tabs,
+    still: d.still === true,
+    pages: PAGES.some(([pages]) => pages === d.pages) ? d.pages : DEFAULT_DISPLAY.pages,
+    incognito: d.incognito === true,
   };
 }
 
@@ -64,6 +80,7 @@ function apply() {
   root.style.setProperty('--zoom', String(d.size));
   root.dataset.covers = d.covers;
   root.dataset.nav = display.tabs ? 'tabs' : 'top';
+  root.dataset.still = d.still ? 'on' : 'off';
 }
 
 export function initDisplay() {

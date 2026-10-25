@@ -1,6 +1,7 @@
 // Who is using Mango: whether it asks for a password, and which account this browser is signed in to.
 
 import { gate, get, message, send } from './api';
+import { forgetAll } from './offline';
 
 type Status = { login: boolean; setup: boolean; setupCode: boolean; signup: boolean; signedIn: boolean; named: boolean; name: string | null; admin: boolean; account?: string };
 
@@ -55,5 +56,7 @@ export async function signUp(name: string, password: string, code: string) {
 
 export async function signOut() {
   await send('POST', '/auth/logout');
+  // Chapters kept on this device go too: whoever signs in next is not to read them.
+  await forgetAll().catch(() => {});
   location.reload();
 }

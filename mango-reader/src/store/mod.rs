@@ -34,7 +34,7 @@ const MAX_DOWNLOAD: usize = 64 << 20;
 const INSTALL_TIMEOUT: Duration = Duration::from_secs(180);
 /// How often an account looks whether the blocklist changed.
 const BLOCKLIST_EVERY: Duration = Duration::from_secs(60);
-const KEY_CHANGED: &str = "The store now publishes a different signing key. Accept it only if the store announced the change.";
+const KEY_CHANGED: &str = "The repository now publishes a different signing key. Accept it only if the repository announced the change.";
 
 const STORE_COLUMNS: &str = "SELECT s.id, s.url, s.index_url, s.name, s.badge, s.website, s.signing_key, s.offered_key, \
      s.checked_at, s.updated_at, s.error, (SELECT COUNT(*) FROM catalog c WHERE c.store_id = s.id) FROM stores s";
@@ -123,6 +123,8 @@ pub struct SourceInfo {
     /// The owner's choices for the source list.
     pub pinned: bool,
     pub hidden: bool,
+    /// The folder the owner put it in on Browse.
+    pub folder: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -317,7 +319,7 @@ impl Stores {
         }
         let pulled = self.decode(&index_url, &bytes, etag).await?;
         if repo_key.is_some_and(|key| index::normalize_key(&key).as_deref() != Some(pulled.key.as_str())) {
-            return Err(AppError::new(422, "signing_key_mismatch", "The store's repo.json and its index name different signing keys"));
+            return Err(AppError::new(422, "signing_key_mismatch", "The repository's repo.json and its index name different signing keys"));
         }
 
         let id = self
@@ -327,7 +329,7 @@ impl Stores {
                 // One store can be reached by several addresses. Its signing key tells that it is the same one.
                 let known = "SELECT 1 FROM stores WHERE index_url = ?1 OR signing_key = ?2 OR offered_key = ?2";
                 if tx.query_row(known, [&index_url, &pulled.key], |_| Ok(())).optional()?.is_some() {
-                    return Err(AppError::new(409, "store_exists", "This store was already added"));
+                    return Err(AppError::new(409, "store_exists", "This repository was already added"));
                 }
                 tx.execute(
                     "INSERT INTO stores (url, index_url, name, signing_key, added_at) VALUES (?1, ?2, ?3, ?4, ?5)",
@@ -411,7 +413,7 @@ impl Stores {
     /// Pins the key a store changed to. The owner's decision; nothing else calls this.
     pub async fn accept_key(&self, id: i64) -> Result<StoreInfo> {
         if !self.get(id).await?.key_changed {
-            return Err(AppError::new(409, "no_key_change", "This store has no new signing key waiting"));
+            return Err(AppError::new(409, "no_key_change", "This repository has no new signing key waiting"));
         }
         self.db
             .call(move |conn| {
@@ -477,7 +479,7 @@ impl Stores {
                         catalog_row,
                     )
                     .optional()?
-                    .ok_or_else(|| AppError::new(404, "unknown_extension", "The store does not list this extension"))?;
+                    .ok_or_else(|| AppError::new(404, "unknown_extension", "The repository does not list this extension"))?;
                 let mut stmt = conn.prepare(
                     "SELECT source_id, name, lang, home_url FROM catalog_sources WHERE store_id = ?1 AND pkg = ?2 ORDER BY name COLLATE NOCASE, lang",
                 )?;
@@ -503,14 +505,20 @@ impl Stores {
         self.db.call(|conn| read_sources(conn)).await
     }
 
-    /// Pins or hides a source in the source list. A value left out keeps its state.
-    pub async fn set_source(&self, id: i64, pinned: Option<bool>, hidden: Option<bool>) -> Result<()> {
+    /// Pins or hides a source in the source list, or puts it in a folder. A value left out
+    /// keeps its state; an empty folder takes it out of its folder.
+    pub async fn set_source(&self, id: i64, pinned: Option<bool>, hidden: Option<bool>, folder: Option<String>) -> Result<()> {
+        let folder = folder.map(|name| name.trim().to_owned());
+        if folder.as_ref().is_some_and(|name| name.chars().count() > 60) {
+            return Err(AppError::bad_request("A folder's name has 60 characters at most"));
+        }
         self.db
             .call(move |conn| {
                 conn.execute(
-                    "INSERT INTO source_prefs (source_id, pinned, hidden) VALUES (?1, COALESCE(?2, 0), COALESCE(?3, 0))
-                     ON CONFLICT(source_id) DO UPDATE SET pinned = COALESCE(?2, pinned), hidden = COALESCE(?3, hidden)",
-                    params![id, pinned, hidden],
+                    "INSERT INTO source_prefs (source_id, pinned, hidden, folder) VALUES (?1, COALESCE(?2, 0), COALESCE(?3, 0), NULLIF(?4, ''))
+                     ON CONFLICT(source_id) DO UPDATE SET pinned = COALESCE(?2, pinned), hidden = COALESCE(?3, hidden),
+                         folder = CASE WHEN ?4 IS NULL THEN folder ELSE NULLIF(?4, '') END",
+                    params![id, pinned, hidden, folder],
                 )?;
                 Ok(())
             })
@@ -601,7 +609,7 @@ impl Stores {
                 Ok(pick)
             })
             .await?
-            .ok_or_else(|| AppError::new(404, "unknown_extension", "No store lists this extension"))?;
+            .ok_or_else(|| AppError::new(404, "unknown_extension", "No repository lists this extension"))?;
 
         if pick.key_changed {
             return Err(AppError::new(409, "signing_key_changed", KEY_CHANGED));
@@ -857,7 +865,7 @@ impl Stores {
             store.extension_list = Some(index::parse_list(&list)?);
         }
         let key = index::normalize_key(&store.signing_key).ok_or_else(|| {
-            AppError::new(422, "no_signing_key", "The store publishes no signing key, so its extensions could not be checked")
+            AppError::new(422, "no_signing_key", "The repository publishes no signing key, so its extensions could not be checked")
         })?;
         let hashes = self.hashes(index_url).await;
         Ok(Pulled { store, key, etag, hashes })
@@ -897,15 +905,15 @@ impl Stores {
 // ---------- helpers ----------
 
 fn no_store() -> AppError {
-    AppError::new(404, "unknown_store", "No such store")
+    AppError::new(404, "unknown_store", "No such repository")
 }
 
 fn blocked_store() -> AppError {
-    AppError::new(403, "blocked", "The operator of this server has blocked this store.")
+    AppError::new(403, "blocked", "The operator of this server has blocked this repository.")
 }
 
 fn not_a_store() -> AppError {
-    AppError::new(400, "not_a_store", "This is not a store: give the URL of its repo.json or index.pb")
+    AppError::new(400, "not_a_store", "This is not a repository: give the URL of its repo.json or index.pb")
 }
 
 fn http_url(url: &str) -> Result<Url> {
@@ -933,16 +941,16 @@ fn like_escape(text: &str) -> String {
 fn check_jar(bytes: &[u8], key: &str, expected: Option<&str>) -> Result<String> {
     let sha256 = hex::encode(Sha256::digest(bytes));
     if expected.is_some_and(|want| !want.eq_ignore_ascii_case(&sha256)) {
-        return Err(AppError::new(422, "sha256_mismatch", "The downloaded extension does not match the hash the store publishes"));
+        return Err(AppError::new(422, "sha256_mismatch", "The downloaded extension does not match the hash the repository publishes"));
     }
     verify::verify_jar(bytes, key).map_err(|e| match e {
         VerifyError::Unsigned => {
-            AppError::new(422, "unsigned_extension", "The extension is not signed, so it cannot be checked against the store's key")
+            AppError::new(422, "unsigned_extension", "The extension is not signed, so it cannot be checked against the repository's key")
         }
         VerifyError::WrongKey(found) => AppError::new(
             422,
             "signing_key_mismatch",
-            format!("The extension is signed by another key than the store's: {}", found.join(", ")),
+            format!("The extension is signed by another key than the repository's: {}", found.join(", ")),
         ),
         VerifyError::Invalid(why) => AppError::new(422, "signature_invalid", format!("The extension's signature does not hold: {why}")),
     })?;
@@ -1091,7 +1099,7 @@ fn query_catalog(conn: &Connection, query: &CatalogQuery) -> Result<(Vec<Catalog
 
 fn read_sources(conn: &Connection) -> Result<Vec<SourceInfo>> {
     let mut stmt = conn.prepare(
-        "SELECT s.id, s.pkg, s.name, s.lang, s.base_url, s.supports_latest, COALESCE(p.pinned, 0), COALESCE(p.hidden, 0)
+        "SELECT s.id, s.pkg, s.name, s.lang, s.base_url, s.supports_latest, COALESCE(p.pinned, 0), COALESCE(p.hidden, 0), p.folder
          FROM sources s LEFT JOIN source_prefs p ON p.source_id = s.id
          ORDER BY s.name COLLATE NOCASE, s.lang, s.id",
     )?;
@@ -1106,6 +1114,7 @@ fn read_sources(conn: &Connection) -> Result<Vec<SourceInfo>> {
                 supports_latest: r.get(5)?,
                 pinned: r.get(6)?,
                 hidden: r.get(7)?,
+                folder: r.get(8)?,
             })
         })?
         .collect::<rusqlite::Result<Vec<_>>>()?;
