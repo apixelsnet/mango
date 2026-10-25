@@ -387,7 +387,7 @@ export const ACTIONS: { id: Action; label: string; keys: string[] }[] = [
   { id: 'zoomIn', label: 'Zoom in', keys: ['+', '='] },
   { id: 'zoomOut', label: 'Zoom out', keys: ['-'] },
   { id: 'zoomReset', label: 'Zoom back', keys: ['0'] },
-  { id: 'mark', label: 'Keep this page', keys: ['b'] },
+  { id: 'mark', label: 'Save this page', keys: ['b'] },
 ];
 
 /** Keys that keep their own work whatever is set: moving about, and leaving. */

@@ -647,8 +647,8 @@
         <Tracking {id} title={title.title} />
 
         {#if marks.length}
-          <section class="panel editor" aria-label="Kept pages">
-            <strong>Kept pages</strong>
+          <section class="panel editor" aria-label="Saved pages">
+            <strong>Saved pages</strong>
             <ul class="rows">
               {#each marks as kept (`${kept.chapterId}:${kept.page}`)}
                 <li>
@@ -656,7 +656,7 @@
                     <strong>{kept.chapterName}, page {kept.page + 1}</strong>
                     {#if kept.note}<span>{kept.note}</span>{/if}
                   </a>
-                  <button class="btn icon" aria-label="Let go of page {kept.page + 1} of {kept.chapterName}" onclick={() => unmarkPage(kept)}><Icon name="trash" /></button>
+                  <button class="btn icon" aria-label="Remove saved page {kept.page + 1} of {kept.chapterName}" onclick={() => unmarkPage(kept)}><Icon name="trash" /></button>
                 </li>
               {/each}
             </ul>

@@ -53,7 +53,7 @@
 
   {#if data}
     <div class="tiles">
-      {#each [['Titles', data.titles], ['Begun', data.started], ['Read to the end', data.finished], ['Chapters read', data.read], ['Days with reading', data.days], ['Days in a row', data.streak], ['Chapters saved', data.downloaded], ['Bookmarks', data.bookmarks], ['Kept pages', data.pageMarks]] as [label, value] (label)}
+      {#each [['Titles', data.titles], ['Begun', data.started], ['Read to the end', data.finished], ['Chapters read', data.read], ['Days with reading', data.days], ['Days in a row', data.streak], ['Chapters saved', data.downloaded], ['Bookmarks', data.bookmarks], ['Saved pages', data.pageMarks]] as [label, value] (label)}
         <div class="panel tile"><span class="display">{value}</span><span>{label}</span></div>
       {/each}
     </div>

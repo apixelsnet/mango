@@ -297,12 +297,12 @@
       if (text === null) {
         await send('DELETE', `/chapters/${id}/marks/${page}`);
         marks = marks.filter((mark) => mark.page !== page);
-        say('Page let go');
+        say('Page removed');
       } else {
         await send('PUT', `/chapters/${id}/marks/${page}`, { note: text });
         const kept = { chapterId: id, chapterName: info?.chapter.name ?? '', page, note: text.trim(), createdAt: Date.now() / 1000 };
         marks = [...marks.filter((mark) => mark.page !== page), kept];
-        say('Page kept');
+        say('Page saved');
       }
     } catch (e) {
       say(message(e));
@@ -803,7 +803,7 @@
       <div class="progress" class:rtl={mode === 'rtl'} aria-hidden="true"><span style:width="{((reached + 1) / count) * 100}%"></span></div>
     {/if}
     {#if p.number && !overlay && !panel}
-      <span class="hud" aria-hidden="true">{shown.length > 1 ? `${shown[0] + 1}–${reached + 1}` : reached + 1} / {count}{marked ? ' · kept' : ''}</span>
+      <span class="hud" aria-hidden="true">{shown.length > 1 ? `${shown[0] + 1}–${reached + 1}` : reached + 1} / {count}{marked ? ' · saved' : ''}</span>
     {/if}
     {#if noting !== null}
       <form class="note" onsubmit={(e) => (e.preventDefault(), keepPage(noting ?? ''))}>
@@ -813,8 +813,8 @@
           <input bind:value={noting} maxlength="2000" placeholder="What is on this page" autofocus />
         </label>
         <div class="tools">
-          <button class="btn ink">Keep</button>
-          {#if marked}<button class="btn" type="button" onclick={() => keepPage(null)}>Let go</button>{/if}
+          <button class="btn ink">Save</button>
+          {#if marked}<button class="btn" type="button" onclick={() => keepPage(null)}>Remove</button>{/if}
           <button class="btn" type="button" onclick={() => (noting = null)}>Cancel</button>
         </div>
       </form>
@@ -834,7 +834,7 @@
       </div>
       <button
         class="btn icon"
-        aria-label={marked ? `Page ${reached + 1} is kept: change its note` : `Keep page ${reached + 1} with a note`}
+        aria-label={marked ? `Page ${reached + 1} is saved: change its note` : `Save page ${reached + 1} with a note`}
         aria-pressed={!!marked}
         onclick={() => ((noting = marked?.note ?? ''), (overlay = false))}
       >
