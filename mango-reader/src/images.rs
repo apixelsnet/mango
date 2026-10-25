@@ -45,6 +45,11 @@ const COVER_BOX: (u16, u16) = (600, 900);
 /// A progressive JPEG is held whole while it is decoded, about 7 bytes a pixel, so a
 /// bigger one is left as it came.
 const PROGRESSIVE_MAX_PIXELS: u32 = 16_000_000;
+/// The box a cover's small copy fits in, for grids and lists: twice the widest card, so
+/// it stays sharp on a phone's screen.
+const SMALL_BOX: (u32, u32) = (360, 540);
+/// A PNG or WebP bigger than this is not decoded whole for a small copy.
+const SMALL_MAX_PIXELS: u64 = 40_000_000;
 /// Covers are shrunk one at a time in the whole process, so a page of them cannot add up.
 static SHRINKING: StdMutex<()> = StdMutex::new(());
 /// A cached file used again within this long keeps the time it had. The sweep only has to
@@ -163,7 +168,9 @@ impl Images {
         }
     }
 
-    pub async fn cover(&self, manga: i64) -> Result<Image> {
+    /// A title's cover, or with `small` its small copy for grids and lists. The small copy
+    /// is made once and kept beside the cover; when one cannot be made, the cover comes.
+    pub async fn cover(&self, manga: i64, small: bool) -> Result<Image> {
         let row = self
             .db
             .call(move |conn| {
@@ -179,40 +186,80 @@ impl Images {
         };
         // A cover set by hand is kept in the covers folder, for a local title as for any other.
         if let Some(mark) = url.strip_prefix(CUSTOM_COVER) {
-            let bytes = read(self.custom_cover(manga, mark)).await.ok_or_else(|| AppError::not_found("This title's own cover is gone"))?;
-            return Image::checked(bytes);
+            let path = self.custom_cover(manga, mark);
+            let copy = small_copy(&path);
+            if small {
+                if let Some(bytes) = read(copy.clone()).await {
+                    return Image::checked(bytes);
+                }
+            }
+            let image = Image::checked(read(path).await.ok_or_else(|| AppError::not_found("This title's own cover is gone"))?)?;
+            return Ok(if small { self.make_small(image, copy, false).await } else { image });
         }
-        // A local title's cover is read from its folder each time; there is nothing to fetch or keep.
+        // A local title's cover is read from its folder each time; there is nothing to fetch or
+        // keep. Its small copy is known by what the cover holds.
         if source == local::SOURCE {
             let local = self.local.clone();
-            return Image::checked(local::blocking(move || local.cover(&key)).await?);
+            let image = Image::checked(local::blocking(move || local.cover(&key)).await?)?;
+            if !small {
+                return Ok(image);
+            }
+            let copy = self.cache.join("covers").join(format!("local-{}-small", hex::encode(&Sha256::digest(&image.bytes)[..8])));
+            if let Some(bytes) = read(copy.clone()).await {
+                return Image::checked(bytes);
+            }
+            return Ok(self.make_small(image, copy, true).await);
         }
         let name = format!("{manga}-{:08x}", fnv(&url));
         let kept = self.kept_cover(manga, &url);
         let cached = self.cache.join("covers").join(&name);
-        if let Some(bytes) = read(kept.clone()).await {
-            return Image::checked(bytes);
+        let copy = small_copy(if in_library { &kept } else { &cached });
+        if small {
+            if let Some(bytes) = read(copy.clone()).await {
+                return Image::checked(bytes);
+            }
         }
-
-        let _once = self.locks.lock(format!("cover:{name}")).await;
-        let (bytes, fetched) = match read(cached.clone()).await {
-            Some(bytes) => (bytes, false),
+        let image = match read(kept.clone()).await {
+            Some(bytes) => Image::checked(bytes)?,
             None => {
-                let opts = Call { source: Some(source), ..Call::default() };
-                (self.host.bytes(&format!("/sources/{source}/image"), &json!({ "cover": url }), opts).await?, true)
+                let _once = self.locks.lock(format!("cover:{name}")).await;
+                let (bytes, fetched) = match read(cached.clone()).await {
+                    Some(bytes) => (bytes, false),
+                    None => {
+                        let opts = Call { source: Some(source), ..Call::default() };
+                        (self.host.bytes(&format!("/sources/{source}/image"), &json!({ "cover": url }), opts).await?, true)
+                    }
+                };
+                let mut image = Image::checked(bytes)?;
+                if fetched || in_library {
+                    let bytes = Vec::from(std::mem::take(&mut image.bytes));
+                    image = Image::checked(tokio::task::spawn_blocking(move || shrink(bytes)).await.map_err(|_| AppError::internal("Could not read the cover"))?)?;
+                }
+                if in_library {
+                    write(kept, image.bytes.clone()).await;
+                } else if fetched {
+                    self.stash(cached, image.bytes.clone()).await;
+                }
+                image
             }
         };
-        let mut image = Image::checked(bytes)?;
-        if fetched || in_library {
-            let bytes = Vec::from(std::mem::take(&mut image.bytes));
-            image = Image::checked(tokio::task::spawn_blocking(move || shrink(bytes)).await.map_err(|_| AppError::internal("Could not read the cover"))?)?;
+        Ok(if small { self.make_small(image, copy, !in_library).await } else { image })
+    }
+
+    /// Makes a cover's small copy and keeps it at `copy`, which the sweep may take when
+    /// `swept`. A cover that cannot be made smaller is answered as it is.
+    async fn make_small(&self, image: Image, copy: PathBuf, swept: bool) -> Image {
+        let bytes = image.bytes.clone();
+        let Some(made) = tokio::task::spawn_blocking(move || small(&bytes)).await.ok().flatten() else {
+            return image;
+        };
+        let made = Bytes::from(made);
+        if swept {
+            self.stash(copy, made.clone()).await;
+        } else {
+            write(copy, made.clone()).await;
         }
-        if in_library {
-            write(kept, image.bytes.clone()).await;
-        } else if fetched {
-            self.stash(cached, image.bytes.clone()).await;
-        }
-        Ok(image)
+        Image { bytes: made, content_type: "image/jpeg" }
     }
 
     /// Puts a file in the cache. One bigger than an eighth of the cap is only passed on,
@@ -494,6 +541,161 @@ fn turned(exif: &[u8]) -> bool {
     (0..count).map(|i| ifd + 2 + i * 12).any(|entry| u16_at(entry) == Some(0x0112) && u16_at(entry + 8).is_some_and(|value| value > 1))
 }
 
+/// Where a cover's small copy is kept: beside it, under its name and `-small`.
+fn small_copy(cover: &Path) -> PathBuf {
+    let name = cover.file_name().and_then(|name| name.to_str()).unwrap_or("cover");
+    cover.with_file_name(format!("{name}-small"))
+}
+
+/// A cover made to fit `SMALL_BOX`, as a JPEG. None when it fits already, when it is of a
+/// kind that is not read here (GIF, AVIF and the like), see-through, turned by its EXIF
+/// data or broken, and when the copy would come out no smaller than the cover.
+fn small(bytes: &[u8]) -> Option<Vec<u8>> {
+    let _one = SHRINKING.lock().unwrap_or_else(|e| e.into_inner());
+    let (pixels, width, height, channels) = match sniff(bytes)? {
+        "image/jpeg" => decode_jpeg(bytes)?,
+        "image/png" => decode_png(bytes)?,
+        "image/webp" => decode_webp(bytes)?,
+        _ => return None,
+    };
+    let to = fit((width, height), SMALL_BOX)?;
+    if pixels.len() < width as usize * height as usize * channels {
+        return None;
+    }
+    let pixels = resize(&pixels, (width, height), channels, to);
+    let color = if channels == 1 { jpeg_encoder::ColorType::Luma } else { jpeg_encoder::ColorType::Rgb };
+    let mut out = Vec::new();
+    jpeg_encoder::Encoder::new(&mut out, 82).encode(&pixels, to.0 as u16, to.1 as u16, color).ok()?;
+    (out.len() < bytes.len()).then_some(out)
+}
+
+/// The size a picture of `size` comes out at inside `bounds`, keeping its shape. None when it fits already.
+fn fit(size: (u32, u32), bounds: (u32, u32)) -> Option<(u32, u32)> {
+    if size.0 == 0 || size.1 == 0 || (size.0 <= bounds.0 && size.1 <= bounds.1) {
+        return None;
+    }
+    let scale = (bounds.0 as f64 / size.0 as f64).min(bounds.1 as f64 / size.1 as f64);
+    Some((((size.0 as f64 * scale).round() as u32).max(1), ((size.1 as f64 * scale).round() as u32).max(1)))
+}
+
+/// Pixels, width, height and channels per pixel (1 or 3), decoded at the smallest scale
+/// that still covers the small copy's box.
+type Decoded = (Vec<u8>, u32, u32, usize);
+
+fn decode_jpeg(bytes: &[u8]) -> Option<Decoded> {
+    let mut decoder = jpeg_decoder::Decoder::new(bytes);
+    decoder.read_info().ok()?;
+    let info = decoder.info()?;
+    if info.coding_process == jpeg_decoder::CodingProcess::DctProgressive && u32::from(info.width) * u32::from(info.height) > PROGRESSIVE_MAX_PIXELS {
+        return None;
+    }
+    if decoder.exif_data().is_some_and(|exif| turned(exif)) {
+        return None;
+    }
+    fit((info.width.into(), info.height.into()), SMALL_BOX)?;
+    let (width, height) = decoder.scale(SMALL_BOX.0 as u16, SMALL_BOX.1 as u16).ok()?;
+    let pixels = decoder.decode().ok()?;
+    let channels = match decoder.info()?.pixel_format {
+        jpeg_decoder::PixelFormat::RGB24 => 3,
+        jpeg_decoder::PixelFormat::L8 => 1,
+        _ => return None,
+    };
+    Some((pixels, width.into(), height.into(), channels))
+}
+
+fn decode_png(bytes: &[u8]) -> Option<Decoded> {
+    let mut decoder = png::Decoder::new(bytes);
+    decoder.set_transformations(png::Transformations::EXPAND | png::Transformations::STRIP_16);
+    let mut reader = decoder.read_info().ok()?;
+    let (width, height) = (reader.info().width, reader.info().height);
+    if u64::from(width) * u64::from(height) > SMALL_MAX_PIXELS {
+        return None;
+    }
+    fit((width, height), SMALL_BOX)?;
+    let mut pixels = vec![0; reader.output_buffer_size()];
+    let frame = reader.next_frame(&mut pixels).ok()?;
+    pixels.truncate(frame.buffer_size());
+    let channels = match frame.color_type {
+        png::ColorType::Grayscale => 1,
+        png::ColorType::GrayscaleAlpha => 2,
+        png::ColorType::Rgb => 3,
+        png::ColorType::Rgba => 4,
+        png::ColorType::Indexed => return None,
+    };
+    let (pixels, channels) = opaque(pixels, channels)?;
+    Some((pixels, width, height, channels))
+}
+
+fn decode_webp(bytes: &[u8]) -> Option<Decoded> {
+    let mut decoder = image_webp::WebPDecoder::new(std::io::Cursor::new(bytes)).ok()?;
+    if decoder.is_animated() {
+        return None;
+    }
+    let (width, height) = decoder.dimensions();
+    if u64::from(width) * u64::from(height) > SMALL_MAX_PIXELS {
+        return None;
+    }
+    fit((width, height), SMALL_BOX)?;
+    let mut pixels = vec![0; decoder.output_buffer_size()?];
+    decoder.read_image(&mut pixels).ok()?;
+    let (pixels, channels) = opaque(pixels, if decoder.has_alpha() { 4 } else { 3 })?;
+    Some((pixels, width, height, channels))
+}
+
+/// Pixels without their alpha, when every one is opaque. A see-through cover is left as it
+/// is: the printed stand-in shows through it, and a JPEG has no way to keep that.
+fn opaque(pixels: Vec<u8>, channels: usize) -> Option<(Vec<u8>, usize)> {
+    match channels {
+        1 | 3 => Some((pixels, channels)),
+        2 | 4 => {
+            let colour = channels - 1;
+            if pixels.chunks_exact(channels).any(|pixel| pixel[colour] != 255) {
+                return None;
+            }
+            Some((pixels.chunks_exact(channels).flat_map(|pixel| &pixel[..colour]).copied().collect(), colour))
+        }
+        _ => None,
+    }
+}
+
+/// Pixels scaled down from `from` to `to`, each one the average of the part it covers:
+/// across each row first, then down each column.
+fn resize(pixels: &[u8], from: (u32, u32), channels: usize, to: (u32, u32)) -> Vec<u8> {
+    // For each pixel of the copy, the first pixel it takes from and how much of each.
+    let spans = |from: u32, to: u32| -> Vec<(usize, Vec<f32>)> {
+        let step = from as f32 / to as f32;
+        (0..to)
+            .map(|i| {
+                let (start, end) = (i as f32 * step, (i + 1) as f32 * step);
+                let first = start.floor() as usize;
+                let last = (end.ceil() as usize).min(from as usize);
+                (first, (first..last).map(|x| (((x + 1) as f32).min(end) - (x as f32).max(start)) / step).collect())
+            })
+            .collect()
+    };
+    let (width, height, wide) = (from.0 as usize, from.1 as usize, to.0 as usize * channels);
+    let across = spans(from.0, to.0);
+    let mut rows = vec![0f32; wide * height];
+    for (y, out) in rows.chunks_exact_mut(wide).enumerate() {
+        let row = &pixels[y * width * channels..(y + 1) * width * channels];
+        for (x, (first, weights)) in across.iter().enumerate() {
+            for (i, weight) in weights.iter().enumerate() {
+                for c in 0..channels {
+                    out[x * channels + c] += f32::from(row[(first + i) * channels + c]) * weight;
+                }
+            }
+        }
+    }
+    let mut out = vec![0u8; wide * to.1 as usize];
+    for (y, (first, weights)) in spans(from.1, to.1).iter().enumerate() {
+        for x in 0..wide {
+            let sum: f32 = weights.iter().enumerate().map(|(i, weight)| rows[(first + i) * wide + x] * weight).sum();
+            out[y * wide + x] = sum.round().clamp(0.0, 255.0) as u8;
+        }
+    }
+    out
+}
+
 /// One page out of a CBZ. Pages are its entries in name order; ComicInfo.xml is not one.
 fn read_cbz(path: &Path, index: usize, archives: &Archives) -> Option<Vec<u8>> {
     let file = fs::File::open(path).ok()?;
@@ -626,6 +828,49 @@ mod tests {
         let png = [b"\x89PNG\r\n\x1a\n".as_slice(), &vec![0u8; SHRINK_FROM]].concat();
         assert_eq!(shrink(png.clone()), png, "only JPEGs are shrunk");
         assert_eq!(shrink(b"\xFF\xD8\xFFnot really".to_vec()), b"\xFF\xD8\xFFnot really", "a broken one is left alone");
+    }
+
+    #[test]
+    fn small_copies_fit_the_box() {
+        let jpeg = |width: u16, height: u16| {
+            let pixels: Vec<u8> = (0..u32::from(width) * u32::from(height)).flat_map(|i| [(i % 251) as u8, (i % 13) as u8 * 19, 90]).collect();
+            let mut out = Vec::new();
+            jpeg_encoder::Encoder::new(&mut out, 95).encode(&pixels, width, height, jpeg_encoder::ColorType::Rgb).unwrap();
+            out
+        };
+        let made = small(&jpeg(1200, 1800)).expect("a big JPEG gets a small copy");
+        let mut decoder = jpeg_decoder::Decoder::new(made.as_slice());
+        decoder.read_info().unwrap();
+        let info = decoder.info().unwrap();
+        assert_eq!((info.width, info.height), (360, 540));
+        assert_eq!(small(&jpeg(300, 450)), None, "one that fits already is left alone");
+
+        let png = |pixels: &[u8], width: u32, height: u32, color: png::ColorType| {
+            let mut out = Vec::new();
+            let mut encoder = png::Encoder::new(&mut out, width, height);
+            encoder.set_color(color);
+            encoder.write_header().unwrap().write_image_data(pixels).unwrap();
+            out
+        };
+        let wide: Vec<u8> = (0..1000 * 500).flat_map(|i| [(i % 7) as u8 * 30, 200, (i % 255) as u8]).collect();
+        let made = small(&png(&wide, 1000, 500, png::ColorType::Rgb)).expect("a big PNG gets a small copy");
+        assert_eq!(sniff(&made), Some("image/jpeg"));
+        let mut decoder = jpeg_decoder::Decoder::new(made.as_slice());
+        decoder.read_info().unwrap();
+        assert_eq!((decoder.info().unwrap().width, decoder.info().unwrap().height), (360, 180), "a wide one keeps its shape");
+        let clear = vec![0u8; 800 * 1200 * 4];
+        assert_eq!(small(&png(&clear, 800, 1200, png::ColorType::Rgba)), None, "a see-through one is left alone");
+        assert_eq!(small(b"GIF89a not decoded here"), None);
+    }
+
+    #[test]
+    fn resizing_averages_what_it_covers() {
+        let flat = vec![77u8; 30 * 20 * 3];
+        assert!(resize(&flat, (30, 20), 3, (7, 5)).iter().all(|&value| value == 77));
+        let stripes: Vec<u8> = (0..4 * 2).map(|i| if i % 2 == 0 { 0 } else { 200 }).collect();
+        assert_eq!(resize(&stripes, (4, 2), 1, (2, 1)), [100, 100]);
+        assert_eq!(fit((1000, 3000), (360, 540)), Some((180, 540)));
+        assert_eq!(fit((360, 540), (360, 540)), None);
     }
 
     #[test]

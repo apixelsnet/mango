@@ -541,7 +541,7 @@
     <div class="columns">
       <div class="about">
         <div class="hero">
-          <div class="art"><Cover src={title.cover} title={title.title} tilt /></div>
+          <div class="art"><Cover src={title.cover} title={title.title} tilt full /></div>
           <div class="facts">
             <div class="tools">
               <span class="tag ink">{STATUS[title.status] ?? 'Unknown'}</span>

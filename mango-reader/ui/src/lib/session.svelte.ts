@@ -2,6 +2,7 @@
 
 import { gate, get, message, send } from './api';
 import { forgetAll } from './offline';
+import { turnOff } from './push';
 
 type Status = { login: boolean; setup: boolean; setupCode: boolean; signup: boolean; signedIn: boolean; named: boolean; name: string | null; admin: boolean; account?: string };
 
@@ -55,6 +56,8 @@ export async function signUp(name: string, password: string, code: string) {
 }
 
 export async function signOut() {
+  // Whoever signs in next on this device is not to hear of this account's chapters.
+  await turnOff().catch(() => {});
   await send('POST', '/auth/logout');
   // Chapters kept on this device go too: whoever signs in next is not to read them.
   await forgetAll().catch(() => {});

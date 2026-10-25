@@ -16,7 +16,7 @@ use crate::{
     library::{self, Bulk, Category, LibraryView, Stats},
     migrate::{self, Comparison, Outcome},
     notify::Notifier,
-    opds, settings,
+    opds, push, settings,
     spaces::Spaces,
     store::{CatalogItem, CatalogQuery, Installed, StoreInfo, Stores},
     titles::{Browse, Edit, Listing, Namesake, PageMark, ReaderView, TitleView, Titles},
@@ -25,7 +25,7 @@ use crate::{
 };
 use axum::{
     body::{to_bytes, Body, Bytes},
-    extract::{DefaultBodyLimit, FromRequestParts, Path, Query, RawQuery, Request, State},
+    extract::{DefaultBodyLimit, FromRequestParts, Path, Query, Request, State},
     http::{header, request::Parts, HeaderMap, HeaderValue, Method, StatusCode},
     middleware::{self, Next},
     response::{IntoResponse, Response},
@@ -133,6 +133,8 @@ pub fn router(state: Spaces) -> Router {
         .route("/updates/fresh", get(fresh_updates))
         .route("/updates/run", post(run_updates))
         .route("/notify/test", post(test_notify))
+        .route("/push", get(push_status).put(push_add).delete(push_remove))
+        .route("/push/test", post(push_test))
         .route("/downloads", get(downloads).post(queue_downloads).delete(clear_downloads))
         .route("/downloads/order", put(order_downloads))
         .route("/downloads/pause", post(pause_downloads))
@@ -610,10 +612,17 @@ async fn refresh_title(Me(app): Me, Path(id): Path<i64>) -> Result<Json<TitleVie
     Ok(Json(app.titles.refresh(id).await?))
 }
 
+#[derive(Deserialize)]
+struct CoverWanted {
+    v: Option<String>,
+    /// `small` for the copy that grids and lists show.
+    size: Option<String>,
+}
+
 /// The address carries a version, so with one the answer never changes.
-async fn cover(Me(app): Me, Path(id): Path<i64>, RawQuery(version): RawQuery) -> Result<Response> {
-    let image = app.images.cover(id).await?;
-    Ok(picture(image, if version.is_some() { FOREVER } else { "no-cache" }))
+async fn cover(Me(app): Me, Path(id): Path<i64>, Query(wanted): Query<CoverWanted>) -> Result<Response> {
+    let image = app.images.cover(id, wanted.size.as_deref() == Some("small")).await?;
+    Ok(picture(image, if wanted.v.is_some() { FOREVER } else { "no-cache" }))
 }
 
 /// A cover given by hand, as the picture itself, in place of the source's.
@@ -790,6 +799,36 @@ async fn run_updates(Me(app): Me) -> Json<Status> {
 async fn test_notify(Me(app): Me) -> Result<Json<Value>> {
     app.notifier.test().await?;
     Ok(done())
+}
+
+/// The key a browser subscribes with, and how many devices hear of new chapters.
+async fn push_status(Me(app): Me) -> Result<Json<Value>> {
+    let (key, devices) = app.notifier.push.status().await?;
+    Ok(Json(json!({ "key": key, "devices": devices })))
+}
+
+/// A device that turned notifications on, with its browser's subscription.
+async fn push_add(Me(app): Me, headers: HeaderMap, Json(subscription): Json<push::Subscription>) -> Result<Json<Value>> {
+    let origin = headers.get(header::ORIGIN).and_then(|origin| origin.to_str().ok()).map(str::to_owned);
+    app.notifier.push.add(subscription, origin).await?;
+    Ok(done())
+}
+
+#[derive(Deserialize)]
+struct PushDevice {
+    endpoint: String,
+}
+
+/// A device that turned notifications off.
+async fn push_remove(Me(app): Me, Json(device): Json<PushDevice>) -> Result<Json<Value>> {
+    app.notifier.push.remove(device.endpoint).await?;
+    Ok(done())
+}
+
+/// Sends a note to every device of the account, so it can be tried.
+async fn push_test(Me(app): Me) -> Result<Json<Value>> {
+    let note = push::Note { title: "Mango", body: "Notifications reach this device.", url: "#/settings" };
+    Ok(Json(json!({ "sent": app.notifier.push.send(&note).await? })))
 }
 
 async fn downloads(Me(app): Me) -> Result<Json<QueueView>> {
