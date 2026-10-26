@@ -9,14 +9,19 @@
 #   docker buildx build --target shell -o out .    the desktop shell for Linux
 #   docker buildx build --target notices -o out .  the licences of what Mango is built from
 #
-# The host is two jars:
+# The host is three jars:
 #   mango-host.jar    our code (mango-extension-host/src)
 #   runtime.jar       Suwayomi-Server's release jar with the server parts removed
+#   bcprov.jar        Bouncy Castle's signed provider jar, loaded by mango-host.jar's Class-Path
 # The Suwayomi jar is MPL-2.0; its source is at
 # https://github.com/Suwayomi/Suwayomi-Server at the tag named below.
 
 ARG SUWAYOMI_VERSION=v2.4.2366
 ARG SUWAYOMI_SHA256=af9feb20af9d7ebe9e30769e6c6ebc7fc7ab1c447388d42e0280b1da5fe07bfd
+# The Bouncy Castle that runtime.jar carries. The build stops when they differ, as
+# after a runtime upgrade that brings another.
+ARG BCPROV_VERSION=1.85.2
+ARG BCPROV_SHA256=986b0fb92ec10e0c66b43e036ce0077e6150cfaecd1db9fb92b56672e157afe5
 ARG KOTLIN_VERSION=2.4.21
 ARG KOTLIN_SHA256=7cc140e76daf416a0424a5557f99afd7ca89ebd463ea1101261e3e01c33e75cd
 ARG CARGO_ABOUT_VERSION=0.9.2
@@ -38,16 +43,33 @@ RUN curl -fsSL -o kotlinc.zip \
       "https://github.com/JetBrains/kotlin/releases/download/v${KOTLIN_VERSION}/kotlin-compiler-${KOTLIN_VERSION}.zip" \
  && echo "${KOTLIN_SHA256}  kotlinc.zip" | sha256sum -c - \
  && unzip -q kotlinc.zip && rm kotlinc.zip
+# Some sources ask for ciphers only Bouncy Castle has. Oracle's Java takes a cipher
+# provider only from a jar its makers signed, and runtime.jar's copy lost its
+# signature, so the signed jar is shipped beside it. Its classes must be the very
+# ones runtime.jar carries.
+ARG BCPROV_VERSION
+ARG BCPROV_SHA256
+RUN curl -fsSL -o bcprov.jar \
+      "https://repo1.maven.org/maven2/org/bouncycastle/bcprov-jdk18on/${BCPROV_VERSION}/bcprov-jdk18on-${BCPROV_VERSION}.jar" \
+ && echo "${BCPROV_SHA256}  bcprov.jar" | sha256sum -c - \
+ && classes() { unzip -v "$1" | awk '$8 ~ /^(META-INF\/versions\/[0-9]+\/)?org\/bouncycastle\/.*\.class$/ { print $7, $8 }' | sort; } \
+ && classes suwayomi.jar > runtime-bc.txt && classes bcprov.jar > bcprov-bc.txt \
+ && { test -s bcprov-bc.txt && cmp -s runtime-bc.txt bcprov-bc.txt \
+      || { echo "runtime.jar's Bouncy Castle is not ${BCPROV_VERSION}: change BCPROV_VERSION and BCPROV_SHA256" >&2; exit 1; }; }
 
 COPY mango-extension-host/src src
-RUN mkdir out && kotlinc/bin/kotlinc src -cp suwayomi.jar -d out/mango-host.jar -jvm-target 21 -nowarn
+RUN mkdir out && kotlinc/bin/kotlinc src -cp suwayomi.jar -d out/mango-host.jar -jvm-target 21 -nowarn \
+ && printf 'Class-Path: bcprov.jar\n' > class-path.mf \
+ && jar --update --file out/mango-host.jar --manifest class-path.mf \
+ && cp bcprov.jar out/bcprov.jar
 
-# Remove what the host never touches: JS engine, web server, GraphQL, databases,
-# web UI, tray, Android framework resources. The classes that drive the browser
-# for web views stay; the browser itself is not in the jar.
+# Remove what the host never touches: web server, GraphQL, databases, web UI,
+# tray, Android framework resources, and the unsigned copy of Bouncy Castle.
+# The JS engine stays: some sources run a script. The classes that drive the
+# browser for web views stay; the browser itself is not in the jar.
 RUN cp suwayomi.jar out/runtime.jar \
  && (zip -q -d out/runtime.jar \
-      'com/oracle/*' 'org/graalvm/*' 'META-INF/native-image/*' \
+      'org/bouncycastle/*' 'META-INF/versions/*/org/bouncycastle/*' \
       'org/eclipse/jetty/*' 'jakarta/servlet/*' 'io/javalin/*' 'gg/jte/*' 'tools/jackson/*' \
       'graphql/*' 'com/expediagroup/*' 'org/dataloader/*' \
       'org/h2/*' 'org/postgresql/*' 'com/zaxxer/*' \

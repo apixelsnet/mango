@@ -31,7 +31,7 @@ Extensions are compiled Kotlin. They call OkHttp, Jsoup, kotlinx.serialization a
 
 Not by copying source. The build downloads Suwayomi-Server's release jar at a pinned version and sha256, deletes the parts the host never touches, and ships the rest as `runtime.jar`. Our own code is one small jar beside it.
 
-- Removed: JS engine (GraalVM), embedded browser (JCEF), web server, GraphQL, databases, web UI, tray, Android framework resources. 183 MB becomes 99 MB.
+- Removed: embedded browser (JCEF), web server, GraphQL, databases, web UI, tray, Android framework resources. 183 MB becomes 135 MB. Until host 0.7.1 the JS engine (GraalVM) went too, and it was 99 MB. Bouncy Castle goes too, for its signed jar beside it (see below).
 - Kept and used: Android compatibility layer, source API, network stack, extension loaders, config.
 - Our code (`mango-extension-host/src/`) starts only that runtime and serves the protocol. It never starts Suwayomi's server.
 - Upgrading Suwayomi is a version and hash bump in the `Dockerfile` (at the repository root since step 9; `--target host` builds the host alone, `--target jars` its two jars), followed by the smoke test.
@@ -65,7 +65,7 @@ The host implements everything below. APK-only extensions answer 501.
 - The host knows nothing about the library. It owns extension files, per-source preferences and the cookie jar.
 - The core supervises it: start on first call, health ping, restart with backoff, per-call timeout, per-source concurrency cap, stop after an idle timeout.
 - Verify sha256 and the store signing key before loading an extension.
-- A web view's browser is not in the host: it is downloaded on first use; see below. The JS engine is not there at all, and a source that needs it answers `needs_optional_module`.
+- A web view's browser is not in the host: it is downloaded on first use; see below. The JS engine is in the jar and runs interpreted.
 - JVM: trimmed runtime (jlink), class-data sharing, capped heap.
 
 ## Spike (first build step)
@@ -196,6 +196,18 @@ Not checked: an extension whose screen changes between calls, and one that refus
 Checked on Linux with `smoke.py` against a real extension: 12 filters read in 4 ms, one of each kind it has set (checkbox, select, sort, tri-state) and searched by, with another list than without them; a change for a place that is not there was refused. Then one source from each of 19 extensions: 9 list filters, of every kind, and 10 have none. A search by filters answered on all but two, and those two are sources for a server of the reader's own, with no address set.
 
 Not checked: a source whose list changes between the read and the search.
+
+## BouncyCastle ciphers and the JS engine (2026-10-26, host 0.7.1)
+
+Android ships BouncyCastle as a cipher provider, and some sources ask for ciphers only it has: Mangago decrypts its page list with `AES/CBC/ZEROBYTEPADDING`. Nothing registered the provider, so the call failed with "Cannot find any provider supporting …". The host now registers it in `initRuntime`.
+
+Registering is not enough on Oracle's Java: it takes a cipher provider only from a jar signed for that, and the copy inside the runtime jar has lost its signature, so the same error stays. The host is therefore three jars: Bouncy Castle's own signed `bcprov.jar` (from Maven Central at a pinned version and sha256) sits beside the other two, `mango-host.jar` names it in its manifest's `Class-Path`, and the runtime jar's copy is removed. The core still passes two jars. The build stops unless every Bouncy Castle class in the runtime jar is in the signed jar byte for byte, so a runtime upgrade that brings another version says so.
+
+Mangago then runs a script to find each scrambled page's key, so the JS engine is no longer stripped from the runtime jar. It runs interpreted on a stock JVM; its warning about that is switched off. Jars: 105 MB before, 145 MB now (135 MB runtime, 10 MB Bouncy Castle).
+
+Checked, with the released 1.1.14 image failing the same way as the report: on Linux under Temurin, in the image under its own trimmed Java, and on Windows under Oracle Java 24 with the two jars the core passes, Mangago lists, reads chapters, gives a page list (50 pages, 40 of them scrambled) and serves the pages as JPEG, the same bytes everywhere. The tiles come back in order: the jump in pixel values at tile edges is 1.7 times that inside a tile, against 10.7 with the tiles shuffled. Oracle Java 24 refused the unsigned copy and takes the signed jar. The host smoke test and the core's smoke test against the image pass; a build with another Bouncy Castle version stops. Memory is as before for sources that run no script; after a Mangago read the host held 235 to 265 MB. The image is 632 MB.
+
+Not checked: macOS, and arm64, which cannot be run here (its jars are the same files).
 
 ## Done when
 
