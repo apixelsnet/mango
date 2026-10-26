@@ -14,6 +14,12 @@ Suwayomi-Server
   names as SUWAYOMI_VERSION; the same file lists what was removed. The jar carries
   further libraries, each under its own licence.
 
+Bouncy Castle
+  The extension host's `bcprov.jar`, beside `runtime.jar`, is the Legion of the
+  Bouncy Castle's signed provider jar, unchanged, at the version Mango's
+  `Dockerfile` names as BCPROV_VERSION. It is under the MIT licence; the text is
+  inside the jar at META-INF/LICENSE.md.
+
 The programs and the web UI
   `mango` and `mango-desktop` are built from Rust crates, and the web UI inside
   `mango` carries Svelte and the two fonts below. The licence of each is in

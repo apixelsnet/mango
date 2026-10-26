@@ -31,7 +31,7 @@ Extensions are compiled Kotlin. They call OkHttp, Jsoup, kotlinx.serialization a
 
 Not by copying source. The build downloads Suwayomi-Server's release jar at a pinned version and sha256, deletes the parts the host never touches, and ships the rest as `runtime.jar`. Our own code is one small jar beside it.
 
-- Removed: embedded browser (JCEF), web server, GraphQL, databases, web UI, tray, Android framework resources. 183 MB becomes 144 MB. Until host 0.7.1 the JS engine (GraalVM) went too, and it was 99 MB.
+- Removed: embedded browser (JCEF), web server, GraphQL, databases, web UI, tray, Android framework resources. 183 MB becomes 135 MB. Until host 0.7.1 the JS engine (GraalVM) went too, and it was 99 MB. Bouncy Castle goes too, for its signed jar beside it (see below).
 - Kept and used: Android compatibility layer, source API, network stack, extension loaders, config.
 - Our code (`mango-extension-host/src/`) starts only that runtime and serves the protocol. It never starts Suwayomi's server.
 - Upgrading Suwayomi is a version and hash bump in the `Dockerfile` (at the repository root since step 9; `--target host` builds the host alone, `--target jars` its two jars), followed by the smoke test.
@@ -199,13 +199,15 @@ Not checked: a source whose list changes between the read and the search.
 
 ## BouncyCastle ciphers and the JS engine (2026-10-26, host 0.7.1)
 
-Android ships BouncyCastle as a cipher provider, and some sources ask for ciphers only it has: Mangago decrypts its page list with `AES/CBC/ZEROBYTEPADDING`. Nothing registered the provider, so the call failed with "Cannot find any provider supporting …". The host now registers it in `initRuntime`; the classes were already in the runtime jar.
+Android ships BouncyCastle as a cipher provider, and some sources ask for ciphers only it has: Mangago decrypts its page list with `AES/CBC/ZEROBYTEPADDING`. Nothing registered the provider, so the call failed with "Cannot find any provider supporting …". The host now registers it in `initRuntime`.
 
-Mangago then runs a script to find each scrambled page's key, so the JS engine is no longer stripped from the runtime jar (99 MB becomes 144 MB). It runs interpreted on a stock JVM; its warning about that is switched off.
+Registering is not enough on Oracle's Java: it takes a cipher provider only from a jar signed for that, and the copy inside the runtime jar has lost its signature, so the same error stays. The host is therefore three jars: Bouncy Castle's own signed `bcprov.jar` (from Maven Central at a pinned version and sha256) sits beside the other two, `mango-host.jar` names it in its manifest's `Class-Path`, and the runtime jar's copy is removed. The core still passes two jars. The build stops unless every Bouncy Castle class in the runtime jar is in the signed jar byte for byte, so a runtime upgrade that brings another version says so.
 
-Checked on Linux, with the released 1.1.14 image failing the same way as the report: on the new jars, under Temurin and under the image's own trimmed Java, Mangago lists, reads chapters, gives a page list (50 pages, 40 of them scrambled) and serves the pages as JPEG. The tiles come back in order: the jump in pixel values at tile edges is 1.7 times that inside a tile, against 10.7 with the tiles shuffled. The host smoke test passes, with the same memory as before for sources that run no script; after a Mangago read the host held 235 MB. The image is 630 MB.
+Mangago then runs a script to find each scrambled page's key, so the JS engine is no longer stripped from the runtime jar. It runs interpreted on a stock JVM; its warning about that is switched off. Jars: 105 MB before, 145 MB now (135 MB runtime, 10 MB Bouncy Castle).
 
-Not checked: Windows, and Java other than Temurin.
+Checked, with the released 1.1.14 image failing the same way as the report: on Linux under Temurin, in the image under its own trimmed Java, and on Windows under Oracle Java 24 with the two jars the core passes, Mangago lists, reads chapters, gives a page list (50 pages, 40 of them scrambled) and serves the pages as JPEG, the same bytes everywhere. The tiles come back in order: the jump in pixel values at tile edges is 1.7 times that inside a tile, against 10.7 with the tiles shuffled. Oracle Java 24 refused the unsigned copy and takes the signed jar. The host smoke test and the core's smoke test against the image pass; a build with another Bouncy Castle version stops. Memory is as before for sources that run no script; after a Mangago read the host held 235 to 265 MB. The image is 632 MB.
+
+Not checked: macOS, and arm64, which cannot be run here (its jars are the same files).
 
 ## Done when
 
