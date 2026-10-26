@@ -51,3 +51,8 @@ Implementation: `library.rs` (`set_parent`, `stats`, the library query), `routes
 - A title with merged sources includes their chapters in its counts; a title showing one upload per chapter counts chapters rather than uploads.
 
 Verification: unit tests and `smoke.py` on Linux, and Chromium at both viewport sizes.
+
+## Faster library and statistics (2026-10-26)
+
+- Titles showing one upload per chapter are counted in a second, separate query. Before, every title paid for that counting, then threw it away. Statistics count titles with a lighter query of their own instead of building the whole library, and an index of read chapters (migration 014) speeds up the reading days and months.
+- Measured with 1,000 titles (20 shown one upload per chapter, 10 merged into another), 300,000 chapters and 10,000 history entries: `GET /api/library` went from 190 to 67 ms and `GET /api/stats` from 252 to 91 ms, both answering exactly as before. A database from the previous version takes the new index on start.

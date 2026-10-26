@@ -18,6 +18,11 @@ pub const FOLLOWED: &str = "(m.in_library = 1 OR EXISTS (SELECT 1 FROM manga hd 
 /// One chapter, as `migrate::key` tells chapters apart: by number to the hundredth, else by name.
 const CHAPTER_KEY: &str = "CASE WHEN c.chapter_number >= 0 THEN 'n' || CAST(ROUND(c.chapter_number * 100) AS INTEGER) ELSE 't' || LOWER(TRIM(c.name)) END";
 
+/// Joins each title `m` to its chapters `c` and to those of the titles merged into it.
+const WITH_CHAPTERS: &str = "LEFT JOIN (SELECT id AS part, id AS head FROM manga WHERE in_library = 1
+                    UNION ALL SELECT id, merged_into FROM manga WHERE merged_into IS NOT NULL) k ON k.head = m.id
+         LEFT JOIN chapters c ON c.manga_id = k.part";
+
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct LibraryItem {
@@ -123,19 +128,16 @@ pub enum Bulk {
 /// The whole library in one answer. Sorting and filtering happen on screen. A title counts
 /// the chapters of the titles merged into it; one that shows one upload per chapter counts chapters, not uploads.
 pub fn read(conn: &Connection) -> Result<LibraryView> {
+    let distinct = distinct_counts(conn)?;
     let mut stmt = conn.prepare(&format!(
         "SELECT m.id, m.title, m.thumbnail_url, s.name, m.status, COALESCE(m.added_at, 0),
-                CASE WHEN m.dedupe THEN COUNT(DISTINCT {CHAPTER_KEY}) ELSE COUNT(c.id) END,
-                CASE WHEN m.dedupe THEN COUNT(DISTINCT {CHAPTER_KEY}) - COUNT(DISTINCT CASE WHEN c.read THEN {CHAPTER_KEY} END)
-                     ELSE COALESCE(SUM(c.read = 0), 0) END,
+                COUNT(c.id), COALESCE(SUM(c.read = 0), 0),
                 COALESCE(SUM(c.download_path IS NOT NULL), 0),
                 COALESCE((SELECT MAX(read_at) FROM history WHERE manga_id IN (SELECT m.id UNION ALL SELECT id FROM manga WHERE merged_into = m.id)), 0),
                 COALESCE(MAX(CASE WHEN c.date_upload > 0 THEN c.date_upload / 1000 ELSE c.fetched_at END), 0),
                 (SELECT group_concat(category_id) FROM manga_categories WHERE manga_id = m.id)
          FROM manga m
-         LEFT JOIN (SELECT id AS part, id AS head FROM manga WHERE in_library = 1
-                    UNION ALL SELECT id, merged_into FROM manga WHERE merged_into IS NOT NULL) k ON k.head = m.id
-         LEFT JOIN chapters c ON c.manga_id = k.part
+         {WITH_CHAPTERS}
          LEFT JOIN sources s ON s.id = m.source_id
          WHERE m.in_library = 1
          GROUP BY m.id"
@@ -145,6 +147,10 @@ pub fn read(conn: &Connection) -> Result<LibraryView> {
             let id: i64 = r.get(0)?;
             let thumbnail: Option<String> = r.get(2)?;
             let categories: Option<String> = r.get(11)?;
+            let (total, unread) = match distinct.get(&id) {
+                Some(&counts) => counts,
+                None => (r.get(6)?, r.get(7)?),
+            };
             Ok(LibraryItem {
                 id,
                 title: r.get(1)?,
@@ -152,8 +158,8 @@ pub fn read(conn: &Connection) -> Result<LibraryView> {
                 source_name: r.get(3)?,
                 status: r.get(4)?,
                 added_at: r.get(5)?,
-                total: r.get(6)?,
-                unread: r.get(7)?,
+                total,
+                unread,
                 downloaded: r.get(8)?,
                 last_read_at: r.get(9)?,
                 latest_at: r.get(10)?,
@@ -479,7 +485,29 @@ pub fn stats(conn: &Connection) -> Result<Stats> {
 
 /// `(chapters, unread)` of each library title, counted as the library counts them.
 fn view_counts(conn: &Connection) -> Result<Vec<(i64, i64)>> {
-    Ok(read(conn)?.items.into_iter().map(|item| (item.total, item.unread)).collect())
+    let distinct = distinct_counts(conn)?;
+    let mut stmt =
+        conn.prepare(&format!("SELECT m.id, COUNT(c.id), COALESCE(SUM(c.read = 0), 0) FROM manga m {WITH_CHAPTERS} WHERE m.in_library = 1 GROUP BY m.id"))?;
+    let counts = stmt
+        .query_map([], |r| match distinct.get(&r.get(0)?) {
+            Some(&counts) => Ok(counts),
+            None => Ok((r.get(1)?, r.get(2)?)),
+        })?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    Ok(counts)
+}
+
+/// `(chapters, unread)` of the library titles shown one upload per chapter, which count
+/// chapters by `CHAPTER_KEY`. Counting that way is slow, so the other titles never do.
+fn distinct_counts(conn: &Connection) -> Result<HashMap<i64, (i64, i64)>> {
+    let mut stmt = conn.prepare(&format!(
+        "SELECT m.id, COUNT(DISTINCT {CHAPTER_KEY}), COUNT(DISTINCT {CHAPTER_KEY}) - COUNT(DISTINCT CASE WHEN c.read THEN {CHAPTER_KEY} END)
+         FROM manga m {WITH_CHAPTERS}
+         WHERE m.in_library = 1 AND m.dedupe = 1
+         GROUP BY m.id"
+    ))?;
+    let counts = stmt.query_map([], |r| Ok((r.get(0)?, (r.get(1)?, r.get(2)?))))?.collect::<rusqlite::Result<HashMap<_, _>>>()?;
+    Ok(counts)
 }
 
 #[cfg(test)]
@@ -611,6 +639,7 @@ mod tests {
         conn.execute("UPDATE manga SET dedupe = 1 WHERE id = 1", []).unwrap();
         let alpha = read(&conn).unwrap().items.into_iter().find(|i| i.id == 1).unwrap();
         assert_eq!((alpha.total, alpha.unread), (3, 2));
+        assert_eq!(stats(&conn).unwrap().chapters, 3, "statistics count as the library does");
         remember(&conn, 21).unwrap();
         assert_eq!(history(&conn, 10, 0).unwrap()[0].manga_id, 1, "its history shows under Alpha");
         assert_eq!(read(&conn).unwrap().resume.unwrap().manga_id, 1);
