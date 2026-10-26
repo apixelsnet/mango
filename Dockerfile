@@ -206,11 +206,13 @@ COPY --from=target-jdk /opt/java/openjdk/jmods /jmods
 # The class-data archive makes the host start faster. Making it means running the
 # linked runtime, which only works when it is for this machine. Only Java's debug
 # data is stripped: the native libraries come stripped, and this machine's tools
-# could not strip another's anyway.
+# could not strip another's anyway. The archive for heaps over 32 GB goes: the host's
+# is capped far below that.
 RUN jlink --module-path /jmods --output /java \
       --strip-java-debug-attributes --no-man-pages --no-header-files \
       $([ "$BUILDARCH" = "$TARGETARCH" ] && echo --generate-cds-archive) \
-      --add-modules java.base,java.compiler,java.desktop,java.instrument,java.logging,java.management,java.naming,java.net.http,java.prefs,java.rmi,java.scripting,java.security.jgss,java.security.sasl,java.sql,java.xml,jdk.charsets,jdk.crypto.cryptoki,jdk.crypto.ec,jdk.httpserver,jdk.localedata,jdk.management,jdk.naming.dns,jdk.net,jdk.unsupported,jdk.xml.dom,jdk.zipfs
+      --add-modules java.base,java.compiler,java.desktop,java.instrument,java.logging,java.management,java.naming,java.net.http,java.prefs,java.rmi,java.scripting,java.security.jgss,java.security.sasl,java.sql,java.xml,jdk.charsets,jdk.crypto.cryptoki,jdk.crypto.ec,jdk.httpserver,jdk.localedata,jdk.management,jdk.naming.dns,jdk.net,jdk.unsupported,jdk.xml.dom,jdk.zipfs \
+ && rm -f /java/lib/server/classes_nocoops.jsa
 
 # ---------- the images ----------
 # `mango`, the last stage, is what a plain build gives. `full` is the same with what

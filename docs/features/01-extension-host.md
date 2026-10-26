@@ -209,6 +209,10 @@ Checked, with the released 1.1.14 image failing the same way as the report: on L
 
 Not checked: macOS, and arm64, which cannot be run here (its jars are the same files).
 
+## Second class-data archive dropped (2026-10-26)
+
+The trimmed Java carries two class-data archives, the second for heaps over 32 GB. The host's heap is capped at 256 MB, so the image now drops the second one (13 MB): 615 MB, from 632. Checked: Java in the image still starts with sharing on, the host builds its own archive on top, and the core's smoke test against the image passes.
+
 ## Done when
 
 The core installs an extension from the store and reads a chapter through the host, on Linux and on Windows.
