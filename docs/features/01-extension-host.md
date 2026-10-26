@@ -31,7 +31,7 @@ Extensions are compiled Kotlin. They call OkHttp, Jsoup, kotlinx.serialization a
 
 Not by copying source. The build downloads Suwayomi-Server's release jar at a pinned version and sha256, deletes the parts the host never touches, and ships the rest as `runtime.jar`. Our own code is one small jar beside it.
 
-- Removed: JS engine (GraalVM), embedded browser (JCEF), web server, GraphQL, databases, web UI, tray, Android framework resources. 183 MB becomes 99 MB.
+- Removed: embedded browser (JCEF), web server, GraphQL, databases, web UI, tray, Android framework resources. 183 MB becomes 144 MB. Until host 0.7.1 the JS engine (GraalVM) went too, and it was 99 MB.
 - Kept and used: Android compatibility layer, source API, network stack, extension loaders, config.
 - Our code (`mango-extension-host/src/`) starts only that runtime and serves the protocol. It never starts Suwayomi's server.
 - Upgrading Suwayomi is a version and hash bump in the `Dockerfile` (at the repository root since step 9; `--target host` builds the host alone, `--target jars` its two jars), followed by the smoke test.
@@ -65,7 +65,7 @@ The host implements everything below. APK-only extensions answer 501.
 - The host knows nothing about the library. It owns extension files, per-source preferences and the cookie jar.
 - The core supervises it: start on first call, health ping, restart with backoff, per-call timeout, per-source concurrency cap, stop after an idle timeout.
 - Verify sha256 and the store signing key before loading an extension.
-- A web view's browser is not in the host: it is downloaded on first use; see below. The JS engine is not there at all, and a source that needs it answers `needs_optional_module`.
+- A web view's browser is not in the host: it is downloaded on first use; see below. The JS engine is in the jar and runs interpreted.
 - JVM: trimmed runtime (jlink), class-data sharing, capped heap.
 
 ## Spike (first build step)
@@ -197,11 +197,13 @@ Checked on Linux with `smoke.py` against a real extension: 12 filters read in 4 
 
 Not checked: a source whose list changes between the read and the search.
 
-## BouncyCastle ciphers (2026-10-26, host 0.7.1)
+## BouncyCastle ciphers and the JS engine (2026-10-26, host 0.7.1)
 
 Android ships BouncyCastle as a cipher provider, and some sources ask for ciphers only it has: Mangago decrypts its page list with `AES/CBC/ZEROBYTEPADDING`. Nothing registered the provider, so the call failed with "Cannot find any provider supporting …". The host now registers it in `initRuntime`; the classes were already in the runtime jar.
 
-Checked on Linux: Mangago's page list now decrypts, and the host smoke test passes. Mangago still does not read a chapter: the next step evaluates JavaScript, and the JS engine is not in the host, so it answers `needs_optional_module`.
+Mangago then runs a script to find each scrambled page's key, so the JS engine is no longer stripped from the runtime jar (99 MB becomes 144 MB). It runs interpreted on a stock JVM; its warning about that is switched off.
+
+Checked on Linux, with the released 1.1.14 image failing the same way as the report: on the new jars, under Temurin and under the image's own trimmed Java, Mangago lists, reads chapters, gives a page list (50 pages, 40 of them scrambled) and serves the pages as JPEG. The tiles come back in order: the jump in pixel values at tile edges is 1.7 times that inside a tile, against 10.7 with the tiles shuffled. The host smoke test passes, with the same memory as before for sources that run no script; after a Mangago read the host held 235 MB. The image is 630 MB.
 
 Not checked: Windows, and Java other than Temurin.
 

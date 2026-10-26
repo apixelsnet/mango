@@ -264,6 +264,8 @@ private fun initRuntime(dataDir: Path) {
 
     // Android ships BouncyCastle's ciphers; some sources ask for ones the JVM lacks, such as AES/CBC/ZEROBYTEPADDING.
     Security.addProvider(BouncyCastleProvider())
+    // The JS engine runs interpreted on a stock JVM, which is enough for the short scripts sources run.
+    System.setProperty("polyglot.engine.WarnInterpreterOnly", "false")
 
     thread(name = "android-main-looper") {
         @Suppress("DEPRECATION")

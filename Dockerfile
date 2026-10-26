@@ -42,12 +42,12 @@ RUN curl -fsSL -o kotlinc.zip \
 COPY mango-extension-host/src src
 RUN mkdir out && kotlinc/bin/kotlinc src -cp suwayomi.jar -d out/mango-host.jar -jvm-target 21 -nowarn
 
-# Remove what the host never touches: JS engine, web server, GraphQL, databases,
-# web UI, tray, Android framework resources. The classes that drive the browser
-# for web views stay; the browser itself is not in the jar.
+# Remove what the host never touches: web server, GraphQL, databases, web UI,
+# tray, Android framework resources. The JS engine stays: some sources run a
+# script. The classes that drive the browser for web views stay; the browser
+# itself is not in the jar.
 RUN cp suwayomi.jar out/runtime.jar \
  && (zip -q -d out/runtime.jar \
-      'com/oracle/*' 'org/graalvm/*' 'META-INF/native-image/*' \
       'org/eclipse/jetty/*' 'jakarta/servlet/*' 'io/javalin/*' 'gg/jte/*' 'tools/jackson/*' \
       'graphql/*' 'com/expediagroup/*' 'org/dataloader/*' \
       'org/h2/*' 'org/postgresql/*' 'com/zaxxer/*' \
