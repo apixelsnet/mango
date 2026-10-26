@@ -197,6 +197,14 @@ Checked on Linux with `smoke.py` against a real extension: 12 filters read in 4 
 
 Not checked: a source whose list changes between the read and the search.
 
+## BouncyCastle ciphers (2026-10-26, host 0.7.1)
+
+Android ships BouncyCastle as a cipher provider, and some sources ask for ciphers only it has: Mangago decrypts its page list with `AES/CBC/ZEROBYTEPADDING`. Nothing registered the provider, so the call failed with "Cannot find any provider supporting …". The host now registers it in `initRuntime`; the classes were already in the runtime jar.
+
+Checked on Linux: Mangago's page list now decrypts, and the host smoke test passes. Mangago still does not read a chapter: the next step evaluates JavaScript, and the JS engine is not in the host, so it answers `needs_optional_module`.
+
+Not checked: Windows, and Java other than Temurin.
+
 ## Done when
 
 The core installs an extension from the store and reads a chapter through the host, on Linux and on Windows.

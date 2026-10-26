@@ -54,6 +54,7 @@ import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.longOrNull
 import kotlinx.serialization.json.put
 import okhttp3.Request
+import org.bouncycastle.jce.provider.BouncyCastleProvider
 import org.cef.network.CefCookie
 import org.cef.network.CefCookieManager
 import org.koin.core.context.startKoin
@@ -86,6 +87,7 @@ import java.nio.file.Files
 import java.nio.file.Path
 import java.nio.file.StandardCopyOption
 import java.security.MessageDigest
+import java.security.Security
 import java.time.Duration
 import java.util.Date
 import java.util.concurrent.CompletableFuture
@@ -100,7 +102,7 @@ import kotlin.io.path.absolutePathString
 import kotlin.system.exitProcess
 
 private const val PROTOCOL = 5
-private const val HOST_VERSION = "0.7.0"
+private const val HOST_VERSION = "0.7.1"
 private val PKG_NAME = Regex("[A-Za-z0-9_.]+")
 
 private class ApiError(
@@ -259,6 +261,9 @@ private fun initRuntime(dataDir: Path) {
             System.setProperty("suwayomi.tachidesk.config.server.flareSolverrTimeout", it.toString())
         }
     }
+
+    // Android ships BouncyCastle's ciphers; some sources ask for ones the JVM lacks, such as AES/CBC/ZEROBYTEPADDING.
+    Security.addProvider(BouncyCastleProvider())
 
     thread(name = "android-main-looper") {
         @Suppress("DEPRECATION")
