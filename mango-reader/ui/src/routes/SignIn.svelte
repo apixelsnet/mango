@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { message } from '../lib/api';
+  import { ApiError, message } from '../lib/api';
   import Notice from '../lib/Notice.svelte';
   import { session, signIn } from '../lib/session.svelte';
 
@@ -12,6 +12,9 @@
   let password = $state('');
   let again = $state('');
   let code = $state('');
+  /** The password was right and the account asks for a code from its authenticator too. */
+  let second = $state(false);
+  let otp = $state('');
   let error = $state<string | null>(null);
   let busy = $state(false);
 
@@ -28,9 +31,13 @@
     }
     busy = true;
     try {
-      await signIn(password, first, named ? name : '', first ? code : '');
+      await signIn(password, first, named ? name : '', first ? code : otp);
     } catch (e) {
-      error = message(e);
+      if (e instanceof ApiError && e.code === 'code_required') {
+        second = true;
+      } else {
+        error = message(e);
+      }
       busy = false;
     }
   }
@@ -87,6 +94,15 @@
       <label class="field">
         <span class="sr">Setup code</span>
         <input type="text" bind:value={code} placeholder="Setup code" autocomplete="off" autocapitalize="none" spellcheck="false" required />
+      </label>
+    {/if}
+
+    {#if second}
+      <p>Enter the six digits your authenticator app shows for Mango, or one of your recovery codes.</p>
+      <label class="field">
+        <span class="sr">Code</span>
+        <!-- svelte-ignore a11y_autofocus -->
+        <input type="text" bind:value={otp} placeholder="Code" inputmode="numeric" autocomplete="one-time-code" autocapitalize="none" spellcheck="false" required autofocus />
       </label>
     {/if}
 

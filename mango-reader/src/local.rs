@@ -1,5 +1,7 @@
 //! The local source: titles the owner already has on disk, laid out as
 //! `<root>/<title>/<chapter>`. A chapter is a `.cbz`, a `.zip`, or a folder of images.
+//! A title with no chapter level is one chapter: a folder of images, or an archive
+//! straight in the root. Such a chapter goes by `WHOLE` in place of a name on disk.
 //!
 //! Pure Rust: the extension host is never involved. The folder is only ever read.
 //! Names that reach this module come out of the database, where they were put from a
@@ -28,6 +30,8 @@ pub const SOURCE: i64 = 0;
 pub const PKG: &str = "mango.local";
 /// Titles per page of the source's list.
 const PAGE: usize = 100;
+/// The name of the one chapter of a title that has no chapter level: the title itself.
+const WHOLE: &str = ".";
 /// Cap on one image, against a broken or hostile file.
 const MAX_IMAGE: u64 = 64 << 20;
 const IMAGES: [&str; 8] = ["jpg", "jpeg", "png", "webp", "gif", "avif", "jxl", "bmp"];
@@ -76,7 +80,8 @@ impl Local {
         let needle = query.trim().to_lowercase();
         let mut titles: Vec<(String, i64)> = entries(&self.root)
             .into_iter()
-            .filter(|(name, meta)| meta.is_dir() && (needle.is_empty() || name.to_lowercase().contains(&needle)))
+            .filter(|(name, meta)| meta.is_dir() || (meta.is_file() && archive_stem(name).is_some()))
+            .filter(|(name, _)| needle.is_empty() || name.to_lowercase().contains(&needle))
             .map(|(name, meta)| (name, modified(&meta)))
             .collect();
         if latest {
@@ -92,17 +97,17 @@ impl Local {
 
     /// A title's details and chapters. Chapters are listed newest first, like a source does.
     pub fn details(&self, title: &str) -> Result<(WireManga, Vec<WireChapter>)> {
-        let dir = child(&self.root, title)?;
-        let meta = fs::metadata(&dir).map_err(|_| AppError::not_found("This title is no longer in the local folder"))?;
-        let mut chapters = chapters(&dir);
+        let path = child(&self.root, title)?;
+        let meta = fs::metadata(&path).map_err(|_| AppError::not_found("This title is no longer in the local folder"))?;
+        let mut chapters = listed(&path, &meta, title);
         chapters.sort_by(|a, b| natural_cmp(&b.1, &a.1));
 
         let mut manga = manga(title, modified(&meta));
         manga.initialized = true;
         // Details come from a ComicInfo.xml in the title's folder, or else in its first chapter.
-        let info = fs::read_to_string(dir.join("ComicInfo.xml")).ok().or_else(|| {
+        let info = fs::read_to_string(path.join("ComicInfo.xml")).ok().or_else(|| {
             let (first, _, _) = chapters.last()?;
-            comic_info(&dir.join(first))
+            comic_info(&within(&path, first))
         });
         if let Some(xml) = info {
             manga.description = tag(&xml, "Summary");
@@ -110,9 +115,22 @@ impl Local {
             manga.artist = tag(&xml, "Penciller");
             manga.genre = tag(&xml, "Genre");
         }
+        // A chapter's own ComicInfo.xml names and numbers it, where it says so.
         let chapters = chapters
             .into_iter()
-            .map(|(url, name, changed)| WireChapter { url, name, date_upload: changed * 1000, chapter_number: -1.0, scanlator: None, memo: json!({}) })
+            .map(|(url, shown, changed)| {
+                let own = if url == WHOLE { None } else { comic_info(&path.join(&url)) };
+                let info = |name: &str| own.as_deref().and_then(|xml| tag(xml, name));
+                let number = info("Number").and_then(|number| number.parse::<f64>().ok()).filter(|number| number.is_finite() && *number >= 0.0);
+                WireChapter {
+                    name: info("Title").unwrap_or(shown),
+                    chapter_number: number.unwrap_or(-1.0),
+                    scanlator: info("Translator"),
+                    date_upload: changed * 1000,
+                    memo: json!({}),
+                    url,
+                }
+            })
             .collect();
         Ok((manga, chapters))
     }
@@ -120,13 +138,12 @@ impl Local {
     /// `cover.jpg` or its kin in the title's folder, else the first page of the first chapter.
     pub fn cover(&self, title: &str) -> Result<Vec<u8>> {
         let dir = child(&self.root, title)?;
-        let named = entries(&dir).into_iter().find(|(name, meta)| {
-            meta.is_file() && is_image(name) && name.rsplit_once('.').is_some_and(|(stem, _)| stem.eq_ignore_ascii_case("cover"))
-        });
+        let named = entries(&dir).into_iter().find(|(name, meta)| meta.is_file() && is_cover(name));
         if let Some((name, _)) = named {
             return read_image(&dir.join(name));
         }
-        let mut chapters = chapters(&dir);
+        let meta = fs::metadata(&dir).map_err(|_| AppError::not_found("This title is no longer in the local folder"))?;
+        let mut chapters = listed(&dir, &meta, title);
         chapters.sort_by(|a, b| natural_cmp(&a.1, &b.1));
         let (first, _, _) = chapters.first().ok_or_else(|| AppError::not_found("This title has no cover"))?;
         self.page(title, first, 0)
@@ -155,10 +172,16 @@ impl Local {
     }
 
     fn pages(&self, title: &str, chapter: &str) -> Result<Pages> {
-        let path = child(&child(&self.root, title)?, chapter)?;
+        let base = child(&self.root, title)?;
+        // The title itself, when it is its own one chapter.
+        let path = if chapter == WHOLE { base } else { child(&base, chapter)? };
         let gone = |_| AppError::not_found("This chapter is no longer in the local folder");
         if fs::metadata(&path).map_err(gone)?.is_dir() {
-            let mut names: Vec<String> = entries(&path).into_iter().filter(|(name, meta)| meta.is_file() && is_image(name)).map(|(name, _)| name).collect();
+            let mut names: Vec<String> = entries(&path)
+                .into_iter()
+                .filter(|(name, meta)| meta.is_file() && is_image(name) && !(chapter == WHOLE && is_cover(name)))
+                .map(|(name, _)| name)
+                .collect();
             names.sort_by(|a, b| natural_cmp(a, b));
             return Ok(Pages::Folder(path, names));
         }
@@ -178,7 +201,8 @@ impl Local {
 fn manga(name: &str, changed: i64) -> WireManga {
     WireManga {
         url: name.to_owned(),
-        title: name.to_owned(),
+        // An archive straight in the root is a title of its own, named without its extension.
+        title: archive_stem(name).unwrap_or(name).to_owned(),
         artist: None,
         author: None,
         description: None,
@@ -215,6 +239,27 @@ fn entries(dir: &Path) -> Vec<(String, fs::Metadata)> {
         .collect()
 }
 
+/// A title's chapters as `(name on disk, name to show, changed)`. Without a chapter level,
+/// the title is its own one chapter: an archive, or a folder with pages of its own.
+fn listed(path: &Path, meta: &fs::Metadata, title: &str) -> Vec<(String, String, i64)> {
+    let found = if meta.is_dir() { chapters(path) } else { Vec::new() };
+    let pages = || entries(path).iter().any(|(name, meta)| meta.is_file() && is_image(name) && !is_cover(name));
+    if found.is_empty() && (meta.is_file() || pages()) {
+        let shown = archive_stem(title).filter(|_| meta.is_file()).unwrap_or(title);
+        return vec![(WHOLE.to_owned(), shown.to_owned(), modified(meta))];
+    }
+    found
+}
+
+/// A chapter's path from its title's.
+fn within(title: &Path, chapter: &str) -> PathBuf {
+    if chapter == WHOLE {
+        title.to_path_buf()
+    } else {
+        title.join(chapter)
+    }
+}
+
 /// A title's chapters as `(name on disk, name to show, changed)`: archives and folders.
 fn chapters(dir: &Path) -> Vec<(String, String, i64)> {
     entries(dir)
@@ -233,6 +278,11 @@ fn chapters(dir: &Path) -> Vec<(String, String, i64)> {
 fn archive_stem(name: &str) -> Option<&str> {
     let (stem, extension) = name.rsplit_once('.')?;
     (extension.eq_ignore_ascii_case("cbz") || extension.eq_ignore_ascii_case("zip")).then_some(stem)
+}
+
+/// `cover.jpg` and its kin: a title's cover, not a page.
+fn is_cover(name: &str) -> bool {
+    is_image(name) && name.rsplit_once('.').is_some_and(|(stem, _)| stem.eq_ignore_ascii_case("cover"))
 }
 
 fn is_image(name: &str) -> bool {
@@ -384,6 +434,40 @@ mod tests {
         assert_eq!(local.details("No such title").unwrap_err().status, 404);
         assert_eq!(local.page("alpha", "Gone.cbz", 0).unwrap_err().status, 404);
         fs::remove_file(root.parent().unwrap().join("mango-outside.png")).unwrap();
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn chapters_name_themselves_and_titles_need_no_chapters() {
+        let (root, local) = library();
+        let info = "<ComicInfo><Title>The Return</Title><Number>12.5</Number><Translator>Tide Scans</Translator></ComicInfo>";
+        archive(&root.join("Salt Wind/c012.cbz"), &[("1.png", b"\x89PNG one"), ("ComicInfo.xml", info.as_bytes())]);
+        archive(&root.join("Salt Wind/c013.cbz"), &[("1.png", b"\x89PNG one"), ("ComicInfo.xml", b"<ComicInfo><Number>soon</Number></ComicInfo>")]);
+        let (_, chapters) = local.details("Salt Wind").unwrap();
+        let named = chapters.iter().find(|c| c.url == "c012.cbz").unwrap();
+        assert_eq!((named.name.as_str(), named.chapter_number, named.scanlator.as_deref()), ("The Return", 12.5, Some("Tide Scans")));
+        let bare = chapters.iter().find(|c| c.url == "c013.cbz").unwrap();
+        assert_eq!((bare.name.as_str(), bare.chapter_number), ("c013", -1.0), "what it does not say comes from the file");
+
+        // Pages straight in a title's folder, and an archive straight in the root.
+        fs::create_dir_all(root.join("One Shot")).unwrap();
+        fs::write(root.join("One Shot/2.png"), b"\x89PNG second").unwrap();
+        fs::write(root.join("One Shot/1.png"), b"\x89PNG first").unwrap();
+        fs::write(root.join("One Shot/cover.png"), b"\x89PNG cover").unwrap();
+        archive(&root.join("Loose.cbz"), &[("a.png", b"\x89PNG loose"), ("ComicInfo.xml", b"<ComicInfo><Writer>W</Writer></ComicInfo>")]);
+        let titles = local.browse(false, "", 1).unwrap().0;
+        assert_eq!(titles.iter().map(|t| (t.url.as_str(), t.title.as_str())).collect::<Vec<_>>(), [("alpha", "alpha"), ("Loose.cbz", "Loose"), ("One Shot", "One Shot"), ("Salt Wind", "Salt Wind")]);
+
+        let (_, chapters) = local.details("One Shot").unwrap();
+        assert_eq!(chapters.iter().map(|c| (c.url.as_str(), c.name.as_str())).collect::<Vec<_>>(), [(WHOLE, "One Shot")]);
+        assert_eq!(local.page_count("One Shot", WHOLE).unwrap(), 2, "the cover is not a page");
+        assert_eq!(local.page("One Shot", WHOLE, 0).unwrap(), b"\x89PNG first");
+
+        let (manga, chapters) = local.details("Loose.cbz").unwrap();
+        assert_eq!((manga.title.as_str(), manga.author.as_deref()), ("Loose", Some("W")));
+        assert_eq!(chapters.iter().map(|c| (c.url.as_str(), c.name.as_str())).collect::<Vec<_>>(), [(WHOLE, "Loose")]);
+        assert_eq!(local.page("Loose.cbz", WHOLE, 0).unwrap(), b"\x89PNG loose");
+        assert_eq!(local.cover("Loose.cbz").unwrap(), b"\x89PNG loose");
         fs::remove_dir_all(root).unwrap();
     }
 

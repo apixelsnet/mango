@@ -1,9 +1,13 @@
 openapi: 3.1.0
 info:
   title: Mango extension host
-  version: "5"
+  version: "6"
   description: |
-    Contract between the Rust core and the extension host. Protocol version 5.
+    Contract between the Rust core and the extension host. Protocol version 6.
+
+    Version 6 differs from 5 in one place: `/sources/{id}/manga` answers `webUrl`
+    as well, the title's page on the source's site as the source makes it, or null
+    when the source cannot make one.
 
     Version 5 differs from 4 in two places: `/sources/{id}/filters` answers, where
     it was reserved and answered 501, and `/sources/{id}/search` reads `filters`,
@@ -26,7 +30,7 @@ info:
     - Every request carries `Authorization: Bearer <token>`. The core chooses the
       token and hands it to the host when it starts it.
     - Bodies are JSON. Source ids are 64-bit, so they travel as strings.
-    - Every response carries `X-Mango-Protocol: 5`.
+    - Every response carries `X-Mango-Protocol: 6`.
     - Failures return `{"error": {"code", "message"}}`.
 
     Changing a field or a status code means a new protocol version.
@@ -158,6 +162,9 @@ paths:
                   chapters:
                     type: array
                     items: { $ref: "#/components/schemas/Chapter" }
+                  webUrl:
+                    type: [string, "null"]
+                    description: "The title's page on the source's site, as the source makes it"
   /sources/{id}/pages:
     post:
       summary: Pages of a chapter, in reading order

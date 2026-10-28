@@ -28,7 +28,14 @@ Code: `mango-reader/src/local.rs`. The folder is `local` in the data directory, 
 
 Checked on Linux and Windows by `smoke.py`: a folder with a CBZ chapter, a folder chapter and a cover file showed up as a title, read page by page with 2 before 10, joined the library and kept its progress, with the JVM asleep. With the host's files absent altogether, a 12-chapter title listed and read, a library update ran clean, and one chapter was read in a browser in all four reader modes.
 
-Not built: a chapter's own title or number from its `ComicInfo.xml`; titles whose images sit directly in the title folder, with no chapter level. Not checked: a large real collection.
+Not checked: a large real collection.
+
+## Chapter details and titles without chapters (2026-10-28)
+
+- A chapter archive or folder with its own `ComicInfo.xml` takes its name from `<Title>`, its number from `<Number>` and its scanlator from `<Translator>`. What it does not say comes from the file name, as before.
+- A title needs no chapter level. A folder with pages straight in it is one chapter, leaving out `cover.*`; a `.cbz` or `.zip` straight in the root is a title of its own, named without its extension, and is its one chapter. Such a chapter is stored under the name `.`.
+
+Checked by unit tests, and end to end on Linux and Windows: chapter 12.5 "The Return" by its `ComicInfo`, a folder of two pages and a cover read as one two-page chapter, and a loose CBZ listed and read as a title.
 
 ## Done when
 

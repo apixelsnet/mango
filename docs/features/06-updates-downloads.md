@@ -108,3 +108,7 @@ A device can show a notification of new chapters with Mango closed, without a na
 Verification: unit tests for the RFC 8291 example message byte for byte, the signed token, address checks and keeping devices; `smoke.py` passed on Linux. On the server, local and plain-HTTP addresses were refused and a made-up Mozilla subscription was forgotten after its push service answered. In Chrome against a Windows build on the same machine: the toggle subscribed through Google's push service, "Send a test" was delivered and shown by the service worker, turning it off removed the device on both sides, and signing out did the same.
 
 Not verified: an iPhone, Firefox and Safari delivery, and a notification sent by a real update run (that path shares the code of the test).
+
+## Skip titles not started (2026-10-28)
+
+The option `updates.skipUnstarted` (Settings › Library, off by default) leaves out of a library update every title whose chapters were all left unopened: none is read and none has a page turned. A title with no chapters at all is still asked, since there is nothing to start on. Code: `plan` in `updates.rs`; checked by its unit test.

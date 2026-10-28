@@ -225,3 +225,15 @@ Its first run failed: amd64 and arm64 are built side by side, and both unpacked 
 ## Categorized release notes (2026-10-25)
 
 Release notes are divided into Added, Changed and Fixed sections (`.github/release.yml`) according to the label on each pull request: `changelog: added`, `changelog: changed` or `changelog: fixed`; `changelog: skip` excludes a pull request. The Changelog workflow assigns a label from the pull request title when the pull request is opened or renamed (`feat` to Added, `fix` to Fixed, all others to Changed) and does not override a label set manually. Pull requests merged before this change carry no label and appear under Other.
+
+## Two-factor authentication (2FA) and app passwords (2026-10-28)
+
+- **Two-factor authentication.** Settings › Account › Two-factor authentication (2FA): Mango shows a secret as a QR code, a link and a key; the first code from the authenticator app turns it on (RFC 6238: SHA-1, six digits, 30 s, one step either way) and answers with ten recovery codes, shown once, hidden until asked for, with Copy and Download (a text file). Turning it on signs out every other browser of the account. Signing in then takes a code after the password: `POST /api/auth/login` answers 401 `code_required` until `code` is sent along. A code opens once (`users.totp_step`), and a recovery code opens once. Wrong codes count against the account, not the address, so a right password does not buy more tries. New recovery codes and turning it off take the password. An admin can only take it away from an account (`twoStep: false`), for a holder who lost both phone and codes; `mango reset-password` takes the owner's away as well.
+- **App passwords.** Settings › Account › App passwords: a 16-letter password made for one reading app, shown once (hidden until asked for, with Copy), and revoked on its own (Revoke), which signs that app out. Mango keeps SHA-256 of it and of its MD5 (what KOReader sends). OPDS takes it in place of the account's password; an account with two-factor authentication takes nothing else there (401 `app_password_required`). An app password opens no browser session.
+- Hosted Mango hides two-factor authentication for now: the door and account pages sign in with name and password only and would lock such a reader out.
+
+Routes, all under `/api/auth`: `two-step` (GET state, POST start, PUT confirm, DELETE turn off), `two-step/codes` (POST), `apps` (GET, POST) and `apps/{id}` (DELETE). Migration 015.
+
+Checked by unit tests (the RFC's SHA-1 cases, base32, the whole flow) and end to end on Linux and Windows: setting up, a wrong first code, a spent code, a fresh code, a recovery code once, OPDS refusing the main password and taking an app password, taking it back; and in a browser, the QR code, the code step at sign-in and the recovery codes on a phone-wide screen.
+
+Not checked: a real authenticator app scanning the picture.

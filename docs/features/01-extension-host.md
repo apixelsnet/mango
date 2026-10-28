@@ -213,6 +213,12 @@ Not checked: macOS, and arm64, which cannot be run here (its jars are the same f
 
 The trimmed Java carries two class-data archives, the second for heaps over 32 GB. The host's heap is capped at 256 MB, so the image now drops the second one (13 MB): 615 MB, from 632. Checked: Java in the image still starts with sharing on, the host builds its own archive on top, and the core's smoke test against the image passes.
 
+## A title's own address (2026-10-28, host 0.8.0, protocol 6)
+
+`/sources/{id}/manga` answers `webUrl` beside the title and its chapters: the title's page on the source's site, as the source itself makes it, or null when it cannot. The core keeps it in `manga.web_url` (migration 015) and the title page links to it. Before, the link was put together from the source's base address and the title's key, so it was missing where the key is not a path, and wrong where the key is a path other than the page's.
+
+Checked: the smoke test against the real repository passes with the new jars; a MangaDex title got `https://mangadex.org/title/<id>/<slug>`, where the old link pointed at `/manga/<id>`.
+
 ## Done when
 
 The core installs an extension from the store and reads a chapter through the host, on Linux and on Windows.

@@ -791,6 +791,7 @@
                           <button class="btn" onclick={() => ((opened = null), keepOnDevice([chapter]))}>Keep on this device</button>
                         {/if}
                       {/if}
+                      <a class="btn" href="api/chapters/{chapter.id}/file" download onclick={() => (opened = null)}><Icon name="download" size={18} />Save as a CBZ file</a>
                       <button class="btn" onclick={() => startPicking(chapter)}>Select</button>
                     </div>
                   {/if}

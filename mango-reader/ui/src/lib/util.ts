@@ -4,6 +4,33 @@ export function hash(text: string): number {
   return h;
 }
 
+/**
+ * Puts text on the clipboard. Browsers offer the clipboard only to HTTPS pages and this
+ * machine's own, so a Mango opened by its address on the network copies the old way.
+ */
+export async function copyText(text: string): Promise<boolean> {
+  if (navigator.clipboard && window.isSecureContext) {
+    return navigator.clipboard.writeText(text).then(
+      () => true,
+      () => false,
+    );
+  }
+  const field = document.createElement('textarea');
+  field.value = text;
+  field.setAttribute('readonly', '');
+  field.style.position = 'fixed';
+  field.style.opacity = '0';
+  document.body.append(field);
+  field.select();
+  try {
+    return document.execCommand('copy');
+  } catch {
+    return false;
+  } finally {
+    field.remove();
+  }
+}
+
 /** "3 h ago", from a time in seconds. */
 export function ago(seconds: number): string {
   const diff = Math.max(0, Date.now() / 1000 - seconds);

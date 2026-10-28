@@ -101,8 +101,8 @@ import kotlin.concurrent.thread
 import kotlin.io.path.absolutePathString
 import kotlin.system.exitProcess
 
-private const val PROTOCOL = 5
-private const val HOST_VERSION = "0.7.1"
+private const val PROTOCOL = 6
+private const val HOST_VERSION = "0.8.0"
 private val PKG_NAME = Regex("[A-Za-z0-9_.]+")
 
 private class ApiError(
@@ -878,6 +878,8 @@ private fun routeSource(
                 buildJsonObject {
                     put("manga", mangaJson(update.manga))
                     put("chapters", JsonArray(update.chapters.map(::chapterJson)))
+                    // The title's page on the source's site, which only the source knows how to make.
+                    put("webUrl", runCatching { src.getMangaUrl(update.manga) }.getOrNull())
                 },
             )
         }

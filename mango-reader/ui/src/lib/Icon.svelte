@@ -18,6 +18,7 @@
     pin: '<path d="M9 4h6l-1 6 3 3H7l3-3zM12 13v7"/>',
     eye: '<path d="M2 12s4-7 10-7 10 7 10 7-4 7-10 7S2 12 2 12z"/><circle cx="12" cy="12" r="3"/>',
     eyeoff: '<path d="M2 12s4-7 10-7 10 7 10 7-4 7-10 7S2 12 2 12z"/><path d="M4 4l16 16"/>',
+    copy: '<rect x="9" y="9" width="11" height="11"/><path d="M5 15H4V4h11v1"/>',
     refresh: '<path d="M20 12a8 8 0 1 1-2.3-5.7M20 4v5h-5"/>',
     close: '<path d="M6 6l12 12M18 6 6 18"/>',
     plus: '<path d="M12 5v14M5 12h14"/>',

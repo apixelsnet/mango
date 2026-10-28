@@ -28,6 +28,8 @@ use tokio::{sync::Semaphore, task::JoinSet};
 pub const HOURS: &str = "updates.hours";
 pub const SKIP_COMPLETED: &str = "updates.skipCompleted";
 pub const SKIP_UNREAD: &str = "updates.skipUnread";
+/// Leave out the titles with chapters of which not one was opened yet.
+pub const SKIP_UNSTARTED: &str = "updates.skipUnstarted";
 /// Category ids. Set and not empty: only titles in one of these are updated.
 pub const ONLY: &str = "updates.categories";
 /// Category ids whose titles are never updated.
@@ -267,6 +269,11 @@ fn plan(conn: &Connection, today: i64) -> Result<Plan> {
     if settings::get::<bool>(conn, SKIP_UNREAD).unwrap_or(false) {
         sql += " AND NOT EXISTS (SELECT 1 FROM chapters WHERE manga_id = m.id AND read = 0)";
     }
+    if settings::get::<bool>(conn, SKIP_UNSTARTED).unwrap_or(false) {
+        // A title with no chapters yet is asked: there is nothing to start on.
+        sql += " AND (EXISTS (SELECT 1 FROM chapters WHERE manga_id = m.id AND (read = 1 OR last_page_read > 0))
+                  OR NOT EXISTS (SELECT 1 FROM chapters WHERE manga_id = m.id))";
+    }
     let (only, never) = (ids(ONLY), ids(NEVER));
     if !only.is_empty() {
         sql += &format!(" AND EXISTS (SELECT 1 FROM manga_categories WHERE manga_id = COALESCE(m.merged_into, m.id) AND category_id IN ({only}))");
@@ -442,6 +449,15 @@ mod tests {
         set(&conn, SKIP_UNREAD, json!(true));
         assert_eq!(planned(&conn), [(8, vec![6])]);
         set(&conn, SKIP_UNREAD, json!(false));
+        // Title 2 gets a chapter nobody opened; titles 1 and 6 have one read.
+        conn.execute("INSERT INTO chapters (id, manga_id, url, name, source_order, fetched_at, read) VALUES (20, 2, 'a', 'Unopened', 0, 50, 0)", []).unwrap();
+        set(&conn, SKIP_COMPLETED, json!(false));
+        set(&conn, SKIP_UNSTARTED, json!(true));
+        assert_eq!(planned(&conn), [(7, vec![1]), (8, vec![6])], "title 1 was started, title 2 never was");
+        conn.execute("UPDATE chapters SET last_page_read = 3 WHERE id = 20", []).unwrap();
+        assert_eq!(planned(&conn), [(7, vec![1, 2]), (8, vec![6])], "a page turned is a start");
+        set(&conn, SKIP_UNSTARTED, json!(false));
+        set(&conn, SKIP_COMPLETED, json!(true));
         set(&conn, ONLY, json!([1]));
         assert_eq!(planned(&conn), [(7, vec![1])]);
         set(&conn, ONLY, json!([]));

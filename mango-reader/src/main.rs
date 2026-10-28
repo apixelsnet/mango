@@ -15,6 +15,7 @@ mod files;
 mod host;
 mod images;
 mod import;
+mod kosync;
 mod library;
 mod local;
 mod migrate;
