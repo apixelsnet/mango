@@ -92,3 +92,10 @@ Grids and lists ask for a cover's small copy (`GET /api/manga/{id}/cover?size=sm
 Verification: unit tests for JPEG and PNG copies, see-through and small inputs, and the averaging; `smoke.py` passed on Linux and Windows. Against a running build on both, a 1200×1800 PNG cover of 1.1 MB came back as a 360×540 JPEG of 77 KB, the same file on a second request; a hand-set WebP of 30 KB came back as a 360×241 JPEG of 20 KB.
 
 Not verified: a library grid in a browser, and a real source's progressive JPEG.
+
+## Source link and saving a chapter (2026-10-28)
+
+- The source link is the title's page as the source makes it (feature 01, protocol 6), so it is there for sources whose title keys are not paths. A title that was not refreshed since keeps the link put together as before until its next refresh.
+- A chapter's menu has "Save as a CBZ file": `GET /api/chapters/{id}/file`, the same file OPDS hands out (the downloaded CBZ when there is one, else the pages packed for that one request). KOReader's sync learns the file's marks from it, as it does from OPDS (feature 13).
+
+Checked on Linux and Windows: the file is a CBZ named after title and chapter, and saves from the menu in a browser.

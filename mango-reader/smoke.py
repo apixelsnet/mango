@@ -454,11 +454,13 @@ if who["login"]:
     status, got, _, _ = opds("/v1.2/catalog", name="")
     check("a reading app is asked for a name and password", status == 401 and got.get("WWW-Authenticate", "").startswith("Basic"))
     check("and a wrong one is refused", opds("/v1.2/catalog", password="not the password")[0] == 401)
+status, _, slashed, _ = opds("/")
+check("the catalog opens with the last slash too, with no redirect to lose the name on", status == 200 and b'href="v1.2/library"' in slashed)
 status, got, feed, landed = opds("")
 catalog = xml.etree.ElementTree.fromstring(feed)
 check(
     "the catalog opens with the library and its parts",
-    status == 200 and landed.endswith("/opds/v1.2/catalog") and "kind=navigation" in got["Content-Type"] and len(catalog.findall(ATOM + "entry")) >= 2,
+    status == 200 and landed.endswith("/opds") and b'href="opds/v1.2/library"' in feed and "kind=navigation" in got["Content-Type"] and len(catalog.findall(ATOM + "entry")) >= 2,
 )
 feed = xml.etree.ElementTree.fromstring(opds("/v1.2/library")[2])
 entries = {e.find(ATOM + "id").text: e for e in feed.findall(ATOM + "entry")}

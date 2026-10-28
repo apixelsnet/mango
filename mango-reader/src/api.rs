@@ -146,6 +146,7 @@ pub fn router(state: Spaces) -> Router {
         .route("/downloads/{chapter}", delete(cancel_download))
         .route("/downloads/{chapter}/retry", post(retry_download))
         .route("/chapters/{id}/download", delete(delete_download))
+        .route("/chapters/{id}/file", get(chapter_file))
         .route("/manga/{id}/auto-download", put(set_auto_download))
         .route("/manga/{id}/migrate/{to}", get(compare_titles).post(migrate_title))
         .route("/import",get(import_status).post(start_import).layer(DefaultBodyLimit::max(import::MAX_UPLOAD)))
@@ -172,6 +173,8 @@ pub fn router(state: Spaces) -> Router {
         .with_state(state.clone());
     Router::new()
         .nest("/api", api)
+        // A nested router answers `/opds` but not `/opds/`, which apps are as often given.
+        .merge(opds::slashed(state.clone()))
         .nest("/opds", opds::routes(state.clone()))
         .fallback(ui::serve)
         // The inner one first: an answer that is not sent again is not gzipped either.
@@ -775,6 +778,11 @@ async fn progress(Me(app): Me, Path(id): Path<i64>, Json(body): Json<Progress>) 
         app.trackers.read_chapter(id);
     }
     Ok(done())
+}
+
+/// A chapter as a CBZ file, to keep on this device or open in another app.
+async fn chapter_file(Me(app): Me, Path(id): Path<i64>) -> Result<Response> {
+    opds::chapter_file(&app, id).await
 }
 
 // ---------- updates and downloads ----------

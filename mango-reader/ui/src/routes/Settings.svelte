@@ -4,6 +4,7 @@
   import Icon, { type IconName } from '../lib/Icon.svelte';
   import Locked from '../lib/Locked.svelte';
   import Notice from '../lib/Notice.svelte';
+  import Secret from '../lib/Secret.svelte';
   import { lacks, loadPlan, plan, tooOften } from '../lib/plan.svelte';
   import { pref, setPref } from '../lib/prefs.svelte';
   import * as push from '../lib/push';
@@ -290,9 +291,115 @@
     }
   }
 
+  // ---------- two-factor authentication and app passwords ----------
+
+  type TwoStep = { on: boolean; codesLeft: number };
+  type AppPassword = { id: number; name: string; createdAt: number; usedAt: number | null; password?: string };
+
+  let twoStep = $state<TwoStep | null>(null);
+  /** The authenticator being set up: its key, its link, and the link as a picture to scan. */
+  let enrolment = $state<{ secret: string; uri: string; picture: string } | null>(null);
+  let twoStepCode = $state('');
+  let twoStepPassword = $state('');
+  /** Recovery codes, shown once, just after they were made. */
+  let recovery = $state<string[]>([]);
+  let twoStepError = $state<string | null>(null);
+
+  let apps = $state<AppPassword[]>([]);
+  let appName = $state('');
+  /** The app password just made, with the password, shown this once. */
+  let madeApp = $state<AppPassword | null>(null);
+  let appsError = $state<string | null>(null);
+
+  async function withTwoStep(work: () => Promise<unknown>) {
+    twoStepError = null;
+    try {
+      await work();
+      twoStep = await get<TwoStep>('/auth/two-step');
+    } catch (e) {
+      twoStepError = message(e);
+    }
+  }
+
+  function startTwoStep() {
+    withTwoStep(async () => {
+      const offer = await send<{ secret: string; uri: string }>('POST', '/auth/two-step');
+      // Only this step needs the picture maker, so it loads only now.
+      const { default: qrcode } = await import('qrcode-generator');
+      const qr = qrcode(0, 'M');
+      qr.addData(offer.uri);
+      qr.make();
+      enrolment = { ...offer, picture: qr.createSvgTag({ cellSize: 4, margin: 2, scalable: true }) };
+      twoStepCode = '';
+      recovery = [];
+    });
+  }
+
+  function confirmTwoStep(event: SubmitEvent) {
+    event.preventDefault();
+    withTwoStep(async () => {
+      recovery = (await send<{ codes: string[] }>('PUT', '/auth/two-step', { code: twoStepCode })).codes;
+      enrolment = null;
+    });
+  }
+
+  function newRecovery(event: SubmitEvent) {
+    event.preventDefault();
+    withTwoStep(async () => {
+      recovery = (await send<{ codes: string[] }>('POST', '/auth/two-step/codes', { password: twoStepPassword })).codes;
+      twoStepPassword = '';
+    });
+  }
+
+  function leaveTwoStep() {
+    if (!twoStepPassword) {
+      twoStepError = 'Type your password first.';
+      return;
+    }
+    withTwoStep(async () => {
+      await send('DELETE', '/auth/two-step', { password: twoStepPassword });
+      twoStepPassword = '';
+      recovery = [];
+    });
+  }
+
+  async function withApps(work: () => Promise<unknown>) {
+    appsError = null;
+    try {
+      await work();
+      apps = (await get<{ apps: AppPassword[] }>('/auth/apps')).apps;
+    } catch (e) {
+      appsError = message(e);
+    }
+  }
+
+  function addApp(event: SubmitEvent) {
+    event.preventDefault();
+    withApps(async () => {
+      madeApp = await send<AppPassword>('POST', '/auth/apps', { name: appName });
+      appName = '';
+    });
+  }
+
+  function removeApp(id: number) {
+    withApps(async () => {
+      await send('DELETE', `/auth/apps/${id}`);
+      if (madeApp?.id === id) madeApp = null;
+    });
+  }
+
+  let askedSignIn = false;
+  $effect(() => {
+    if (tab.id !== 'account' || askedSignIn || !session.login || !session.signedIn) return;
+    askedSignIn = true;
+    // A hosted Mango's own sign-in page asks for no code yet, so two-factor authentication stays off there.
+    if (!session.account) withTwoStep(async () => {});
+    withApps(async () => {});
+  });
+
   // ---------- accounts, for an admin ----------
 
-  type Account = { id: number; name: string; admin: boolean; createdAt: number; hasPassword: boolean };
+  type Account = { id: number; name: string; admin: boolean; createdAt: number; hasPassword: boolean; twoStep: boolean };
 
   let users = $state<Account[]>([]);
   let usersError = $state<string | null>(null);
@@ -1031,6 +1138,10 @@
             <div class="how">{@render toggle(pref('updates.skipUnread', false), 'Skip titles with unread chapters', () => flip('updates.skipUnread'))}</div>
           </div>
           <div class="set">
+            <div class="what"><strong>Skip titles not started</strong><span>A title none of whose chapters was opened yet waits until one is.</span></div>
+            <div class="how">{@render toggle(pref('updates.skipUnstarted', false), 'Skip titles not started', () => flip('updates.skipUnstarted'))}</div>
+          </div>
+          <div class="set">
             <div class="what">
               <strong>Wait for the day a chapter is expected</strong>
               <span>A weekly series is asked around its day, going by the dates of its chapters. A title without dates is asked every time.</span>
@@ -1228,11 +1339,23 @@
                 <strong>OPDS catalog</strong>
                 <span>
                   An app that reads OPDS catalogs can browse this library and fetch its chapters. Give it this
-                  address{#if session.login}, with your name and password{/if}.
+                  address{#if session.login}, with your name and your password or an app password{/if}.
                 </span>
               </div>
               <code>{home}opds</code>
             </div>
+            {#if session.login}
+              <div class="set stack">
+                <div class="what">
+                  <strong>KOReader progress sync</strong>
+                  <span>
+                    KOReader keeps the place in chapters it fetched from the catalog in step with Mango, both ways. In KOReader, open Progress sync, choose
+                    Custom sync server and give it this address, then sign in with your name and an app password from Settings › Account.
+                  </span>
+                </div>
+                <code>{home}opds/kosync</code>
+              </div>
+            {/if}
             <div class="set">
               <div class="what">
                 <strong>Keep the place from reading apps</strong>
@@ -1455,6 +1578,110 @@
             {/if}
           </section>
 
+          {#if !session.account}
+            <section class="card">
+              <h3>Two-factor authentication (2FA)</h3>
+              {#if twoStep?.on}
+                <div class="set stack">
+                  <div class="what">
+                    <strong>On</strong>
+                    <span>
+                      Signing in takes a code from your authenticator app as well as the password. {twoStep.codesLeft}
+                      {twoStep.codesLeft === 1 ? 'recovery code is' : 'recovery codes are'} left. Reading apps sign in with an app password.
+                    </span>
+                  </div>
+                </div>
+                <form class="set" onsubmit={newRecovery}>
+                  <input class="sr" type="text" name="username" autocomplete="username" value={session.name ?? 'mango'} tabindex="-1" aria-hidden="true" readonly />
+                  <label class="field grow">
+                    <span class="sr">Your password</span>
+                    <input type="password" bind:value={twoStepPassword} placeholder="Password" autocomplete="current-password" required />
+                  </label>
+                  <button class="btn">New recovery codes</button>
+                  <button class="btn" type="button" onclick={leaveTwoStep}>Turn off</button>
+                </form>
+              {:else if enrolment}
+                <div class="set stack">
+                  <div class="what">
+                    <strong>Add Mango to your authenticator app</strong>
+                    <span>Scan the picture with the app, open the link on the phone that has it, or type the key in. Then enter the six digits it shows.</span>
+                  </div>
+                  <!-- The picture is drawn here from Mango's own link, never from what a page sent. -->
+                  <div class="qr">{@html enrolment.picture}</div>
+                  <a href={enrolment.uri}>Open in the authenticator app</a>
+                  <Secret values={[enrolment.secret]} label="The key, to type into the app" />
+                </div>
+                <form class="set" onsubmit={confirmTwoStep}>
+                  <label class="field grow">
+                    <span class="sr">The code the app shows</span>
+                    <input type="text" bind:value={twoStepCode} placeholder="Six digits" inputmode="numeric" autocomplete="one-time-code" required />
+                  </label>
+                  <button class="btn ink">Turn on</button>
+                  <button class="btn" type="button" onclick={() => (enrolment = null)}>Cancel</button>
+                </form>
+              {:else}
+                <div class="set">
+                  <div class="what">
+                    <strong>Off</strong>
+                    <span>With it on, signing in takes a code from an authenticator app on your phone as well as the password.</span>
+                  </div>
+                  <div class="how"><button class="btn" disabled={!twoStep} onclick={startTwoStep}>Set up</button></div>
+                </div>
+              {/if}
+              {#if recovery.length}
+                <div class="set stack">
+                  <div class="what">
+                    <strong>Recovery codes</strong>
+                    <span>Each one signs you in once without the phone. Keep them somewhere safe: Mango shows them only now.</span>
+                  </div>
+                  <Secret
+                    values={recovery}
+                    label="Recovery codes"
+                    file="mango-recovery-codes.txt"
+                    heading="Mango recovery codes for {session.name ?? 'your account'}. Each one signs in once, in place of a code from the authenticator app."
+                  />
+                </div>
+              {/if}
+              {#if twoStepError}<div class="set stack"><Notice error={twoStepError} /></div>{/if}
+            </section>
+          {/if}
+
+          <section class="card">
+            <h3>App passwords</h3>
+            <div class="set stack">
+              <div class="what">
+                <span>
+                  A reading app signs in with your name and one of these in place of your password: over OPDS, and for KOReader's progress sync. Revoking one
+                  signs out only the app that uses it.
+                </span>
+              </div>
+            </div>
+            {#if madeApp?.password}
+              <div class="set stack">
+                <div class="what"><strong>The password for {madeApp.name}</strong><span>Type it into the app now: Mango shows it only this once.</span></div>
+                <Secret values={[madeApp.password]} label="The password for {madeApp.name}" />
+              </div>
+            {/if}
+            {#if apps.length}
+              <ul class="rows">
+                {#each apps as app (app.id)}
+                  <li>
+                    <span class="main"><strong>{app.name}</strong><span>Made {ago(app.createdAt)} · {app.usedAt ? `last used ${ago(app.usedAt)}` : 'not used yet'}</span></span>
+                    <span class="tools"><button class="btn" onclick={() => removeApp(app.id)} title="The app that uses this password can no longer sign in">Revoke</button></span>
+                  </li>
+                {/each}
+              </ul>
+            {/if}
+            <form class="set" onsubmit={addApp}>
+              <label class="field grow">
+                <span class="sr">What the password is for</span>
+                <input type="text" bind:value={appName} placeholder="What it is for, such as KOReader" autocomplete="off" maxlength="80" required />
+              </label>
+              <button class="btn ink">Make a password</button>
+            </form>
+            {#if appsError}<div class="set stack"><Notice error={appsError} /></div>{/if}
+          </section>
+
           <section class="card">
             <h3>This browser</h3>
             <div class="set">
@@ -1481,7 +1708,7 @@
                 <div class="set">
                   <div class="what">
                     <strong>{user.name}</strong>
-                    <span>{user.admin ? 'Admin' : 'Reader'}{user.name === session.name ? ' · you' : ''} · added {ago(user.createdAt)}</span>
+                    <span>{user.admin ? 'Admin' : 'Reader'}{user.name === session.name ? ' · you' : ''}{user.twoStep ? ' · 2FA' : ''} · added {ago(user.createdAt)}</span>
                   </div>
                   {#if rekeyed === user.id}
                     <form class="how" onsubmit={(event) => setKey(event, user.id)}>
@@ -1495,6 +1722,10 @@
                   {:else if user.name !== session.name}
                     <div class="how">
                       <button class="btn" onclick={() => ((rekeyed = user.id), (rekey = ''))}>New password</button>
+                      {#if user.twoStep}
+                        <!-- For a holder who lost both the phone and the recovery codes. -->
+                        <button class="btn" onclick={() => withUsers(() => send('PUT', `/users/${user.id}`, { twoStep: false }))}>Turn off 2FA</button>
+                      {/if}
                       {#if user.id !== 1}
                         <button class="btn" onclick={() => withUsers(() => send('PUT', `/users/${user.id}`, { admin: !user.admin }))}>
                           {user.admin ? 'Make reader' : 'Make admin'}
@@ -1564,7 +1795,7 @@
                       <span>{inviteState(invite)}</span>
                     </div>
                     <div class="how">
-                      <button class="btn" onclick={() => removeInvite(invite.id)}>{invite.usedAt ? 'Forget' : 'Take back'}</button>
+                      <button class="btn" onclick={() => removeInvite(invite.id)}>{invite.usedAt ? 'Forget' : 'Revoke'}</button>
                     </div>
                   </div>
                 {/each}
@@ -1928,6 +2159,22 @@
   code {
     overflow-wrap: anywhere;
   }
+
+  /* An authenticator scans dark on light, whatever the theme. */
+  .qr {
+    width: 196px;
+    max-width: 100%;
+    padding: 6px;
+    border: 3px solid var(--ink);
+    background: #fff;
+  }
+
+  .qr :global(svg) {
+    display: block;
+    width: 100%;
+    height: auto;
+  }
+
 
   /* ---------- lists inside a card ---------- */
 

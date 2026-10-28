@@ -16,7 +16,7 @@ use axum::{
     extract::{ConnectInfo, OriginalUri, Path, Query, Request, State},
     http::{header, HeaderMap, StatusCode},
     middleware::{self, Next},
-    response::{IntoResponse, Redirect, Response},
+    response::{IntoResponse, Response},
     routing::get,
     Router,
 };
@@ -36,7 +36,7 @@ const MAX_ARCHIVE: usize = 512 << 20;
 
 pub fn routes(state: Spaces) -> Router {
     Router::new()
-        .route("/", get(start))
+        .route("/", get(home))
         .route("/v1.2/catalog", get(catalog))
         .route("/v1.2/library", get(titles))
         .route("/v1.2/search.xml", get(search))
@@ -45,7 +45,14 @@ pub fn routes(state: Spaces) -> Router {
         .route("/v1.2/chapters/{id}/file", get(file))
         .route("/v1.2/chapters/{id}/pages/{index}", get(page))
         .layer(middleware::from_fn_with_state(state.clone(), sign_in))
-        .with_state(state)
+        // KOReader's sync signs in its own way; see `kosync`.
+        .with_state(state.clone())
+        .nest("/kosync", crate::kosync::routes(state))
+}
+
+/// `/opds/`, which the nested router answers only without the last slash. Merged beside it.
+pub fn slashed(state: Spaces) -> Router {
+    Router::new().route("/opds/", get(home)).layer(middleware::from_fn_with_state(state.clone(), sign_in)).with_state(state)
 }
 
 /// Lets a call through when it carries an account's name and password, or a browser's session.
@@ -136,16 +143,22 @@ impl Feed {
     }
 }
 
-/// `/opds` leads to the catalog, whether or not the app wrote the last slash.
-async fn start(OriginalUri(uri): OriginalUri) -> Redirect {
-    Redirect::temporary(if uri.path().ends_with('/') { "v1.2/catalog" } else { "opds/v1.2/catalog" })
+/// `/opds`, with or without the last slash, is the catalog itself. Not a redirect to it:
+/// some apps, KOReader among them, leave the name and password out when they follow one.
+async fn home(OriginalUri(uri): OriginalUri, Me(app): Me) -> Result<Response> {
+    catalog_at(app, if uri.path().ends_with('/') { "v1.2/" } else { "opds/v1.2/" }).await
 }
 
-/// Where to begin: the whole library, what is unread, and each category.
 async fn catalog(Me(app): Me) -> Result<Response> {
+    catalog_at(app, "").await
+}
+
+/// Where to begin: the whole library, what is unread, and each category. `at` leads from
+/// where it is served to the folder of the other feeds.
+async fn catalog_at(app: AppState, at: &str) -> Result<Response> {
     let categories = app.db.call(|conn| library::categories(conn)).await?;
-    let mut feed = Feed::new(NAVIGATION, "catalog", &format!("Mango · {}", app.me.name), "", "catalog");
-    let subsection = |href: &str| format!("<link rel=\"subsection\" type=\"{NAVIGATION}\" href=\"{}\"/>\n", esc(href));
+    let mut feed = Feed::new(NAVIGATION, "catalog", &format!("Mango · {}", app.me.name), at, &format!("{at}catalog"));
+    let subsection = |href: &str| format!("<link rel=\"subsection\" type=\"{NAVIGATION}\" href=\"{}\"/>\n", esc(&format!("{at}{href}")));
     let now = crate::db::now();
     feed.entry("library", "Library", now, "Every title in the library", &subsection("library"));
     feed.entry("unread", "Unread", now, "Titles with chapters left to read", &subsection("library?unread=1"));
@@ -240,7 +253,9 @@ async fn title(Me(app): Me, Path(id): Path<i64>, Query(paged): Query<Paged>) -> 
     }
     // The source lists the newest first; a reader wants the first chapter first.
     for chapter in title.chapters.iter().rev().skip((page - 1) * CHAPTERS_PER_PAGE).take(CHAPTERS_PER_PAGE) {
-        let mut links = format!("<link rel=\"http://opds-spec.org/acquisition\" type=\"application/vnd.comicbook+zip\" href=\"../chapters/{}/file\"/>\n", chapter.id);
+        // The series as the author: an app that names files by author and title then keeps a series together.
+        let mut links = format!("<author><name>{}</name></author>\n", esc(&title.title));
+        let _ = writeln!(links, "<link rel=\"http://opds-spec.org/acquisition\" type=\"application/vnd.comicbook+zip\" href=\"../chapters/{}/file\"/>", chapter.id);
         if let Some(count) = chapter.page_count.filter(|count| *count > 0) {
             let last = if chapter.last_page_read > 0 { format!(" pse:lastRead=\"{}\"", (chapter.last_page_read + 1).min(count)) } else { String::new() };
             let _ = writeln!(
@@ -320,7 +335,7 @@ async fn page(Me(app): Me, Path((id, index)): Path<(i64, i64)>, Query(look): Que
 }
 
 /// For an address or a header: everything but letters, digits and a few marks as %XX.
-fn percent(text: &str) -> String {
+pub(crate) fn percent(text: &str) -> String {
     let mut out = String::new();
     for byte in text.bytes() {
         match byte {
@@ -333,19 +348,27 @@ fn percent(text: &str) -> String {
     out
 }
 
-/// A chapter as a CBZ: the downloaded file when there is one, else its pages
-/// fetched now and packed for this one request.
 async fn file(Me(app): Me, Path(id): Path<i64>) -> Result<Response> {
+    chapter_file(&app, id).await
+}
+
+/// A chapter as a CBZ: the downloaded file when there is one, else its pages fetched
+/// now and packed for this one request. KOReader's sync learns the file by its marks.
+pub(crate) async fn chapter_file(app: &AppState, id: i64) -> Result<Response> {
     let view = app.titles.reader(id).await?;
     let bytes = match app.images.saved(id).await? {
         Some(saved) => tokio::task::spawn_blocking(move || std::fs::read(saved)).await.map_err(|e| AppError::internal(e.to_string()))??,
         None => {
             let _one_at_a_time = app.images.packing().await;
-            pack(&app, id).await?
+            pack(app, id).await?
         }
     };
     let name = format!("{} - {}.cbz", view.title, view.chapter.name);
     let plain: String = name.chars().map(|c| if c.is_ascii_alphanumeric() || matches!(c, ' ' | '-' | '.' | '_') { c } else { '_' }).collect();
+    let names = [plain.clone(), crate::kosync::koreader_name(&view.title, &view.chapter.name)];
+    if let Err(why) = crate::kosync::remember(&app.db, id, &bytes, &names).await {
+        tracing::warn!("could not note chapter {id} for KOReader's sync: {why}");
+    }
     let headers = [
         (header::CONTENT_TYPE, "application/vnd.comicbook+zip".to_owned()),
         (header::CONTENT_DISPOSITION, format!("attachment; filename=\"{plain}\"; filename*=UTF-8''{}", percent(&name))),

@@ -353,6 +353,9 @@ impl Titles {
             manga: WireManga,
             #[serde(default)]
             chapters: Vec<WireChapter>,
+            /// The title's page on the source's site, as the source makes it.
+            #[serde(default, rename = "webUrl")]
+            web_url: Option<String>,
         }
         let (source, manga, known) = self
             .db
@@ -369,7 +372,14 @@ impl Titles {
         let body = json!({ "manga": manga, "chapters": known, "fetchDetails": details, "fetchChapters": chapters });
         let opts = Call { source: Some(source), ..Call::default() };
         let update: Update = self.host.call(Method::POST, &format!("/sources/{source}/manga"), Some(&body), opts).await?;
-        self.db.call(move |conn| apply_update(conn, id, &update.manga, &update.chapters, details, chapters)).await
+        self.db
+            .call(move |conn| {
+                if let Some(own) = update.web_url.filter(|own| own.starts_with("https://") || own.starts_with("http://")) {
+                    conn.execute("UPDATE manga SET web_url = ?1 WHERE id = ?2", params![own, id])?;
+                }
+                apply_update(conn, id, &update.manga, &update.chapters, details, chapters)
+            })
+            .await
     }
 
     pub async fn set_library(&self, id: i64, in_library: bool) -> Result<()> {
@@ -580,12 +590,17 @@ fn json_column(r: &Row, index: usize) -> rusqlite::Result<Value> {
     Ok(serde_json::from_str(&text).unwrap_or_else(|_| json!({})))
 }
 
-/// A title's page on the source's site, when it can be put together.
-fn web_url(base: Option<String>, url: &str) -> Option<String> {
-    if url.starts_with("http://") || url.starts_with("https://") {
+/// A title's page on the source's site: as the source made it, or else put together from
+/// the title's key, when that is an address or a path.
+fn web_url(own: Option<String>, base: Option<String>, url: &str) -> Option<String> {
+    let web = |address: &str| address.starts_with("http://") || address.starts_with("https://");
+    if let Some(own) = own.filter(|own| web(own)) {
+        return Some(own);
+    }
+    if web(url) {
         return Some(url.to_owned());
     }
-    let base = base.filter(|b| b.starts_with("http://") || b.starts_with("https://"))?;
+    let base = base.filter(|b| web(b))?;
     url.starts_with('/').then(|| format!("{}{url}", base.trim_end_matches('/')))
 }
 
@@ -1021,7 +1036,7 @@ pub(crate) fn read_title(conn: &Connection, id: i64) -> Result<TitleView> {
         .query_row(
             "SELECT m.id, m.source_id, s.name, s.lang, s.base_url, m.url, m.title, m.artist, m.author, m.description, m.genre,
                     m.status, m.thumbnail_url, m.in_library, m.added_at, m.initialized, m.reader_mode, m.reader_fit,
-                    m.auto_download, m.chapters_at, m.locked, m.scanlators, m.dedupe, m.merged_into
+                    m.auto_download, m.chapters_at, m.locked, m.scanlators, m.dedupe, m.merged_into, m.web_url
              FROM manga m LEFT JOIN sources s ON s.id = m.source_id WHERE m.id = ?1",
             [id],
             |r| {
@@ -1033,7 +1048,7 @@ pub(crate) fn read_title(conn: &Connection, id: i64) -> Result<TitleView> {
                     source_id: r.get::<_, i64>(1)?.to_string(),
                     source_name: r.get(2)?,
                     source_lang: r.get(3)?,
-                    web_url: web_url(r.get(4)?, &url),
+                    web_url: web_url(r.get(24)?, r.get(4)?, &url),
                     title: r.get(6)?,
                     artist: r.get(7)?,
                     author: r.get(8)?,
@@ -1413,10 +1428,12 @@ mod tests {
 
     #[test]
     fn links() {
-        assert_eq!(web_url(Some("https://example.org/".into()), "/t/1").as_deref(), Some("https://example.org/t/1"));
-        assert_eq!(web_url(None, "https://example.org/t/1").as_deref(), Some("https://example.org/t/1"));
-        assert_eq!(web_url(Some("javascript:alert(1)".into()), "/t/1"), None);
-        assert_eq!(web_url(Some("https://example.org".into()), "opaque-key"), None);
+        assert_eq!(web_url(None, Some("https://example.org/".into()), "/t/1").as_deref(), Some("https://example.org/t/1"));
+        assert_eq!(web_url(None, None, "https://example.org/t/1").as_deref(), Some("https://example.org/t/1"));
+        assert_eq!(web_url(None, Some("javascript:alert(1)".into()), "/t/1"), None);
+        assert_eq!(web_url(None, Some("https://example.org".into()), "opaque-key"), None);
+        assert_eq!(web_url(Some("https://example.org/title/9".into()), None, "opaque-key").as_deref(), Some("https://example.org/title/9"), "the source's own wins");
+        assert_eq!(web_url(Some("javascript:alert(1)".into()), None, "opaque-key"), None);
         assert_eq!(cover_url(3, Some("")), None);
     }
 

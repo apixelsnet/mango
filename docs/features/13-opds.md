@@ -47,3 +47,18 @@ OPDS has no way for an app to report what was read, so a page fetched through OP
 Verification: a unit test for moving on, going back, the last page, a chapter already read and the option off; on Linux and Windows builds, a looked-at page moved nothing, page 3 of 4 set the place to 2, page 4 marked the chapter read, and the library feed's thumbnail pointed at the small cover.
 
 Not verified: a real reading app.
+
+## KOReader progress sync (2026-10-28)
+
+KOReader's own sync speaks to `/opds/kosync` (`kosync.rs`), so it falls under the same plan rule as the catalog. In KOReader: Progress sync › Custom sync server, that address, then the account's name and an app password (feature 09). Making an account from KOReader is refused.
+
+- KOReader names a document by the MD5 of 1 KB samples of its file, or by the MD5 of its name. Each time Mango hands out a chapter's CBZ (OPDS, or "Save as a CBZ file"), it notes both marks against the chapter (`sync_documents`).
+- A place KOReader reports is kept as sent (`sync_progress`). For a document Mango handed out, the page moves the chapter's place, and the last page or 100 % marks it read, with the same follow-ups as the reader.
+- Asked for a place, Mango answers KOReader's last report, or its own place when the chapter was read in Mango since, as device "Mango". A document Mango did not hand out still syncs between KOReader's devices.
+- Streamed pages (OPDS-PSE) make no file and so no mark; their place moves by the pages fetched, as before.
+
+Checked by unit tests (the sampling, both directions) and end to end on Linux and Windows with KOReader's calls made by hand: signing in with the app password and not the main one, a report moving the chapter, the report coming back, Mango's own place offered after reading on, a revoked app password refused.
+- The catalog gives each chapter entry the series as its author. KOReader saves a file as "author - title" (its own words for a missing author otherwise), so the files of a series sit together, and Mango notes the mark of that very name (`koreader_name`), as well as of the name it sends in `Content-Disposition`, which KOReader uses when told to keep the server's names.
+- `/opds` and `/opds/` are the catalog itself, no longer a redirect to it: KOReader leaves the name and password out when it follows a redirect, and `/opds/` was answered with the web page before.
+
+Checked in the emulator of KOReader 2026.07.1, driven on Linux: the catalog opened at `/opds/` with an app password, a chapter downloaded as "Sample Series - Arrival.cbz", a push moved the chapter in Mango, a place read on in Mango was pulled back into KOReader, matching by file name moved it as well, and the last page marked the chapter read.
