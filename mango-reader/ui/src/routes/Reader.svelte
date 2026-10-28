@@ -6,7 +6,7 @@
 <script lang="ts">
   import { untrack } from 'svelte';
   import { get, message, send, type PageMark, type ReaderInfo } from '../lib/api';
-  import { display } from '../lib/display.svelte';
+  import { DEVICES, display, thisDevice } from '../lib/display.svelte';
   import Icon from '../lib/Icon.svelte';
   import { makeOver, type Part } from '../lib/pages';
   import ReaderPrefs from '../lib/ReaderPrefs.svelte';
@@ -18,8 +18,10 @@
     KINDS,
     merge,
     MODES,
+    byDevice,
+    keep,
     owned,
-    profile,
+    resolve,
     setProfile,
     sharpenKernel,
     zone,
@@ -73,7 +75,9 @@
   let own = $state<Own>({});
   let scope = $state<'title' | 'kind'>('title');
   const kind = $derived<Kind>(own.kind ?? info?.kind ?? 'manga');
-  const p = $derived<Prefs>({ ...profile(kind), ...own });
+  const p = $derived<Prefs>(resolve(kind, own));
+  // Page size and turning are kept by kind of device, unless Settings keeps one for all.
+  const device = $derived(byDevice() ? DEVICES.find(([each]) => each === thisDevice())?.[1] : undefined);
   const mode = $derived(p.mode);
   const fit = $derived(p.fit);
   const speed = $derived(p.autoSpeed);
@@ -165,8 +169,8 @@
     if (scope === 'kind') {
       setProfile(kind, patch);
       // Or the title's own answer would hide the change just made.
-      own = merge(own, Object.fromEntries(Object.keys(patch).map((key) => [key, undefined])));
-    } else own = merge(own, patch);
+      own = keep(own, Object.fromEntries(Object.keys(patch).map((key) => [key, undefined])));
+    } else own = keep(own, patch);
     remember();
   }
 
@@ -908,9 +912,10 @@
           </div>
           <p>
             {scope === 'title' ? 'A change is kept for this title alone.' : `A change is kept for ${entry.all.toLowerCase()}, this title included.`}
+            {#if device}Settings marked {device} are kept for every {device.toLowerCase()} and no other device.{/if}
           </p>
         </div>
-        <ReaderPrefs value={p} onchange={change} />
+        <ReaderPrefs value={p} onchange={change} {device} />
         <button class="btn" disabled={!Object.keys(own).length} onclick={forget}>Forget what this title keeps for itself</button>
       </div>
     </aside>

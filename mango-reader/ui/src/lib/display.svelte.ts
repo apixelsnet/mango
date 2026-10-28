@@ -14,7 +14,17 @@ export type Display = {
   pages: number;
   /** Reading here leaves no trace: no progress, no history, nothing sent to trackers. */
   incognito: boolean;
+  /** What this device is, for the reader settings kept apart by device; `auto` tells by the screen. */
+  device: 'auto' | Device;
 };
+
+export type Device = 'phone' | 'tablet' | 'computer';
+
+export const DEVICES: [Device, string][] = [
+  ['phone', 'Phone'],
+  ['tablet', 'Tablet'],
+  ['computer', 'Computer'],
+];
 
 export const SIZES: [number, string][] = [
   [0.9, 'Small'],
@@ -40,7 +50,7 @@ export const PAGES: [number, string][] = [
   [96, '96 a page'],
 ];
 
-export const DEFAULT_DISPLAY: Display = { size: 1, covers: 'medium', tabs: 'auto', still: false, pages: 0, incognito: false };
+export const DEFAULT_DISPLAY: Display = { size: 1, covers: 'medium', tabs: 'auto', still: false, pages: 0, incognito: false, device: 'auto' };
 
 const KEY = 'mango.display';
 /** Narrower than this, the menu moves to the bottom by itself. */
@@ -56,7 +66,24 @@ function sound(raw: unknown): Display {
     still: d.still === true,
     pages: PAGES.some(([pages]) => pages === d.pages) ? d.pages : DEFAULT_DISPLAY.pages,
     incognito: d.incognito === true,
+    device: DEVICES.some(([device]) => device === d.device) ? d.device : 'auto',
   };
+}
+
+/**
+ * What the screen says this device is. A touch screen whose short side is under 600 CSS
+ * pixels is a phone, a larger one a tablet; a mouse means a computer, touch screen or not.
+ * The screen, not the window: a narrow window on a desk is still a computer.
+ */
+export function detectDevice(): Device {
+  const touch = matchMedia('(pointer: coarse)').matches;
+  if (!touch) return 'computer';
+  return Math.min(screen.width, screen.height) < 600 ? 'phone' : 'tablet';
+}
+
+/** What this device is: as it was told in Settings, or as the screen says. */
+export function thisDevice(): Device {
+  return display.value.device === 'auto' ? detectDevice() : display.value.device;
 }
 
 function stored(): Display {

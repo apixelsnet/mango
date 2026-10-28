@@ -72,3 +72,18 @@ Implementation: `lib/pages.ts` (page processing on a canvas), `lib/reader.ts` an
 Verification in Chromium against a Linux build: a 600×900 page with 70-pixel margins was cropped to 471×770; a 1200×800 spread was shown as two halves in both directions; sharpening was applied; a saved page was stored; and the sideways strip scrolled with the Space key.
 
 Not verified: real scans with uneven margins, canvas limits on mobile devices, and Safari support for the sharpening filter.
+
+## Settings by device (2026-10-28)
+
+Implementation: `lib/display.svelte.ts` (what the device is), `lib/reader.ts` (`BY_DEVICE`, `resolve`, `keep`), Settings › Reader and the reader's sheet.
+
+- Page size, two pages, strip width, tap zones and their swap, how far a tap scrolls, pages loaded ahead and auto-scroll speed are kept apart for phones, tablets and computers. Everything else stays the same on every device.
+- The device is told by its screen: a touch screen whose short side is under 600 CSS pixels is a phone, a larger one a tablet, a mouse a computer. Settings › Reader can say otherwise; that choice is kept in the browser.
+- Each layer keeps a device's answers beside its shared ones: Settings in `reader.devices` (device, then kind), a title in `devices` inside its `reader_prefs`. A device's answer wins over the shared one in the same layer. Every phone shares one set, so a new phone needs no setup.
+- Shipped for phones: fit width. Computers and tablets keep fit height.
+- Settings › Reader › Devices turns the whole thing off (`reader.byDevice`; on by default), and can set up another kind of device from this one. Settings kept by device carry the device's name as a tag.
+- Letting a setting go (a group's Reset) lets it go on this device and from the shared answer, so the shipped one shows. "Reset manga" and "Forget what this title keeps" clear every device.
+
+Checked in Chromium against a Linux build, with a desktop window and a phone emulated with touch at 390×844: a manga opened at fit height on the desktop and fit width on the phone; F on the phone stored `devices.phone.fit` for the title and left the desktop at height; F on the desktop stored its own and left the phone alone; the phone's manga fit set from the desktop's Settings reached the phone and not the desktop; turned off, both read the same, and back on, the phone's answer returned.
+
+Not checked: a real phone or tablet, a touch laptop.
