@@ -1,13 +1,13 @@
 <script lang="ts">
   import { get, message, send, type Backup, type Category, type Orphan, type ReadFiles, type Tracker } from '../lib/api';
-  import { COVERS, display, MENUS, PAGES, setDisplay, SIZES } from '../lib/display.svelte';
+  import { COVERS, detectDevice, DEVICES, display, MENUS, PAGES, setDisplay, SIZES, thisDevice, type Device } from '../lib/display.svelte';
   import Icon, { type IconName } from '../lib/Icon.svelte';
   import Locked from '../lib/Locked.svelte';
   import Notice from '../lib/Notice.svelte';
   import { lacks, loadPlan, plan, tooOften } from '../lib/plan.svelte';
   import { pref, setPref } from '../lib/prefs.svelte';
   import * as push from '../lib/push';
-  import { ACTIONS, FIXED, keyName, KINDS, profile, setProfile, type Action, type Kind } from '../lib/reader';
+  import { ACTIONS, byDevice, FIXED, keyName, KINDS, profile, setProfile, type Action, type Kind } from '../lib/reader';
   import ReaderPrefs from '../lib/ReaderPrefs.svelte';
   import { route } from '../lib/router.svelte';
   import { session, signOut } from '../lib/session.svelte';
@@ -42,6 +42,11 @@
   const ENOUGH = 7;
   // The reader's settings are held once for each kind of series; this is the one on show.
   let kind = $state<Kind>('manga');
+  // Which kind of device the reader settings below are for: this one, unless another is picked.
+  let picked = $state<Device | null>(null);
+  const here = $derived(thisDevice());
+  const forDevice = $derived(picked ?? here);
+  const deviceName = (device: Device) => DEVICES.find(([each]) => each === device)?.[1] ?? device;
   const FOLLOWS: [Theme['follow'], string][] = [
     ['system', 'System'],
     ['light', 'Day'],
@@ -870,6 +875,44 @@
         </section>
       {:else if tab.id === 'reader'}
         {@const name = KINDS.find((entry) => entry.id === kind)?.name.toLowerCase()}
+        {@const apart = byDevice()}
+        <section class="card">
+          <h3>Devices</h3>
+          <div class="set">
+            <div class="what">
+              <strong>Each device its own</strong>
+              <span>Page size, two pages, strip width, tap zones, scrolling and pages loaded ahead are kept apart for phones, tablets and computers: fit height on a desk, fit width on a phone. Every phone shares one set, so a new phone reads like the last. Off, every device reads the same.</span>
+            </div>
+            <div class="how">{@render toggle(apart, 'Each device its own', () => setPref('reader.byDevice', !apart).catch((e) => (error = message(e))))}</div>
+          </div>
+          <div class="set">
+            <div class="what">
+              <strong>This device is</strong>
+              <span>Told by its screen: a small touch screen is a phone, a large one a tablet, one with a mouse a computer. Kept on this device alone.</span>
+            </div>
+            <div class="how">
+              <select class="btn" aria-label="This device is" value={display.value.device} onchange={(e) => ((picked = null), setDisplay({ device: e.currentTarget.value as 'auto' | Device }))}>
+                <option value="auto">Automatic ({deviceName(detectDevice())})</option>
+                {#each DEVICES as [value, label] (value)}<option {value}>{label}</option>{/each}
+              </select>
+            </div>
+          </div>
+          {#if apart}
+            <div class="set">
+              <div class="what">
+                <strong>Settings for</strong>
+                <span>The marked settings below are for this kind of device. Pick another to set it up from here.</span>
+              </div>
+              <div class="how">
+                <div class="seg" role="group" aria-label="Kind of device">
+                  {#each DEVICES as [value, label] (value)}
+                    <button aria-pressed={forDevice === value} onclick={() => (picked = value)}>{label}{value === here ? ' (this one)' : ''}</button>
+                  {/each}
+                </div>
+              </div>
+            </div>
+          {/if}
+        </section>
         <section class="card">
           <h3>Kind of series</h3>
           <div class="set">
@@ -890,7 +933,7 @@
             <div class="how"><button class="btn" onclick={() => setProfile(kind, null)}>Reset {name}</button></div>
           </div>
         </section>
-        <ReaderPrefs value={profile(kind)} onchange={(patch) => setProfile(kind, patch)} />
+        <ReaderPrefs value={profile(kind, forDevice)} onchange={(patch) => setProfile(kind, patch, forDevice)} device={apart ? deviceName(forDevice) : undefined} />
 
         <section class="card">
           <h3>While reading</h3>

@@ -1,9 +1,10 @@
 <script lang="ts">
   // The reader's settings as rows of controls. Settings shows them for a kind of
   // series, the reader for the chapter that is open: which, the caller decides.
-  import { GROUPS, type Field, type Prefs } from './reader';
+  import { BY_DEVICE, GROUPS, type Field, type Prefs } from './reader';
 
-  let { value, onchange }: { value: Prefs; onchange: (patch: Partial<Prefs>) => void } = $props();
+  /** `device` names the kind of device the screen settings are kept for, when they are kept apart. */
+  let { value, onchange, device }: { value: Prefs; onchange: (patch: Partial<Prefs>) => void; device?: string } = $props();
 
   const set = (key: keyof Prefs, to: unknown) => onchange({ [key]: to } as Partial<Prefs>);
   // Undefined lets a setting go, back to what lies under it.
@@ -21,7 +22,7 @@
       {#each fields as field (field.key)}
         <div class="row">
           <div class="what">
-            <strong>{field.label}</strong>
+            <strong>{field.label}{#if device && BY_DEVICE.includes(field.key)}<em class="tag">{device}</em>{/if}</strong>
             {#if field.hint}<span>{field.hint}</span>{/if}
           </div>
           {#if field.type === 'choice'}
@@ -120,6 +121,18 @@
   .what span {
     color: var(--muted);
     font-size: 13px;
+  }
+
+  .tag {
+    margin-left: 8px;
+    padding: 1px 6px;
+    border: 2px solid var(--ink);
+    font-size: 10px;
+    font-style: normal;
+    font-weight: 900;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+    vertical-align: 2px;
   }
 
   .dial {

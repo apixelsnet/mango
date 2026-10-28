@@ -1,8 +1,11 @@
 // How a chapter is shown, and where each answer comes from. Three layers, the later
 // winning: what Mango ships for a kind of series, what Settings holds for that kind,
-// and what the one title keeps for itself, set from inside the reader.
+// and what the one title keeps for itself, set from inside the reader. The settings
+// about the screen (BY_DEVICE) are kept again in each layer for each kind of device,
+// and there the device's own answer wins.
 
 import { send } from './api';
+import { DEVICES, thisDevice, type Device } from './display.svelte';
 import { pref, prefs } from './prefs.svelte';
 
 export type Kind = 'manga' | 'manhwa' | 'manhua' | 'comic';
@@ -52,8 +55,11 @@ export type Prefs = {
   awake: boolean;
 };
 
-/** What one title keeps for itself: any of the settings, and the kind it was told it is. */
-export type Own = Partial<Prefs> & { kind?: Kind };
+/** What one title keeps for itself: any of the settings, the kind it was told it is, and what it keeps on each kind of device. */
+export type Own = Partial<Prefs> & { kind?: Kind; devices?: Partial<Record<Device, Partial<Prefs>>> };
+
+/** The settings about the screen more than the series: a phone and a desk each keep their own, unless Settings says one for all. */
+export const BY_DEVICE: (keyof Prefs)[] = ['fit', 'spread', 'width', 'zones', 'flip', 'step', 'ahead', 'autoSpeed'];
 
 export const KINDS: { id: Kind; name: string; all: string }[] = [
   { id: 'manga', name: 'Manga', all: 'All manga' },
@@ -102,6 +108,13 @@ const SHIPPED: Record<Kind, Partial<Prefs>> = {
   manhwa: { mode: 'webtoon', fit: 'width', zones: 'off' },
   manhua: { mode: 'webtoon', fit: 'width', zones: 'off' },
   comic: { mode: 'ltr' },
+};
+
+/** Where a kind of device parts from the rest as Mango ships it: a page fills a phone across. */
+const SHIPPED_DEVICE: Record<Device, Partial<Prefs>> = {
+  phone: { fit: 'width' },
+  tablet: {},
+  computer: {},
 };
 
 // ---------- the settings, as the controls and the checks both read them ----------
@@ -278,23 +291,75 @@ export function merge<T extends object>(base: T, patch: Partial<T>): T {
 // ---------- the layers ----------
 
 type Profiles = Partial<Record<Kind, Partial<Prefs>>>;
+type Devices = Partial<Record<Device, Profiles>>;
 
-/** How a kind of series is read when a title has nothing of its own to say. */
-export function profile(kind: Kind): Prefs {
+/** Whether each kind of device keeps its own BY_DEVICE settings. On unless Settings turns it off. */
+export function byDevice(): boolean {
+  return pref('reader.byDevice', true);
+}
+
+/** Only the BY_DEVICE settings of `given`, and only ones Mango can use. */
+function screenOnly(given: unknown): Partial<Prefs> {
+  const known = sane(given);
+  return Object.fromEntries(Object.entries(known).filter(([key]) => BY_DEVICE.includes(key as keyof Prefs)));
+}
+
+/**
+ * A change parted in two: what goes to every device, and what to this kind of device alone.
+ * A setting let go of goes from both, or the shared answer would still hide the shipped one.
+ */
+function part(patch: Partial<Prefs>): [Partial<Prefs>, Partial<Prefs>] {
+  if (!byDevice()) return [patch, {}];
+  const shared: Record<string, unknown> = {};
+  const device: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(patch)) {
+    if (!BY_DEVICE.includes(key as keyof Prefs)) shared[key] = value;
+    else {
+      device[key] = value;
+      if (value === undefined) shared[key] = undefined;
+    }
+  }
+  return [shared as Partial<Prefs>, device as Partial<Prefs>];
+}
+
+/** How a kind of series is read on a kind of device when a title has nothing of its own to say. */
+export function profile(kind: Kind, device: Device = thisDevice()): Prefs {
   // The one default Mango had before it told kinds apart still counts, for manga.
   const old = kind === 'manga' ? sane({ mode: pref<unknown>('reader.mode', undefined), fit: pref<unknown>('reader.fit', undefined) }) : {};
-  return { ...BASE, ...SHIPPED[kind], ...old, ...sane(pref<Profiles>('reader.profiles', {})[kind]) };
+  const apart = byDevice();
+  return {
+    ...BASE,
+    ...SHIPPED[kind],
+    ...(apart ? SHIPPED_DEVICE[device] : {}),
+    ...old,
+    ...sane(pref<Profiles>('reader.profiles', {})[kind]),
+    ...(apart ? screenOnly(pref<Devices>('reader.devices', {})[device]?.[kind]) : {}),
+  };
 }
 
 let unsent: Record<string, unknown> = {};
 let sending: ReturnType<typeof setTimeout> | undefined;
 
-/** Changes what Settings holds for a kind. No patch puts the kind back to how Mango ships it. */
-export function setProfile(kind: Kind, patch: Partial<Prefs> | null) {
+/**
+ * Changes what Settings holds for a kind, on a kind of device for the BY_DEVICE settings.
+ * No patch puts the kind back to how Mango ships it, on every device.
+ */
+export function setProfile(kind: Kind, patch: Partial<Prefs> | null, device: Device = thisDevice()) {
   const all: Profiles = { ...pref<Profiles>('reader.profiles', {}) };
-  if (patch) all[kind] = merge(all[kind] ?? {}, patch);
-  else delete all[kind];
-  const values: Record<string, unknown> = { 'reader.profiles': all };
+  const devices: Devices = { ...pref<Devices>('reader.devices', {}) };
+  if (patch) {
+    const [shared, mine] = part(patch);
+    all[kind] = merge(all[kind] ?? {}, shared);
+    if (Object.keys(mine).length) devices[device] = { ...devices[device], [kind]: merge(devices[device]?.[kind] ?? {}, mine) };
+  } else {
+    delete all[kind];
+    for (const [each] of DEVICES) {
+      if (!devices[each]) continue;
+      devices[each] = { ...devices[each] };
+      delete devices[each][kind];
+    }
+  }
+  const values: Record<string, unknown> = { 'reader.profiles': all, 'reader.devices': devices };
   if (!patch && kind === 'manga') values['reader.mode'] = values['reader.fit'] = null;
   Object.assign(prefs.values, values);
   // A slider says a lot while it is dragged: write once it rests.
@@ -310,7 +375,33 @@ export function setProfile(kind: Kind, patch: Partial<Prefs> | null) {
 export function owned(info: { readerMode: string | null; readerFit: string | null; readerPrefs: Record<string, unknown> | null }): Own {
   const raw = info.readerPrefs ?? {};
   const kind = KINDS.find((entry) => entry.id === raw.kind)?.id;
-  return { ...sane({ ...raw, mode: info.readerMode ?? undefined, fit: info.readerFit ?? undefined }), ...(kind ? { kind } : {}) };
+  const kept = (raw.devices && typeof raw.devices === 'object' ? raw.devices : {}) as Record<string, unknown>;
+  const devices = tidy(Object.fromEntries(DEVICES.map(([device]) => [device, screenOnly(kept[device])])));
+  return {
+    ...sane({ ...raw, mode: info.readerMode ?? undefined, fit: info.readerFit ?? undefined }),
+    ...(kind ? { kind } : {}),
+    ...(devices ? { devices } : {}),
+  };
+}
+
+/** The devices that keep something, or nothing when none does. */
+function tidy(devices: Partial<Record<Device, Partial<Prefs>>>): Own['devices'] {
+  const out = Object.fromEntries(Object.entries(devices).filter(([, kept]) => kept && Object.keys(kept).length));
+  return Object.keys(out).length ? out : undefined;
+}
+
+/** What a title keeps once `patch` is laid over it: the BY_DEVICE settings for this kind of device alone. */
+export function keep(own: Own, patch: Partial<Prefs>, device: Device = thisDevice()): Own {
+  const [shared, mine] = part(patch);
+  const out = merge(own, shared);
+  if (!Object.keys(mine).length) return out;
+  return merge(out, { devices: tidy({ ...own.devices, [device]: merge(own.devices?.[device] ?? {}, mine) }) });
+}
+
+/** How a title is read: as its kind is, then as it says for itself, on every device and then on this one. */
+export function resolve(kind: Kind, own: Own, device: Device = thisDevice()): Prefs {
+  const { kind: _, devices, ...shared } = own;
+  return { ...profile(kind, device), ...shared, ...(byDevice() ? devices?.[device] : {}) };
 }
 
 // ---------- what the settings come to ----------
