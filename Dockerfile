@@ -97,6 +97,7 @@ ENTRYPOINT ["java", "-XX:+UseSerialGC", "-Xmx256m", "-Xss512k", "-XX:TieredStopA
 FROM --platform=$BUILDPLATFORM node:22-slim AS ui
 WORKDIR /ui
 COPY mango-reader/ui/package.json mango-reader/ui/package-lock.json ./
+COPY mango-reader/ui/vendor ./vendor
 RUN --mount=type=cache,target=/root/.npm npm ci --no-audit --no-fund
 COPY mango-reader/ui ./
 RUN npm run build

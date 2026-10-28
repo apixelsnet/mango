@@ -1,0 +1,7 @@
+{
+  "name": "mango-deepmerge",
+  "version": "1.0.0",
+  "description": "deepmerge 4.3.1 with __proto__ keys dropped (CVE-2026-93753), until a fixed release exists",
+  "license": "MIT",
+  "main": "index.js"
+}
