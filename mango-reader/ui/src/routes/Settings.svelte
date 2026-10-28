@@ -392,8 +392,7 @@
   $effect(() => {
     if (tab.id !== 'account' || askedSignIn || !session.login || !session.signedIn) return;
     askedSignIn = true;
-    // A hosted Mango's own sign-in page asks for no code yet, so two-factor authentication stays off there.
-    if (!session.account) withTwoStep(async () => {});
+    withTwoStep(async () => {});
     withApps(async () => {});
   });
 
@@ -1578,73 +1577,71 @@
             {/if}
           </section>
 
-          {#if !session.account}
-            <section class="card">
-              <h3>Two-factor authentication (2FA)</h3>
-              {#if twoStep?.on}
-                <div class="set stack">
-                  <div class="what">
-                    <strong>On</strong>
-                    <span>
-                      Signing in takes a code from your authenticator app as well as the password. {twoStep.codesLeft}
-                      {twoStep.codesLeft === 1 ? 'recovery code is' : 'recovery codes are'} left. Reading apps sign in with an app password.
-                    </span>
-                  </div>
+          <section class="card">
+            <h3>Two-factor authentication (2FA)</h3>
+            {#if twoStep?.on}
+              <div class="set stack">
+                <div class="what">
+                  <strong>On</strong>
+                  <span>
+                    Signing in takes a code from your authenticator app as well as the password. {twoStep.codesLeft}
+                    {twoStep.codesLeft === 1 ? 'recovery code is' : 'recovery codes are'} left. Reading apps sign in with an app password.
+                  </span>
                 </div>
-                <form class="set" onsubmit={newRecovery}>
-                  <input class="sr" type="text" name="username" autocomplete="username" value={session.name ?? 'mango'} tabindex="-1" aria-hidden="true" readonly />
-                  <label class="field grow">
-                    <span class="sr">Your password</span>
-                    <input type="password" bind:value={twoStepPassword} placeholder="Password" autocomplete="current-password" required />
-                  </label>
-                  <button class="btn">New recovery codes</button>
-                  <button class="btn" type="button" onclick={leaveTwoStep}>Turn off</button>
-                </form>
-              {:else if enrolment}
-                <div class="set stack">
-                  <div class="what">
-                    <strong>Add Mango to your authenticator app</strong>
-                    <span>Scan the picture with the app, open the link on the phone that has it, or type the key in. Then enter the six digits it shows.</span>
-                  </div>
-                  <!-- The picture is drawn here from Mango's own link, never from what a page sent. -->
-                  <div class="qr">{@html enrolment.picture}</div>
-                  <a href={enrolment.uri}>Open in the authenticator app</a>
-                  <Secret values={[enrolment.secret]} label="The key, to type into the app" />
+              </div>
+              <form class="set" onsubmit={newRecovery}>
+                <input class="sr" type="text" name="username" autocomplete="username" value={session.name ?? 'mango'} tabindex="-1" aria-hidden="true" readonly />
+                <label class="field grow">
+                  <span class="sr">Your password</span>
+                  <input type="password" bind:value={twoStepPassword} placeholder="Password" autocomplete="current-password" required />
+                </label>
+                <button class="btn">New recovery codes</button>
+                <button class="btn" type="button" onclick={leaveTwoStep}>Turn off</button>
+              </form>
+            {:else if enrolment}
+              <div class="set stack">
+                <div class="what">
+                  <strong>Add Mango to your authenticator app</strong>
+                  <span>Scan the picture with the app, open the link on the phone that has it, or type the key in. Then enter the six digits it shows.</span>
                 </div>
-                <form class="set" onsubmit={confirmTwoStep}>
-                  <label class="field grow">
-                    <span class="sr">The code the app shows</span>
-                    <input type="text" bind:value={twoStepCode} placeholder="Six digits" inputmode="numeric" autocomplete="one-time-code" required />
-                  </label>
-                  <button class="btn ink">Turn on</button>
-                  <button class="btn" type="button" onclick={() => (enrolment = null)}>Cancel</button>
-                </form>
-              {:else}
-                <div class="set">
-                  <div class="what">
-                    <strong>Off</strong>
-                    <span>With it on, signing in takes a code from an authenticator app on your phone as well as the password.</span>
-                  </div>
-                  <div class="how"><button class="btn" disabled={!twoStep} onclick={startTwoStep}>Set up</button></div>
+                <!-- The picture is drawn here from Mango's own link, never from what a page sent. -->
+                <div class="qr">{@html enrolment.picture}</div>
+                <a href={enrolment.uri}>Open in the authenticator app</a>
+                <Secret values={[enrolment.secret]} label="The key, to type into the app" />
+              </div>
+              <form class="set" onsubmit={confirmTwoStep}>
+                <label class="field grow">
+                  <span class="sr">The code the app shows</span>
+                  <input type="text" bind:value={twoStepCode} placeholder="Six digits" inputmode="numeric" autocomplete="one-time-code" required />
+                </label>
+                <button class="btn ink">Turn on</button>
+                <button class="btn" type="button" onclick={() => (enrolment = null)}>Cancel</button>
+              </form>
+            {:else}
+              <div class="set">
+                <div class="what">
+                  <strong>Off</strong>
+                  <span>With it on, signing in takes a code from an authenticator app on your phone as well as the password.</span>
                 </div>
-              {/if}
-              {#if recovery.length}
-                <div class="set stack">
-                  <div class="what">
-                    <strong>Recovery codes</strong>
-                    <span>Each one signs you in once without the phone. Keep them somewhere safe: Mango shows them only now.</span>
-                  </div>
-                  <Secret
-                    values={recovery}
-                    label="Recovery codes"
-                    file="mango-recovery-codes.txt"
-                    heading="Mango recovery codes for {session.name ?? 'your account'}. Each one signs in once, in place of a code from the authenticator app."
-                  />
+                <div class="how"><button class="btn" disabled={!twoStep} onclick={startTwoStep}>Set up</button></div>
+              </div>
+            {/if}
+            {#if recovery.length}
+              <div class="set stack">
+                <div class="what">
+                  <strong>Recovery codes</strong>
+                  <span>Each one signs you in once without the phone. Keep them somewhere safe: Mango shows them only now.</span>
                 </div>
-              {/if}
-              {#if twoStepError}<div class="set stack"><Notice error={twoStepError} /></div>{/if}
-            </section>
-          {/if}
+                <Secret
+                  values={recovery}
+                  label="Recovery codes"
+                  file="mango-recovery-codes.txt"
+                  heading="Mango recovery codes for {session.name ?? 'your account'}. Each one signs in once, in place of a code from the authenticator app."
+                />
+              </div>
+            {/if}
+            {#if twoStepError}<div class="set stack"><Notice error={twoStepError} /></div>{/if}
+          </section>
 
           <section class="card">
             <h3>App passwords</h3>
