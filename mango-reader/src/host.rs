@@ -5,7 +5,7 @@
 //! time limit, and calls to one source are capped.
 
 use crate::{
-    config::HostConfig,
+    config::{HostConfig, ProxySetting},
     error::{AppError, Result},
 };
 use reqwest::Method;
@@ -83,6 +83,8 @@ pub struct Host {
     starts: watch::Sender<u64>,
     /// Where Cloudflare's checks are sent to be passed; see `set_solver`.
     solver: StdMutex<Solver>,
+    /// What sites are reached through; see `set_proxy`.
+    proxy: StdMutex<Proxy>,
     /// Whether sources get a web view, and the program that lends Java a display for it.
     web_view: (bool, Option<PathBuf>),
 }
@@ -136,6 +138,94 @@ impl Solver {
     }
 }
 
+/// A proxy the sources reach sites through, for sites that turn away the address this
+/// machine goes out from. Mango does not run one; it is told where one is.
+#[derive(Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default, rename_all = "camelCase")]
+pub struct Proxy {
+    /// Its address, `http://` or `socks5://` with a host and a port. Empty: there is none.
+    pub url: String,
+    /// The sites sent through it, each with its subdomains. Empty: every site.
+    pub sites: Vec<String>,
+    /// The name and password it asks for, a `socks5://` one only. Empty: it asks for none.
+    pub username: String,
+    pub password: String,
+}
+
+impl std::fmt::Debug for Proxy {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Proxy").field("url", &self.url).field("sites", &self.sites).field("username", &self.username).finish_non_exhaustive()
+    }
+}
+
+impl Proxy {
+    /// The setting it is kept under.
+    pub const KEY: &'static str = "proxy";
+
+    /// What a reader of the setting is shown: whether there is a password, never the password.
+    pub fn shown(&self) -> serde_json::Value {
+        serde_json::json!({ "url": self.url, "sites": self.sites, "username": self.username, "hasPassword": !self.password.is_empty() })
+    }
+
+    /// The same, tidied, or an error when it could not work.
+    pub fn checked(mut self) -> Result<Self> {
+        self.url = self.url.trim().trim_end_matches('/').to_owned();
+        self.username = self.username.trim().to_owned();
+        if self.url.is_empty() {
+            // No proxy, nothing to sign in to.
+            self.username.clear();
+            self.password.clear();
+        } else {
+            let bad = |why: &str| AppError::bad_request(format!("The proxy's address {why}"));
+            let url = reqwest::Url::parse(&self.url).map_err(|_| bad("is not an address"))?;
+            if !matches!(url.scheme(), "http" | "socks5") {
+                return Err(bad("starts with http:// or socks5://"));
+            }
+            if url.host_str().is_none_or(str::is_empty) || url.port_or_known_default().is_none() {
+                return Err(bad("needs a host and a port, such as http://proxy:8888"));
+            }
+            if !url.username().is_empty() || url.password().is_some() {
+                return Err(bad("has no name or password in it: they have their own fields"));
+            }
+            if !matches!(url.path(), "" | "/") || url.query().is_some() || url.fragment().is_some() {
+                return Err(bad("is a host and a port, nothing after them"));
+            }
+            if !self.username.is_empty() || !self.password.is_empty() {
+                if self.username.is_empty() {
+                    return Err(AppError::bad_request("A password for the proxy needs a name with it"));
+                }
+                // The sources' network stack answers a password question from a SOCKS proxy
+                // only; an HTTP proxy's goes unanswered.
+                if url.scheme() != "socks5" {
+                    return Err(AppError::bad_request("A name and password work with a socks5:// proxy only"));
+                }
+                // The most SOCKS carries for each.
+                let fits = |s: &str| s.len() <= 255 && !s.chars().any(char::is_control);
+                if !fits(&self.username) || !fits(&self.password) {
+                    return Err(AppError::bad_request("The proxy's name and password are one line of at most 255 bytes each"));
+                }
+            }
+        }
+        let mut sites = Vec::new();
+        for site in &self.sites {
+            let site = site.trim().to_lowercase();
+            let site = site.split_once("://").map_or(site.as_str(), |(_, rest)| rest);
+            let site = site.split(['/', '?', '#']).next().unwrap_or_default().trim_start_matches("*.").trim_end_matches('.');
+            if site.is_empty() {
+                continue;
+            }
+            if !site.contains('.') || !site.chars().all(|c| c.is_ascii_alphanumeric() || c == '.' || c == '-') {
+                return Err(AppError::bad_request(format!("{site} is not a site's name, such as example.org")));
+            }
+            if !sites.iter().any(|s| s == site) {
+                sites.push(site.to_owned());
+            }
+        }
+        self.sites = sites;
+        Ok(self)
+    }
+}
+
 /// Marks a call in progress, so the idle check leaves the host alone.
 struct Busy<'a>(&'a Host);
 
@@ -175,6 +265,7 @@ impl Host {
             caps: StdMutex::new(HashMap::new()),
             starts: watch::channel(0).0,
             solver: StdMutex::default(),
+            proxy: StdMutex::default(),
             web_view: web_view(cfg.webview),
             cfg,
         }))
@@ -187,6 +278,23 @@ impl Host {
     /// The host reads the solver when it starts, so a running one is stopped: the next call brings up one that knows.
     pub async fn set_solver(&self, solver: Solver) {
         let changed = std::mem::replace(&mut *self.solver.lock().unwrap_or_else(|e| e.into_inner()), solver.clone()) != solver;
+        if changed {
+            self.stop().await;
+        }
+    }
+
+    /// Who sets the proxy here.
+    pub fn proxy_setting(&self) -> ProxySetting {
+        self.cfg.proxy_setting
+    }
+
+    pub fn proxy(&self) -> Proxy {
+        self.proxy.lock().unwrap_or_else(|e| e.into_inner()).clone()
+    }
+
+    /// Like the solver, the proxy is read when the host starts.
+    pub async fn set_proxy(&self, proxy: Proxy) {
+        let changed = std::mem::replace(&mut *self.proxy.lock().unwrap_or_else(|e| e.into_inner()), proxy.clone()) != proxy;
         if changed {
             self.stop().await;
         }
@@ -424,6 +532,8 @@ impl Host {
 
         let started = Instant::now();
         let solver = self.solver();
+        // Switched off, one set before stays saved but goes unused.
+        let proxy = if self.cfg.proxy_setting == ProxySetting::Off { Proxy::default() } else { self.proxy() };
         let (web_view, lender) = &self.web_view;
         let mut command = match lender {
             Some(lender) => {
@@ -464,6 +574,10 @@ impl Host {
             .env("DBUS_SESSION_BUS_ADDRESS", std::env::var("DBUS_SESSION_BUS_ADDRESS").unwrap_or_else(|_| "disabled:".into()))
             .env("MANGO_HOST_SOLVER_URL", &solver.url)
             .env("MANGO_HOST_SOLVER_TIMEOUT_SECONDS", solver.timeout_secs.to_string())
+            .env("MANGO_HOST_PROXY_URL", &proxy.url)
+            .env("MANGO_HOST_PROXY_SITES", proxy.sites.join(","))
+            .env("MANGO_HOST_PROXY_USERNAME", &proxy.username)
+            .env("MANGO_HOST_PROXY_PASSWORD", &proxy.password)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
@@ -618,6 +732,36 @@ mod tests {
         assert!(matches!(parse_ready("MANGO_HOST_READY port=41233 protocol=1"), Some(Err(why)) if why.contains("protocol 1")));
         assert!(matches!(parse_ready("MANGO_HOST_READY port=0 protocol=6"), Some(Err(_))));
         assert_eq!(parse_ready("some log line"), None);
+    }
+
+    #[test]
+    fn proxy_is_checked_and_tidied() {
+        let proxy = |url: &str, sites: &[&str]| Proxy { url: url.into(), sites: sites.iter().map(|s| s.to_string()).collect(), ..Proxy::default() }.checked();
+        let tidy = proxy(" http://proxy.example:8888/ ", &["https://Example.org/path", "*.cdn.example.net", "example.org", " "]).unwrap();
+        assert_eq!(tidy.url, "http://proxy.example:8888");
+        assert_eq!(tidy.sites, ["example.org", "cdn.example.net"]);
+        assert!(proxy("socks5://10.0.0.2:1080", &[]).is_ok());
+        assert!(proxy("", &[]).is_ok());
+        for wrong in ["ftp://proxy:21", "socks5://proxy", "http://user:pass@proxy:8888", "http://proxy:8888/path", "proxy:8888", "http://:8888"] {
+            assert!(proxy(wrong, &[]).is_err(), "{wrong} was taken");
+        }
+        assert!(proxy("", &["localhost"]).is_err());
+        assert!(proxy("", &["exa mple.org"]).is_err());
+
+        let signed = |url: &str, username: &str, password: &str| {
+            Proxy { url: url.into(), username: username.into(), password: password.into(), ..Proxy::default() }.checked()
+        };
+        let kept = signed("socks5://proxy.example:1080", " name ", "secret").unwrap();
+        assert_eq!((kept.username.as_str(), kept.password.as_str()), ("name", "secret"));
+        assert!(signed("http://proxy.example:8888", "name", "secret").is_err(), "an HTTP proxy cannot be signed in to");
+        assert!(signed("socks5://proxy.example:1080", "", "secret").is_err(), "a password needs a name");
+        assert!(signed("socks5://proxy.example:1080", "name", &"x".repeat(256)).is_err());
+        assert!(signed("socks5://proxy.example:1080", "na\nme", "secret").is_err());
+        let none = signed("", "name", "secret").unwrap();
+        assert!(none.username.is_empty() && none.password.is_empty(), "no proxy keeps no password");
+        assert!(!format!("{kept:?}").contains("secret"));
+        assert_eq!(kept.shown()["hasPassword"], true);
+        assert!(!kept.shown().to_string().contains("secret"));
     }
 
     #[test]

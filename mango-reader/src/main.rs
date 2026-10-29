@@ -116,6 +116,9 @@ async fn run() -> Result<(), String> {
     if let Some(solver) = db.call(|conn| Ok(settings::get::<host::Solver>(conn, host::Solver::KEY))).await.map_err(|e| e.to_string())? {
         host.set_solver(solver).await;
     }
+    if let Some(proxy) = db.call(|conn| Ok(settings::get::<host::Proxy>(conn, host::Proxy::KEY))).await.map_err(|e| e.to_string())? {
+        host.set_proxy(proxy).await;
+    }
 
     // The local source needs no extension and no host: it is there from the first start.
     let local = local::Local::new(cfg.local_dir());

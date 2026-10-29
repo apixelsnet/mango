@@ -14,6 +14,8 @@ export type Plan = {
   opds: boolean;
   trackers: boolean;
   autoDownload: boolean;
+  /** Setting a proxy the sources reach sites through. */
+  proxy: boolean;
   /** The fewest hours between automatic library checks. */
   updatesEvery: number | null;
 };
@@ -53,7 +55,7 @@ export function ask() {
 export const asksOn = (area: string) => plan.is?.full === true && !FREEING.includes(area);
 
 /** Whether the plan leaves this out. Never where no plan holds. */
-export const lacks = (what: 'opds' | 'trackers' | 'autoDownload') => plan.is !== null && !plan.is[what];
+export const lacks = (what: 'opds' | 'trackers' | 'autoDownload' | 'proxy') => plan.is !== null && !plan.is[what];
 
 /** Whether an automatic check this many hours apart is more often than the plan allows. */
 export const tooOften = (hours: number) => hours > 0 && plan.is?.updatesEvery != null && hours < plan.is.updatesEvery;

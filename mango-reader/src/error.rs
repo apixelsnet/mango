@@ -55,7 +55,14 @@ impl IntoResponse for AppError {
             tracing::warn!("{self}");
         }
         let body = json!({ "error": { "code": self.code, "message": self.message } });
-        (self.status, Json(body)).into_response()
+        // A proxy in front of Mango (Cloudflare's, for one) shows its own page in place of a
+        // 502 or 504, so the reason never reaches the reader. Both go out as 503, which such
+        // proxies pass on as it is.
+        let status = match self.status {
+            StatusCode::BAD_GATEWAY | StatusCode::GATEWAY_TIMEOUT => StatusCode::SERVICE_UNAVAILABLE,
+            status => status,
+        };
+        (status, Json(body)).into_response()
     }
 }
 
@@ -74,5 +81,20 @@ impl From<zip::result::ZipError> for AppError {
 impl From<std::io::Error> for AppError {
     fn from(e: std::io::Error) -> Self {
         Self::internal(e.to_string())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn gateway_errors_go_out_as_503() {
+        let status = |code| AppError::new(code, "x", "y").into_response().status().as_u16();
+        assert_eq!(status(502), 503);
+        assert_eq!(status(504), 503);
+        assert_eq!(status(503), 503);
+        assert_eq!(status(404), 404);
+        assert_eq!(status(500), 500);
     }
 }

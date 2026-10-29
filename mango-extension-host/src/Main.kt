@@ -77,8 +77,14 @@ import xyz.nulldev.androidcompat.webkit.KcefWebViewProvider
 import xyz.nulldev.ts.config.GlobalConfigManager
 import xyz.nulldev.ts.config.configManagerModule
 import java.io.File
+import java.io.IOException
 import java.net.InetAddress
 import java.net.InetSocketAddress
+import java.net.Proxy
+import java.net.Authenticator
+import java.net.PasswordAuthentication
+import java.net.ProxySelector
+import java.net.SocketAddress
 import java.net.URI
 import java.net.http.HttpClient
 import java.net.http.HttpRequest
@@ -148,6 +154,12 @@ private val loadedPkgs = ConcurrentHashMap.newKeySet<String>()
 private val lastRequest = AtomicLong(System.currentTimeMillis())
 private val downloader = HttpClient.newBuilder().followRedirects(HttpClient.Redirect.ALWAYS).build()
 private val webViewWanted = System.getenv("MANGO_HOST_WEBVIEW") == "1"
+
+/** Host and port of the proxy the core named, so a failure to reach it can be told apart. */
+@Volatile private var proxyAddress: Pair<String, Int>? = null
+
+/** Whether the core gave a name to sign in to that proxy with. */
+@Volatile private var proxySignsIn = false
 private val browserAsked = AtomicBoolean(false)
 private lateinit var application: App
 
@@ -245,6 +257,66 @@ private fun sourceJson(s: Source): JsonObject =
 
 // ---------- runtime ----------
 
+/**
+ * Sends requests to the named sites and their subdomains through [proxy], or to every site
+ * when none is named. This machine itself and the solver are always reached directly.
+ */
+private class SiteProxy(
+    private val proxy: Proxy,
+    private val sites: List<String>,
+    private val direct: Set<String>,
+) : ProxySelector() {
+    override fun select(uri: URI): List<Proxy> {
+        val host = uri.host?.lowercase()?.trim('[', ']')?.trimEnd('.') ?: return listOf(Proxy.NO_PROXY)
+        val local = host == "localhost" || host.startsWith("127.") || host == "::1" || host in direct
+        val named = sites.isEmpty() || sites.any { host == it || host.endsWith(".$it") }
+        return listOf(if (named && !local) proxy else Proxy.NO_PROXY)
+    }
+
+    override fun connectFailed(
+        uri: URI?,
+        address: SocketAddress?,
+        failure: IOException?,
+    ) = Unit
+}
+
+/** The selector for the proxy the core names, or null when it names none. */
+private fun siteProxy(
+    url: String?,
+    sites: String?,
+    username: String?,
+    password: String?,
+    solver: String,
+): ProxySelector? {
+    val address = url?.trim().orEmpty().ifEmpty { return null }.let(::URI)
+    val type =
+        when (address.scheme) {
+            "http" -> Proxy.Type.HTTP
+            "socks5" -> Proxy.Type.SOCKS
+            else -> error("MANGO_HOST_PROXY_URL starts with http:// or socks5://")
+        }
+    val port = address.port.takeIf { it > 0 } ?: 80
+    val proxy = Proxy(type, InetSocketAddress.createUnresolved(address.host, port))
+    proxyAddress = address.host to port
+    if (!username.isNullOrEmpty()) {
+        check(type == Proxy.Type.SOCKS) { "MANGO_HOST_PROXY_USERNAME needs a socks5:// proxy" }
+        proxySignsIn = true
+        // Java's SOCKS client asks the default authenticator; it answers that proxy and nothing else.
+        val signIn = PasswordAuthentication(username, password.orEmpty().toCharArray())
+        Authenticator.setDefault(
+            object : Authenticator() {
+                override fun getPasswordAuthentication(): PasswordAuthentication? =
+                    signIn.takeIf {
+                        requestingProtocol == "SOCKS5" && requestingHost.equals(address.host, ignoreCase = true) && requestingPort == port
+                    }
+            },
+        )
+    }
+    val named = sites.orEmpty().split(',').map { it.trim().lowercase() }.filter { it.isNotEmpty() }
+    val direct = setOfNotNull(address.host.lowercase(), runCatching { URI(solver).host?.lowercase() }.getOrNull())
+    return SiteProxy(proxy, named, direct)
+}
+
 /** The part of Suwayomi's start-up that extensions depend on, and nothing else. */
 private fun initRuntime(dataDir: Path) {
     (LoggerFactory.getLogger(Logger.ROOT_LOGGER_NAME) as ch.qos.logback.classic.Logger).level = Level.WARN
@@ -261,6 +333,17 @@ private fun initRuntime(dataDir: Path) {
             System.setProperty("suwayomi.tachidesk.config.server.flareSolverrTimeout", it.toString())
         }
     }
+
+    // Sites that turn away the address this machine goes out from are reached through a
+    // proxy, when the core names one. The runtime's network stack asks Java's default
+    // selector for every request it makes, so the choice is made there.
+    siteProxy(
+        System.getenv("MANGO_HOST_PROXY_URL"),
+        System.getenv("MANGO_HOST_PROXY_SITES"),
+        System.getenv("MANGO_HOST_PROXY_USERNAME"),
+        System.getenv("MANGO_HOST_PROXY_PASSWORD"),
+        solver,
+    )?.let(ProxySelector::setDefault)
 
     // Android ships BouncyCastle's ciphers; some sources ask for ones the JVM lacks, such as AES/CBC/ZEROBYTEPADDING.
     Security.addProvider(BouncyCastleProvider())
@@ -530,8 +613,40 @@ private fun <T> call(block: suspend () -> T): T =
     } catch (e: LinkageError) {
         throw ApiError(501, "needs_optional_module", "This source needs a module that is not installed: ${e.message}")
     } catch (e: Throwable) {
-        throw ApiError(502, "source_error", e.message ?: e.javaClass.simpleName)
+        throw ApiError(502, "source_error", told(e))
     }
+
+/**
+ * A source's failure in words for the reader. The runtime wraps a site's error status in
+ * exceptions whose message is the class name and "HTTP error <n>", and when the solver turns
+ * a check down it keeps only the solver's own status, dropping the reason.
+ */
+private fun told(e: Throwable): String {
+    val chain = generateSequence(e) { it.cause }.take(8).toList()
+    proxyAddress?.let { (host, port) ->
+        // OkHttp names the address it failed at as `name/ip:port`.
+        val failed = chain.mapNotNull { it.message }.firstOrNull { it.startsWith("Failed to connect to") }
+        if (failed != null && host in failed && failed.endsWith(":$port")) {
+            return "Could not reach the proxy at $host:$port"
+        }
+        // A SOCKS proxy is reached inside Java's own SOCKS client, which OkHttp does not name.
+        val socks = chain.filter { it.stackTrace.any { frame -> frame.className == "java.net.SocksSocketImpl" } }
+        if (socks.any { it is java.net.ConnectException || it is java.net.NoRouteToHostException }) {
+            return "Could not reach the proxy at $host:$port"
+        }
+        // With no name set, Java's SOCKS client still offers one: the system user's, with no password.
+        if (socks.any { it.message == "SOCKS : authentication failed" }) {
+            return if (proxySignsIn) "The proxy at $host:$port turned its name and password down" else "The proxy at $host:$port wants a name and password"
+        }
+    }
+    val http = chain.firstOrNull { it.javaClass.simpleName == "HttpException" }
+        ?: return e.message ?: e.javaClass.simpleName
+    if (http.stackTrace.any { it.className.endsWith(".CFClearance") }) {
+        return "The site's Cloudflare check stopped this request and the solver could not get past it. The site may be blocking this server."
+    }
+    val status = http.message?.let { Regex("""\d{3}""").find(it)?.value }
+    return if (status != null) "The site answered HTTP $status" else "The site answered with an error"
+}
 
 // ---------- preferences ----------
 

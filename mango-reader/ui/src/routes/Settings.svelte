@@ -451,6 +451,7 @@
           !plan.is.trackers && 'Trackers',
           !plan.is.autoDownload && 'Downloading new chapters by themselves',
           !plan.is.opds && 'Reading apps over OPDS',
+          !plan.is.proxy && 'A proxy for sites that turn the server away',
           tooOften(6) && `Checking the library by itself more often than every ${plan.is.updatesEvery} hours`,
         ].filter((what): what is string => typeof what === 'string')
       : [],
@@ -548,6 +549,46 @@
       .catch((e) => (solverError = message(e)));
   });
 
+  let askedProxy = false;
+  $effect(() => {
+    if (tab.id !== 'sources' || askedProxy || !proxyOpen || lacks('proxy')) return;
+    askedProxy = true;
+    get<ProxyKept>('/proxy')
+      .then((kept) => (proxy = shownProxy(kept)))
+      .catch((e) => (proxyError = message(e)));
+  });
+
+  // ---------- the proxy ----------
+
+  /** The password itself never comes back, only whether there is one. */
+  type ProxyKept = { url: string; sites: string[]; username: string; hasPassword: boolean };
+
+  const shownProxy = (kept: ProxyKept) => ({ ...kept, sites: kept.sites.join(', '), password: '' });
+
+  let proxy = $state({ url: '', sites: '', username: '', password: '', hasPassword: false });
+  let proxyError = $state<string | null>(null);
+  // Who sets the proxy here: an admin, every account (a Mango run for each reader), or no one.
+  let proxySetting = $state<'admin' | 'anyone' | 'off' | null>(null);
+  const proxyOpen = $derived(proxySetting === 'anyone' || (proxySetting === 'admin' && session.admin));
+  // Only a SOCKS5 proxy takes a name and password: they come up for one, or while a name is kept.
+  const signsIn = $derived(/^\s*socks5:\/\//i.test(proxy.url) || proxy.username !== '');
+  let proxySaved = $state(false);
+
+  async function saveProxy(event: SubmitEvent) {
+    event.preventDefault();
+    proxyError = null;
+    proxySaved = false;
+    try {
+      const sites = proxy.sites.split(/[\s,]+/).filter(Boolean);
+      // An empty password keeps the one already there, for the same name.
+      const kept = await send<ProxyKept>('PUT', '/proxy', { url: proxy.url, sites, username: proxy.username, password: proxy.password });
+      proxy = shownProxy(kept);
+      proxySaved = true;
+    } catch (e) {
+      proxyError = message(e);
+    }
+  }
+
   // ---------- version ----------
 
   const v = $derived(about.info);
@@ -568,8 +609,8 @@
   const day = (iso: string | null) => (iso ? new Date(iso).toLocaleDateString(undefined, { year: 'numeric', month: 'short', day: 'numeric' }) : '');
 
   let localDir = $state('');
-  get<{ version: string; localDir: string }>('/health')
-    .then((health) => ((version = health.version), (localDir = health.localDir)))
+  get<{ version: string; localDir: string; proxySetting?: 'admin' | 'anyone' | 'off' }>('/health')
+    .then((health) => ((version = health.version), (localDir = health.localDir), (proxySetting = health.proxySetting ?? 'admin')))
     .catch(() => {});
 
   // What "Export my files" would hold, asked for when the Downloads group opens.
@@ -1317,6 +1358,73 @@
               <div class="set stack">
                 <Notice error={solverError} />
                 {#if solverSaved}<p class="muted" role="status">Saved. The sources use it from their next call.</p>{/if}
+              </div>
+            {/if}
+          </section>
+        {/if}
+
+        {#if lacks('proxy')}
+          <section class="card">
+            <h3>Proxy</h3>
+            <div class="set">
+              <div class="what">
+                <strong>Proxy</strong>
+                <span>Some sites turn away the address this server goes out from. Their sources can reach them through a proxy of yours. Your plan leaves it out.</span>
+              </div>
+              <div class="how"><Locked /></div>
+            </div>
+          </section>
+        {:else if proxyOpen}
+          <section class="card">
+            <h3>Proxy</h3>
+            <form class="set" onsubmit={saveProxy}>
+              <div class="what">
+                <strong>Address</strong>
+                <span>
+                  Some sites turn away the address this server goes out from. Their sources reach them through this proxy instead, an HTTP or
+                  SOCKS5 one. Empty: no proxy.
+                </span>
+              </div>
+              <label class="field grow">
+                <span class="sr">The proxy's address</span>
+                <input type="text" bind:value={proxy.url} placeholder="http://proxy:8888 or socks5://proxy:1080" autocomplete="off" spellcheck="false" />
+              </label>
+            </form>
+            <form class="set" onsubmit={saveProxy}>
+              <div class="what">
+                <strong>Sites</strong>
+                <span>Only these go through it, with their subdomains. Empty: every site.</span>
+              </div>
+              <label class="field grow">
+                <span class="sr">Sites sent through the proxy</span>
+                <input type="text" bind:value={proxy.sites} placeholder="example.org, example.net" autocomplete="off" spellcheck="false" />
+              </label>
+              {#if !signsIn}<button class="btn ink">Save</button>{/if}
+            </form>
+            {#if signsIn}
+              <form class="set" onsubmit={saveProxy}>
+                <div class="what">
+                  <strong>Name and password</strong>
+                  <span>
+                    The SOCKS5 proxy's, when it asks for them. Empty: it asks for none.
+                    {#if proxy.hasPassword}The password is kept; type a new one to change it.{/if}
+                  </span>
+                </div>
+                <label class="field grow">
+                  <span class="sr">The proxy's user name</span>
+                  <input type="text" bind:value={proxy.username} placeholder="Name" autocomplete="off" spellcheck="false" />
+                </label>
+                <label class="field grow">
+                  <span class="sr">The proxy's password</span>
+                  <input type="password" bind:value={proxy.password} placeholder={proxy.hasPassword ? 'Kept' : 'Password'} autocomplete="new-password" />
+                </label>
+                <button class="btn ink">Save</button>
+              </form>
+            {/if}
+            {#if proxyError || proxySaved}
+              <div class="set stack">
+                <Notice error={proxyError} />
+                {#if proxySaved}<p class="muted" role="status">Saved. The sources use it from their next call.</p>{/if}
               </div>
             {/if}
           </section>

@@ -14,6 +14,16 @@ The store and the extension are not named here. They come from the environment:
 With a solver address, which must be the one the host was started with
 (MANGO_HOST_SOLVER_URL) and on this machine, it stands in for that solver and for a
 site behind a Cloudflare check, and has a source fetch a picture from the site.
+
+With MANGO_SMOKE_PROXY_PORT set, the host must have been started with
+MANGO_HOST_PROXY_URL=http://127.0.0.1:<that port> and
+MANGO_HOST_PROXY_SITES=proxied.example: it stands in for that proxy and checks that
+the named site goes through it and another does not.
+
+With MANGO_SMOKE_SOCKS_PORT set, the host must have been started with
+MANGO_HOST_PROXY_URL=socks5://127.0.0.1:<that port>, MANGO_HOST_PROXY_SITES=proxied.example,
+MANGO_HOST_PROXY_USERNAME=smoke and MANGO_HOST_PROXY_PASSWORD=smoke-secret: it stands in
+for that proxy, checks the host signs in to it, and that a refused sign-in is told.
 """
 import http.server
 import json
@@ -203,13 +213,17 @@ if solver:
             return "cloudflare"
 
         def do_GET(self):
-            passed = "cf_clearance=smoke" in self.headers.get("Cookie", "")
+            passed = "cf_clearance=smoke" in self.headers.get("Cookie", "") and self.path != "/blocked.png"
             self.answer(200, "image/png", PICTURE) if passed else self.answer(403, "text/html", b"Just a moment...")
 
     class Solver(Quiet):
         def do_POST(self):
             request = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
             asked.append(request)
+            if request["url"].endswith("/blocked.png"):
+                # What a solver answers when the site bans its address.
+                refused = {"status": "error", "message": "Error: Error solving the challenge. Cloudflare has blocked this request."}
+                return self.answer(500, "application/json", json.dumps(refused).encode())
             cookie = {"name": "cf_clearance", "value": "smoke", "domain": "127.0.0.1", "path": "/"}
             solution = {"url": request["url"], "status": 200, "userAgent": "Smoke/1.0", "cookies": [cookie]}
             answer = {"status": "ok", "message": "Challenge solved!", "solution": solution, "startTimestamp": 0, "endTimestamp": 0, "version": "smoke"}
@@ -229,6 +243,103 @@ if solver:
     if got != PICTURE or len(asked) != 1:
         sys.exit("solver: the cookie was not kept for the next call")
     print(f"solver: the next call went straight through in {ms} ms")
+    req = urllib.request.Request(base + f"/sources/{sid}/image", data=json.dumps({"cover": address.replace("cover", "blocked")}).encode(), method="POST")
+    req.add_header("Authorization", "Bearer " + token)
+    try:
+        urllib.request.urlopen(req, timeout=180)
+        sys.exit("solver: a check the solver turned down came through")
+    except urllib.error.HTTPError as err:
+        said = json.loads(err.read())["error"]["message"]
+        if err.code != 502 or "Cloudflare check" not in said:
+            sys.exit(f"solver: a check the solver turned down answered HTTP {err.code}: {said}")
+    print(f"solver: a check the solver turned down says so: {said}")
+
+if os.environ.get("MANGO_SMOKE_PROXY_PORT"):
+    PICTURE = b"\x89PNG\r\n\x1a\n" + bytes(32)
+    through = []
+
+    class StandIn(http.server.BaseHTTPRequestHandler):
+        """Answers what is asked of it through a proxy by itself: the names it gets do not exist."""
+
+        def log_message(self, *args):
+            pass
+
+        def do_GET(self):
+            through.append(self.path)
+            self.send_response(200)
+            self.send_header("Content-Type", "image/png")
+            self.send_header("Content-Length", str(len(PICTURE)))
+            self.end_headers()
+            self.wfile.write(PICTURE)
+
+    stand_in = http.server.ThreadingHTTPServer(("127.0.0.1", int(os.environ["MANGO_SMOKE_PROXY_PORT"])), StandIn)
+    threading.Thread(target=stand_in.serve_forever, daemon=True).start()
+    got, ms = call("POST", f"/sources/{sid}/image", {"cover": "http://img.proxied.example/cover.png"}, raw=True)
+    if got != PICTURE or through != ["http://img.proxied.example/cover.png"]:
+        sys.exit(f"proxy: a named site did not go through it: {len(got)} bytes, it saw {through}")
+    print(f"proxy: a named site went through it in {ms} ms")
+    try:
+        call("POST", f"/sources/{sid}/image", {"cover": "http://unnamed.example/cover.png"}, raw=True)
+    except urllib.error.HTTPError:
+        pass
+    if len(through) != 1:
+        sys.exit(f"proxy: a site not named went through it: {through}")
+    print("proxy: a site not named went straight out")
+
+if os.environ.get("MANGO_SMOKE_SOCKS_PORT"):
+    import socketserver
+
+    PICTURE = b"\x89PNG\r\n\x1a\n" + bytes(32)
+    signed_in, asked, refuse = [], [], threading.Event()
+
+    class Socks(socketserver.StreamRequestHandler):
+        """A SOCKS5 proxy that wants a name and password, and answers the HTTP asked of it by itself."""
+
+        def handle(self):
+            read = self.rfile.read
+            _, count = read(2)
+            if 2 not in read(count):
+                self.wfile.write(b"\x05\xff")
+                return
+            self.wfile.write(b"\x05\x02")
+            _, size = read(2)
+            name = read(size).decode()
+            password = read(read(1)[0]).decode()
+            signed_in.append((name, password))
+            if refuse.is_set():
+                self.wfile.write(b"\x01\x01")
+                return
+            self.wfile.write(b"\x01\x00")
+            _, _, _, kind = read(4)
+            target = read(read(1)[0]).decode() if kind == 3 else ".".join(map(str, read(4 if kind == 1 else 16)))
+            target += f":{int.from_bytes(read(2), 'big')}"
+            self.wfile.write(b"\x05\x00\x00\x01" + bytes(6))
+            line = self.rfile.readline().decode()
+            while self.rfile.readline() not in (b"\r\n", b""):
+                pass
+            asked.append(f"{target} {line.split()[1]}")
+            self.wfile.write(b"HTTP/1.1 200 OK\r\nContent-Type: image/png\r\nConnection: close\r\nContent-Length: %d\r\n\r\n" % len(PICTURE) + PICTURE)
+
+    class SocksServer(socketserver.ThreadingTCPServer):
+        daemon_threads = True
+        allow_reuse_address = True
+
+    threading.Thread(target=SocksServer(("127.0.0.1", int(os.environ["MANGO_SMOKE_SOCKS_PORT"])), Socks).serve_forever, daemon=True).start()
+    got, ms = call("POST", f"/sources/{sid}/image", {"cover": "http://img.proxied.example/cover.png"}, raw=True)
+    if got != PICTURE or asked != ["img.proxied.example:80 /cover.png"] or signed_in != [("smoke", "smoke-secret")]:
+        sys.exit(f"socks: a named site did not go through it signed in: {len(got)} bytes, it saw {asked}, signed in as {signed_in}")
+    print(f"socks: a named site went through it, signed in, in {ms} ms")
+    refuse.set()
+    req = urllib.request.Request(base + f"/sources/{sid}/image", data=json.dumps({"cover": "http://img.proxied.example/other.png"}).encode(), method="POST")
+    req.add_header("Authorization", "Bearer " + token)
+    try:
+        urllib.request.urlopen(req, timeout=60)
+        sys.exit("socks: a refused sign-in came through")
+    except urllib.error.HTTPError as err:
+        said = json.loads(err.read())["error"]["message"]
+        if err.code != 502 or "turned its name and password down" not in said:
+            sys.exit(f"socks: a refused sign-in answered HTTP {err.code}: {said}")
+    print(f"socks: a refused sign-in says so: {said}")
 
 loaded, failed = 1, []
 for e in index:
