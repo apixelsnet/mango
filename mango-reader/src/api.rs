@@ -10,7 +10,7 @@ use crate::{
     version::{self, Releases},
     error::{AppError, Result},
     export, files,
-    host::{Host, Solver},
+    host::{Host, Proxy, Solver},
     images::{Image, Images, MAX_COVER},
     import::{self, Importer, Preview},
     library::{self, Bulk, Category, LibraryView, Stats},
@@ -89,6 +89,7 @@ pub fn router(state: Spaces) -> Router {
         .route("/invites", get(list_invites).post(add_invite))
         .route("/invites/{id}", delete(remove_invite))
         .route("/solver", get(get_solver).put(put_solver))
+        .route("/proxy", get(get_proxy).put(put_proxy))
         .route("/stores", get(list_stores).post(add_store))
         .route("/stores/refresh", post(refresh_stores))
         .route("/stores/{id}", delete(remove_store))
@@ -435,6 +436,22 @@ async fn put_solver(State(server): State<Spaces>, Me(app): Me, Json(solver): Jso
     server.shared().call(move |conn| settings::set(conn, Solver::KEY, &kept)).await?;
     app.host.set_solver(solver.clone()).await;
     Ok(Json(solver))
+}
+
+async fn get_proxy(Me(app): Me) -> Result<Json<Proxy>> {
+    app.me.admin()?;
+    Ok(Json(app.host.proxy()))
+}
+
+/// The proxy the sources reach sites through, all of them or those named. The extension
+/// host is restarted to learn of it, at its next call.
+async fn put_proxy(State(server): State<Spaces>, Me(app): Me, Json(proxy): Json<Proxy>) -> Result<Json<Proxy>> {
+    app.me.admin()?;
+    let proxy = proxy.checked()?;
+    let kept = serde_json::to_value(&proxy).map_err(|e| AppError::internal(e.to_string()))?;
+    server.shared().call(move |conn| settings::set(conn, Proxy::KEY, &kept)).await?;
+    app.host.set_proxy(proxy.clone()).await;
+    Ok(Json(proxy))
 }
 
 // ---------- stores ----------

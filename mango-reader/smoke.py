@@ -175,6 +175,7 @@ if who["login"]:
     check("the new account signs in by name", mine["signedIn"] and mine["name"] == KID and not mine["admin"])
     err, _ = call("PUT", "/solver", {"url": ""}, expect=403)
     check("it cannot change what all accounts share", err["error"]["code"] == "admin_only" and raw("GET", base + "/users")[0] == 403)
+    check("nor the proxy", call("PUT", "/proxy", {"url": ""}, expect=403)[0]["error"]["code"] == "admin_only")
     call("PUT", "/settings", {"smoke.kid": 1})
     kid_browser, opener = opener, owner
     check("its settings are its own", "smoke.kid" not in call("GET", "/settings")[0])
@@ -235,7 +236,7 @@ check("the store has a catalog and a pinned key", store["extensions"] > 1000 and
 err, _ = call("POST", "/stores", {"url": STORE}, expect=409)
 check("adding it twice is refused", err["error"]["code"] == "store_exists")
 call("POST", "/stores", {"url": "file:///etc/hostname"}, expect=400)
-call("POST", "/stores", {"url": "https://example.org/"}, expect=502)
+call("POST", "/stores", {"url": "https://example.org/"}, expect=503)
 refused = [call("POST", "/stores", {"url": url}, expect=400)[0]["error"]["code"] for url in ("http://example.org/repo.json", "https://127.0.0.1/repo.json", "https://localhost/repo.json")]
 check("a store is fetched over HTTPS, and not from this machine or its network", refused == ["address_refused"] * 3)
 err, _ = call("POST", "/stores/refresh", expect=403, headers={"Sec-Fetch-Site": "cross-site"})
@@ -691,6 +692,13 @@ kept, _ = call("PUT", "/solver", {"url": " http://127.0.0.1:9/ ", "timeoutSecs":
 check("the solver's address is tidied and kept", kept == {"url": "http://127.0.0.1:9", "timeoutSecs": 5} and call("GET", "/solver")[0] == kept)
 call("PUT", "/solver", {"url": "ftp://nowhere"}, expect=400)
 check("and can be taken away again", call("PUT", "/solver", {"url": ""})[0]["url"] == "")
+
+print("proxy")
+kept, _ = call("PUT", "/proxy", {"url": " http://127.0.0.1:9/ ", "sites": ["https://Example.org/x", "example.org", "*.example.net"]})
+check("the proxy's address and sites are tidied and kept", kept == {"url": "http://127.0.0.1:9", "sites": ["example.org", "example.net"]} and call("GET", "/proxy")[0] == kept)
+call("PUT", "/proxy", {"url": "http://name:secret@127.0.0.1:9"}, expect=400)
+call("PUT", "/proxy", {"url": "", "sites": ["not a site"]}, expect=400)
+check("and can be taken away again", call("PUT", "/proxy", {"url": "", "sites": []})[0] == {"url": "", "sites": []})
 
 if data_dir:
     print("local files")

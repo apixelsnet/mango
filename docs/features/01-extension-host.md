@@ -151,6 +151,26 @@ Checked on Linux with `smoke.py`, which stands in for both a site that shows the
 
 Not checked: a real FlareSolverr against a real Cloudflare check.
 
+**When the solver is turned down (2026-10-29).** A site whose Cloudflare bans the solver's address made the solver answer 500, and the runtime kept only that status: the reader saw "HTTP error 500" under a Java class name. The host now finds that case in the failure's chain and says the site's Cloudflare check stopped the request and may be blocking the server. Any other error status a site answers reads "The site answered HTTP <n>". The protocol did not change.
+
+The core sends every 502 and 504 out as 503, same JSON body. A proxy in front (Cloudflare's, for one) replaced a 502's body with its own page, so a hosted reader saw only "Mango answered 502". The host still answers the core 502 and 504, as the protocol says.
+
+Checked on Linux: the host's `smoke.py` has a third stand-in step where the solver turns a check down and the message is read back; the core's tests and `smoke.py` pass with the new status. Not checked: the answer through Cloudflare's proxy itself, until a hosted instance runs it.
+
+## Proxy (2026-10-29)
+
+Some sites turn away the address a server goes out from, a cloud host's for one, while they let others in. An admin can name a proxy the sources reach such sites through, under Settings, Sources (`GET | PUT /api/proxy`, `{url, sites}`).
+
+- The address is `http://host:port` (CONNECT for HTTPS) or `socks5://host:port`, with no name or password: put the proxy where only Mango reaches it. Empty: none.
+- `sites` are names such as `example.org`, each with its subdomains. The core tidies what is typed (a whole address, `*.`, capitals) down to the name. Empty: every site.
+- The core starts the host with `MANGO_HOST_PROXY_URL` and `MANGO_HOST_PROXY_SITES` (comma-separated). A change stops a running host, as the solver's does. The host sets Java's default proxy selector before the runtime builds its HTTP client, so every request a source makes asks it. This machine and the solver are always reached directly. Downloading an extension's file does not go through it.
+- A proxy that does not answer reads "Could not reach the proxy at host:port".
+- The HTTP contract did not change.
+
+Not covered: the solver keeps its own way out (the runtime sends it no proxy), so a site behind both a ban and a check still fails; the web view's browser does not use it either.
+
+Checked on Linux. Core tests check the tidying and what is refused; the core's `smoke.py` sets it, reads it back, has a bad one refused and a reader turned away. The host's `smoke.py` stands in for a proxy: a named site went through it, another went straight out. End to end, on a core with a real store and a real extension whose site turns the hosted instances away, behind a logging CONNECT proxy: popular, a cover, a title with its chapters, a chapter's pages and a page all came through, and every request went through the proxy (the site's API and its image host); a dead proxy answered 503 with the sentence above; a proxy for other sites left the source going out directly; taking it away worked. In a browser: the card loads the setting, shows why a value is refused, saves a tidied one that is still there after a reload, saves on Enter, and fits a phone; the source's page showed the proxy's sentence and, with the proxy taken away, its titles.
+
 ## Web view (2026-10-11, host 0.4.0)
 
 About 40 extensions open a web view. The runtime taken from Suwayomi-Server has one, built on a Chromium (JCEF from the JetBrains runtime) that draws without a window. The host keeps the classes that drive it (6 MB more in `runtime.jar`) and switches it on.

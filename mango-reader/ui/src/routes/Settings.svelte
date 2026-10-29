@@ -546,7 +546,30 @@
     get<typeof solver>('/solver')
       .then((kept) => (solver = kept))
       .catch((e) => (solverError = message(e)));
+    get<{ url: string; sites: string[] }>('/proxy')
+      .then((kept) => (proxy = { url: kept.url, sites: kept.sites.join(', ') }))
+      .catch((e) => (proxyError = message(e)));
   });
+
+  // ---------- the proxy ----------
+
+  let proxy = $state({ url: '', sites: '' });
+  let proxyError = $state<string | null>(null);
+  let proxySaved = $state(false);
+
+  async function saveProxy(event: SubmitEvent) {
+    event.preventDefault();
+    proxyError = null;
+    proxySaved = false;
+    try {
+      const sites = proxy.sites.split(/[\s,]+/).filter(Boolean);
+      const kept = await send<{ url: string; sites: string[] }>('PUT', '/proxy', { url: proxy.url, sites });
+      proxy = { url: kept.url, sites: kept.sites.join(', ') };
+      proxySaved = true;
+    } catch (e) {
+      proxyError = message(e);
+    }
+  }
 
   // ---------- version ----------
 
@@ -1317,6 +1340,40 @@
               <div class="set stack">
                 <Notice error={solverError} />
                 {#if solverSaved}<p class="muted" role="status">Saved. The sources use it from their next call.</p>{/if}
+              </div>
+            {/if}
+          </section>
+
+          <section class="card">
+            <h3>Proxy</h3>
+            <form class="set" onsubmit={saveProxy}>
+              <div class="what">
+                <strong>Address</strong>
+                <span>
+                  Some sites turn away the address this server goes out from. Their sources reach them through this proxy instead, an HTTP or
+                  SOCKS5 one. Empty: no proxy.
+                </span>
+              </div>
+              <label class="field grow">
+                <span class="sr">The proxy's address</span>
+                <input type="text" bind:value={proxy.url} placeholder="http://proxy:8888 or socks5://proxy:1080" autocomplete="off" spellcheck="false" />
+              </label>
+            </form>
+            <form class="set" onsubmit={saveProxy}>
+              <div class="what">
+                <strong>Sites</strong>
+                <span>Only these go through it, with their subdomains. Empty: every site.</span>
+              </div>
+              <label class="field grow">
+                <span class="sr">Sites sent through the proxy</span>
+                <input type="text" bind:value={proxy.sites} placeholder="example.org, example.net" autocomplete="off" spellcheck="false" />
+              </label>
+              <button class="btn ink">Save</button>
+            </form>
+            {#if proxyError || proxySaved}
+              <div class="set stack">
+                <Notice error={proxyError} />
+                {#if proxySaved}<p class="muted" role="status">Saved. The sources use it from their next call.</p>{/if}
               </div>
             {/if}
           </section>
