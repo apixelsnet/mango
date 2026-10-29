@@ -19,6 +19,11 @@ With MANGO_SMOKE_PROXY_PORT set, the host must have been started with
 MANGO_HOST_PROXY_URL=http://127.0.0.1:<that port> and
 MANGO_HOST_PROXY_SITES=proxied.example: it stands in for that proxy and checks that
 the named site goes through it and another does not.
+
+With MANGO_SMOKE_SOCKS_PORT set, the host must have been started with
+MANGO_HOST_PROXY_URL=socks5://127.0.0.1:<that port>, MANGO_HOST_PROXY_SITES=proxied.example,
+MANGO_HOST_PROXY_USERNAME=smoke and MANGO_HOST_PROXY_PASSWORD=smoke-secret: it stands in
+for that proxy, checks the host signs in to it, and that a refused sign-in is told.
 """
 import http.server
 import json
@@ -280,6 +285,61 @@ if os.environ.get("MANGO_SMOKE_PROXY_PORT"):
     if len(through) != 1:
         sys.exit(f"proxy: a site not named went through it: {through}")
     print("proxy: a site not named went straight out")
+
+if os.environ.get("MANGO_SMOKE_SOCKS_PORT"):
+    import socketserver
+
+    PICTURE = b"\x89PNG\r\n\x1a\n" + bytes(32)
+    signed_in, asked, refuse = [], [], threading.Event()
+
+    class Socks(socketserver.StreamRequestHandler):
+        """A SOCKS5 proxy that wants a name and password, and answers the HTTP asked of it by itself."""
+
+        def handle(self):
+            read = self.rfile.read
+            _, count = read(2)
+            if 2 not in read(count):
+                self.wfile.write(b"\x05\xff")
+                return
+            self.wfile.write(b"\x05\x02")
+            _, size = read(2)
+            name = read(size).decode()
+            password = read(read(1)[0]).decode()
+            signed_in.append((name, password))
+            if refuse.is_set():
+                self.wfile.write(b"\x01\x01")
+                return
+            self.wfile.write(b"\x01\x00")
+            _, _, _, kind = read(4)
+            target = read(read(1)[0]).decode() if kind == 3 else ".".join(map(str, read(4 if kind == 1 else 16)))
+            target += f":{int.from_bytes(read(2), 'big')}"
+            self.wfile.write(b"\x05\x00\x00\x01" + bytes(6))
+            line = self.rfile.readline().decode()
+            while self.rfile.readline() not in (b"\r\n", b""):
+                pass
+            asked.append(f"{target} {line.split()[1]}")
+            self.wfile.write(b"HTTP/1.1 200 OK\r\nContent-Type: image/png\r\nConnection: close\r\nContent-Length: %d\r\n\r\n" % len(PICTURE) + PICTURE)
+
+    class SocksServer(socketserver.ThreadingTCPServer):
+        daemon_threads = True
+        allow_reuse_address = True
+
+    threading.Thread(target=SocksServer(("127.0.0.1", int(os.environ["MANGO_SMOKE_SOCKS_PORT"])), Socks).serve_forever, daemon=True).start()
+    got, ms = call("POST", f"/sources/{sid}/image", {"cover": "http://img.proxied.example/cover.png"}, raw=True)
+    if got != PICTURE or asked != ["img.proxied.example:80 /cover.png"] or signed_in != [("smoke", "smoke-secret")]:
+        sys.exit(f"socks: a named site did not go through it signed in: {len(got)} bytes, it saw {asked}, signed in as {signed_in}")
+    print(f"socks: a named site went through it, signed in, in {ms} ms")
+    refuse.set()
+    req = urllib.request.Request(base + f"/sources/{sid}/image", data=json.dumps({"cover": "http://img.proxied.example/other.png"}).encode(), method="POST")
+    req.add_header("Authorization", "Bearer " + token)
+    try:
+        urllib.request.urlopen(req, timeout=60)
+        sys.exit("socks: a refused sign-in came through")
+    except urllib.error.HTTPError as err:
+        said = json.loads(err.read())["error"]["message"]
+        if err.code != 502 or "turned its name and password down" not in said:
+            sys.exit(f"socks: a refused sign-in answered HTTP {err.code}: {said}")
+    print(f"socks: a refused sign-in says so: {said}")
 
 loaded, failed = 1, []
 for e in index:

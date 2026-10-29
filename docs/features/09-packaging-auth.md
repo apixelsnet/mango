@@ -34,6 +34,7 @@ How Mango is shipped, configured, protected and kept up to date.
 | `host.java` | `MANGO_JAVA` | `java` |
 | `host.idle_secs` | `MANGO_HOST_IDLE_SECS` | `300`; `0` never stops the host |
 | `host.webview` | `MANGO_WEBVIEW` | `true`; `off` keeps sources from opening a web view |
+| `host.proxy_setting` | `MANGO_PROXY_SETTING` | `admin`; `anyone` lets every account set the proxy the sources reach sites through, `off` lets no one and leaves one set before unused (feature 01) |
 | `stores.refresh_hours` | `MANGO_STORES_REFRESH_HOURS` | `12`; `0` turns the check off |
 | `stores.local` | `MANGO_STORES_LOCAL` | `false`; `on` lets a store be on this machine or its network, and be fetched over plain HTTP |
 | `stores.anyone_installs` | `MANGO_ANYONE_INSTALLS` | `false`; `on` lets every account bring extensions into the host, not only an admin |

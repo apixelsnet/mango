@@ -10,6 +10,7 @@ use crate::{
     version::{self, Releases},
     error::{AppError, Result},
     export, files,
+    config::ProxySetting,
     host::{Host, Proxy, Solver},
     images::{Image, Images, MAX_COVER},
     import::{self, Importer, Preview},
@@ -327,7 +328,7 @@ fn picture(image: Image, cache: &'static str) -> Response {
 
 async fn health(Me(app): Me) -> Json<Value> {
     let anyone_installs = app.stores.anyone_installs();
-    Json(json!({ "version": version::VERSION, "host": app.host.status(), "localDir": app.local_dir, "anyoneInstalls": anyone_installs }))
+    Json(json!({ "version": version::VERSION, "host": app.host.status(), "localDir": app.local_dir, "anyoneInstalls": anyone_installs, "proxySetting": app.host.proxy_setting().as_str() }))
 }
 
 /// This Mango's version and what the release list said when it was last asked.
@@ -438,20 +439,34 @@ async fn put_solver(State(server): State<Spaces>, Me(app): Me, Json(solver): Jso
     Ok(Json(solver))
 }
 
-async fn get_proxy(Me(app): Me) -> Result<Json<Proxy>> {
-    app.me.admin()?;
-    Ok(Json(app.host.proxy()))
+/// Who may see and set the proxy: an admin, every account, or no one (`MANGO_PROXY_SETTING`).
+fn may_set_proxy(app: &AppState) -> Result<()> {
+    match app.host.proxy_setting() {
+        ProxySetting::Admin => app.me.admin(),
+        ProxySetting::Anyone => Ok(()),
+        ProxySetting::Off => Err(AppError::new(403, "proxy_off", "The proxy is switched off here")),
+    }
+}
+
+async fn get_proxy(Me(app): Me) -> Result<Json<serde_json::Value>> {
+    may_set_proxy(&app)?;
+    Ok(Json(app.host.proxy().shown()))
 }
 
 /// The proxy the sources reach sites through, all of them or those named. The extension
-/// host is restarted to learn of it, at its next call.
-async fn put_proxy(State(server): State<Spaces>, Me(app): Me, Json(proxy): Json<Proxy>) -> Result<Json<Proxy>> {
-    app.me.admin()?;
+/// host is restarted to learn of it, at its next call. A password left empty keeps the one
+/// already there, for the same name: it is never sent back to be sent again.
+async fn put_proxy(State(server): State<Spaces>, Me(app): Me, Json(mut proxy): Json<Proxy>) -> Result<Json<serde_json::Value>> {
+    may_set_proxy(&app)?;
+    let before = app.host.proxy();
+    if proxy.password.is_empty() && proxy.username.trim() == before.username {
+        proxy.password = before.password;
+    }
     let proxy = proxy.checked()?;
     let kept = serde_json::to_value(&proxy).map_err(|e| AppError::internal(e.to_string()))?;
     server.shared().call(move |conn| settings::set(conn, Proxy::KEY, &kept)).await?;
     app.host.set_proxy(proxy.clone()).await;
-    Ok(Json(proxy))
+    Ok(Json(proxy.shown()))
 }
 
 // ---------- stores ----------

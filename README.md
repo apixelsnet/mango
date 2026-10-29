@@ -366,6 +366,7 @@ win. The full list is in
 | `MANGO_PROXIED` | `on` when a reverse proxy stands in front and writes each visitor's address into `X-Forwarded-For`. Wrong passwords are then counted per visitor, not for the proxy. |
 | `MANGO_STORES_LOCAL` | `on` lets an extension store be on this machine or its network, and be fetched over plain HTTP. Otherwise stores are fetched over HTTPS from public addresses. |
 | `MANGO_ANYONE_INSTALLS` | `on` lets every account bring extensions into Mango. Otherwise only an admin does, and other accounts install what an admin already has. |
+| `MANGO_PROXY_SETTING` | Who sets the proxy the sources reach sites through: `admin` (the default), `anyone`, or `off`, which leaves one set before unused. |
 | `MANGO_SIGNUP` | `on` shows a main page with what Mango does to whoever is not signed in, and lets the holder of an admin's invitation make their own account there. Otherwise only an admin adds accounts. |
 | `MANGO_WEBVIEW` | `off` keeps sources from opening a web view, and the browser from being downloaded. |
 | `MANGO_RELEASES_TOKEN` | A token that may read the repository, when its releases are not public. |

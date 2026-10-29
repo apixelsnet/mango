@@ -695,10 +695,16 @@ check("and can be taken away again", call("PUT", "/solver", {"url": ""})[0]["url
 
 print("proxy")
 kept, _ = call("PUT", "/proxy", {"url": " http://127.0.0.1:9/ ", "sites": ["https://Example.org/x", "example.org", "*.example.net"]})
-check("the proxy's address and sites are tidied and kept", kept == {"url": "http://127.0.0.1:9", "sites": ["example.org", "example.net"]} and call("GET", "/proxy")[0] == kept)
+check("the proxy's address and sites are tidied and kept", kept == {"url": "http://127.0.0.1:9", "sites": ["example.org", "example.net"], "username": "", "hasPassword": False} and call("GET", "/proxy")[0] == kept)
 call("PUT", "/proxy", {"url": "http://name:secret@127.0.0.1:9"}, expect=400)
 call("PUT", "/proxy", {"url": "", "sites": ["not a site"]}, expect=400)
-check("and can be taken away again", call("PUT", "/proxy", {"url": "", "sites": []})[0] == {"url": "", "sites": []})
+call("PUT", "/proxy", {"url": "http://127.0.0.1:9", "username": "name", "password": "smoke-proxy-secret"}, expect=400)
+signed, _ = call("PUT", "/proxy", {"url": "socks5://127.0.0.1:9", "username": " name ", "password": "smoke-proxy-secret"})
+check("a SOCKS proxy keeps a name and password, and never shows the password", signed == {"url": "socks5://127.0.0.1:9", "sites": [], "username": "name", "hasPassword": True} and "smoke-proxy-secret" not in json.dumps(call("GET", "/proxy")[0]))
+check("a password left empty is kept for the same name", call("PUT", "/proxy", {"url": "socks5://127.0.0.1:9", "username": "name", "sites": ["example.org"]})[0]["hasPassword"])
+call("PUT", "/proxy", {"url": "socks5://127.0.0.1:9", "username": "other"})
+check("and not for another name", call("GET", "/proxy")[0] == {"url": "socks5://127.0.0.1:9", "sites": [], "username": "other", "hasPassword": False})
+check("and can be taken away again", call("PUT", "/proxy", {"url": "", "sites": []})[0] == {"url": "", "sites": [], "username": "", "hasPassword": False})
 
 if data_dir:
     print("local files")

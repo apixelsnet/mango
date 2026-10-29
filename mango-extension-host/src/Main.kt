@@ -81,6 +81,8 @@ import java.io.IOException
 import java.net.InetAddress
 import java.net.InetSocketAddress
 import java.net.Proxy
+import java.net.Authenticator
+import java.net.PasswordAuthentication
 import java.net.ProxySelector
 import java.net.SocketAddress
 import java.net.URI
@@ -155,6 +157,9 @@ private val webViewWanted = System.getenv("MANGO_HOST_WEBVIEW") == "1"
 
 /** Host and port of the proxy the core named, so a failure to reach it can be told apart. */
 @Volatile private var proxyAddress: Pair<String, Int>? = null
+
+/** Whether the core gave a name to sign in to that proxy with. */
+@Volatile private var proxySignsIn = false
 private val browserAsked = AtomicBoolean(false)
 private lateinit var application: App
 
@@ -279,6 +284,8 @@ private class SiteProxy(
 private fun siteProxy(
     url: String?,
     sites: String?,
+    username: String?,
+    password: String?,
     solver: String,
 ): ProxySelector? {
     val address = url?.trim().orEmpty().ifEmpty { return null }.let(::URI)
@@ -291,6 +298,20 @@ private fun siteProxy(
     val port = address.port.takeIf { it > 0 } ?: 80
     val proxy = Proxy(type, InetSocketAddress.createUnresolved(address.host, port))
     proxyAddress = address.host to port
+    if (!username.isNullOrEmpty()) {
+        check(type == Proxy.Type.SOCKS) { "MANGO_HOST_PROXY_USERNAME needs a socks5:// proxy" }
+        proxySignsIn = true
+        // Java's SOCKS client asks the default authenticator; it answers that proxy and nothing else.
+        val signIn = PasswordAuthentication(username, password.orEmpty().toCharArray())
+        Authenticator.setDefault(
+            object : Authenticator() {
+                override fun getPasswordAuthentication(): PasswordAuthentication? =
+                    signIn.takeIf {
+                        requestingProtocol == "SOCKS5" && requestingHost.equals(address.host, ignoreCase = true) && requestingPort == port
+                    }
+            },
+        )
+    }
     val named = sites.orEmpty().split(',').map { it.trim().lowercase() }.filter { it.isNotEmpty() }
     val direct = setOfNotNull(address.host.lowercase(), runCatching { URI(solver).host?.lowercase() }.getOrNull())
     return SiteProxy(proxy, named, direct)
@@ -316,7 +337,13 @@ private fun initRuntime(dataDir: Path) {
     // Sites that turn away the address this machine goes out from are reached through a
     // proxy, when the core names one. The runtime's network stack asks Java's default
     // selector for every request it makes, so the choice is made there.
-    siteProxy(System.getenv("MANGO_HOST_PROXY_URL"), System.getenv("MANGO_HOST_PROXY_SITES"), solver)?.let(ProxySelector::setDefault)
+    siteProxy(
+        System.getenv("MANGO_HOST_PROXY_URL"),
+        System.getenv("MANGO_HOST_PROXY_SITES"),
+        System.getenv("MANGO_HOST_PROXY_USERNAME"),
+        System.getenv("MANGO_HOST_PROXY_PASSWORD"),
+        solver,
+    )?.let(ProxySelector::setDefault)
 
     // Android ships BouncyCastle's ciphers; some sources ask for ones the JVM lacks, such as AES/CBC/ZEROBYTEPADDING.
     Security.addProvider(BouncyCastleProvider())
@@ -601,6 +628,15 @@ private fun told(e: Throwable): String {
         val failed = chain.mapNotNull { it.message }.firstOrNull { it.startsWith("Failed to connect to") }
         if (failed != null && host in failed && failed.endsWith(":$port")) {
             return "Could not reach the proxy at $host:$port"
+        }
+        // A SOCKS proxy is reached inside Java's own SOCKS client, which OkHttp does not name.
+        val socks = chain.filter { it.stackTrace.any { frame -> frame.className == "java.net.SocksSocketImpl" } }
+        if (socks.any { it is java.net.ConnectException || it is java.net.NoRouteToHostException }) {
+            return "Could not reach the proxy at $host:$port"
+        }
+        // With no name set, Java's SOCKS client still offers one: the system user's, with no password.
+        if (socks.any { it.message == "SOCKS : authentication failed" }) {
+            return if (proxySignsIn) "The proxy at $host:$port turned its name and password down" else "The proxy at $host:$port wants a name and password"
         }
     }
     val http = chain.firstOrNull { it.javaClass.simpleName == "HttpException" }

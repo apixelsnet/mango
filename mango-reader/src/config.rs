@@ -62,6 +62,26 @@ pub struct ReleasesConfig {
     pub check_hours: u64,
 }
 
+/// Who sets the proxy the sources reach sites through.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ProxySetting {
+    #[default]
+    Admin,
+    Anyone,
+    Off,
+}
+
+impl ProxySetting {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Admin => "admin",
+            Self::Anyone => "anyone",
+            Self::Off => "off",
+        }
+    }
+}
+
 #[derive(Debug, Clone, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct HostConfig {
@@ -79,6 +99,10 @@ pub struct HostConfig {
     pub source_timeout_secs: u64,
     /// Calls allowed at once to a single source.
     pub per_source: usize,
+    /// Who sets the proxy the sources reach sites through: `admin`; `anyone`, every account,
+    /// for whoever runs a Mango for each reader; or `off`, no one, and one set before is not
+    /// used. `MANGO_PROXY_SETTING`
+    pub proxy_setting: ProxySetting,
     /// Let sources open a web view: a Chromium the host downloads once and runs without a
     /// window. On Linux it needs a display and the libraries Chromium links. `MANGO_WEBVIEW`
     pub webview: bool,
@@ -138,6 +162,7 @@ impl Default for HostConfig {
             call_timeout_secs: 90,
             source_timeout_secs: 60,
             per_source: 4,
+            proxy_setting: ProxySetting::Admin,
             webview: true,
         }
     }
@@ -231,6 +256,14 @@ impl Config {
         }
         if let Some(v) = switch("MANGO_ANYONE_INSTALLS")? {
             self.stores.anyone_installs = v;
+        }
+        if let Some(v) = var("MANGO_PROXY_SETTING") {
+            self.host.proxy_setting = match v.trim().to_ascii_lowercase().as_str() {
+                "admin" => ProxySetting::Admin,
+                "anyone" => ProxySetting::Anyone,
+                "off" => ProxySetting::Off,
+                _ => return Err("MANGO_PROXY_SETTING must be admin, anyone or off".into()),
+            };
         }
         if let Some(v) = var("MANGO_ACCOUNT_URL").filter(|v| !v.trim().is_empty()) {
             self.account_url = Some(v.trim().to_owned());
@@ -327,6 +360,12 @@ mod tests {
         assert!(!cfg.proxied && !cfg.signup && !cfg.stores.local && !cfg.stores.anyone_installs, "what widens Mango is off unless switched on");
         cfg.apply_env(|name| matches!(name, "MANGO_PROXIED" | "MANGO_SIGNUP" | "MANGO_STORES_LOCAL" | "MANGO_ANYONE_INSTALLS").then(|| "on".into())).unwrap();
         assert!(cfg.proxied && cfg.signup && cfg.stores.local && cfg.stores.anyone_installs);
+        assert_eq!(cfg.host.proxy_setting, ProxySetting::Admin, "only an admin sets the proxy unless opened");
+        cfg.apply_env(|name| (name == "MANGO_PROXY_SETTING").then(|| " Anyone ".into())).unwrap();
+        assert_eq!(cfg.host.proxy_setting, ProxySetting::Anyone);
+        cfg.apply_env(|name| (name == "MANGO_PROXY_SETTING").then(|| "off".into())).unwrap();
+        assert_eq!(cfg.host.proxy_setting, ProxySetting::Off);
+        assert!(cfg.apply_env(|name| (name == "MANGO_PROXY_SETTING").then(|| "everyone".into())).is_err());
         assert!(cfg.hosts.is_empty());
         cfg.apply_env(|name| (name == "MANGO_HOSTS").then(|| "mango.example.org, read.example.org,".into())).unwrap();
         assert_eq!(cfg.hosts, ["mango.example.org", "read.example.org"]);
