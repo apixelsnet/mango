@@ -109,6 +109,17 @@ Verification: unit tests for the RFC 8291 example message byte for byte, the sig
 
 Not verified: an iPhone, Firefox and Safari delivery, and a notification sent by a real update run (that path shares the code of the test).
 
+## Download state on the title page and Updates (2026-10-29)
+
+Each chapter row says where its download stands, so a chapter just sent to the queue is visible as such. Code: `lib/queue.ts`, `lib/DownloadTag.svelte`, used by `routes/Title.svelte` and `routes/Updates.svelte`.
+
+- Tags beside the chapter: **Saved** (filled), **Queued** (or **Paused** / **On hold** when the queue waits, **Retrying** after a failed try), the percentage while it is being fetched, and **Failed** (dashed, the reason on hover).
+- The row's button follows: download, cancel while queued or fetching, try again once failed, delete once saved. "Download the unread chapters" and the picked "Download" leave out chapters already queued.
+- A line over the list counts the title's chapters in the queue, with paused, on hold and failed, and links to Downloads.
+- The page reads `GET /api/downloads` once after the title, not before its first paint, and again every 2 s only while one of its chapters is queued or being fetched (and the page is in view). A chapter that leaves the queue makes the page read the title again, so it turns Saved without a reload.
+- Updates does the same for the chapters it lists, and reads the queue again when a run ends, since a run queues chapters of titles set to download them. A title's grouped row shows Saved once all its new chapters are, otherwise the tag of the one being fetched or waiting.
+- While picking chapters on a phone, the actions along the bottom wrap onto several lines; the list's bottom space follows the bar's real height, so the last chapters scroll clear of it.
+
 ## Skip titles not started (2026-10-28)
 
 The option `updates.skipUnstarted` (Settings › Library, off by default) leaves out of a library update every title whose chapters were all left unopened: none is read and none has a page turned. A title with no chapters at all is still asked, since there is nothing to start on. Code: `plan` in `updates.rs`; checked by its unit test.
