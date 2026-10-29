@@ -1,15 +1,17 @@
 <script lang="ts">
-  import { get, message, send, type Category, type Chapter, type Namesake, type PageMark, type Title } from '../lib/api';
+  import { get, message, send, type Category, type Chapter, type Namesake, type PageMark, type Queued, type Title } from '../lib/api';
   import Cover from '../lib/Cover.svelte';
+  import DownloadTag from '../lib/DownloadTag.svelte';
   import Icon from '../lib/Icon.svelte';
   import { keep, recall } from '../lib/keep';
   import Notice from '../lib/Notice.svelte';
   import { canKeep, forget as forgetHere, keep as keepHere, keptChapters } from '../lib/offline';
   import { lacks } from '../lib/plan.svelte';
   import { pref, setPref } from '../lib/prefs.svelte';
+  import { left, moving, queueOf, waiting, type Waits } from '../lib/queue';
   import { back, go } from '../lib/router.svelte';
   import Tracking from '../lib/Tracking.svelte';
-  import { ago, chapterShort, langName, STATUS } from '../lib/util';
+  import { ago, chapterShort, every, langName, STATUS } from '../lib/util';
 
   const WEEK = 7 * 86400;
 
@@ -71,6 +73,8 @@
   // Chapters kept on this device, and how keeping more is going.
   let here = $state<Set<number>>(new Set());
   let keeping = $state('');
+  // How tall the bar along the bottom is: picking wraps its actions onto more lines on a phone, and the list must still scroll clear of them.
+  let dock = $state(0);
 
   // A title that shows one upload per chapter counts chapters, not uploads.
   const chapters = $derived((title?.chapters ?? []).filter((c) => others || !c.duplicate));
@@ -115,6 +119,7 @@
       title = fresh;
       // A title only seen in a list has no details or chapters yet.
       if (!title.initialized || title.chapters.length === 0) refresh();
+      loadQueue();
     } catch (e) {
       error = message(e);
     }
@@ -159,10 +164,53 @@
 
   let note = $state('');
 
+  // ---------- the download queue ----------
+
+  // This title's chapters in the download queue, by chapter, and why the queue waits, if it does.
+  let queued = $state<Record<number, Queued>>({});
+  let waits = $state<Waits>('');
+  const inQueue = $derived(Object.values(queued));
+  // The queue is looked at again only while one of them can still change by itself.
+  $effect(() => {
+    if (moving(queued)) return every(2000, loadQueue);
+  });
+
+  const queueLine = $derived.by(() => {
+    const failed = inQueue.filter((q) => q.state === 'failed').length;
+    const why = waits === 'held' ? ', on hold while storage is full' : waits === 'paused' ? ', paused' : '';
+    return `${inQueue.length} ${inQueue.length === 1 ? 'chapter' : 'chapters'} in the download queue${why}${failed ? `, ${failed} failed` : ''}.`;
+  });
+
+  /** Reads which of this title's chapters are in the queue. One that has left it since was saved, so the title is read again. */
+  async function loadQueue() {
+    if (!title) return;
+    const found = await queueOf(title.chapters.map((c) => c.id));
+    if (!found) return;
+    const gone = left(queued, found.entries);
+    queued = found.entries;
+    waits = found.waits;
+    if (gone) title = await get<Title>(`/manga/${id}`).catch(() => title);
+  }
+
   function download(list: Chapter[]) {
+    // Shown as queued at once; the queue itself says what really happened.
+    for (const chapter of list) queued[chapter.id] ??= waiting(chapter.id, chapter.name, chapter.mangaId, title?.title ?? '');
     change(async () => {
       const answer = await send<{ queued: number }>('POST', '/downloads', { chapters: list.map((c) => c.id) });
-      note = answer.queued ? `${answer.queued} ${answer.queued === 1 ? 'chapter' : 'chapters'} queued for download.` : 'Already saved or queued.';
+      note = answer.queued ? '' : 'Already saved or queued.';
+      await loadQueue();
+    });
+  }
+
+  function cancelDownload(chapter: Chapter) {
+    delete queued[chapter.id];
+    change(() => send('DELETE', `/downloads/${chapter.id}`));
+  }
+
+  function retryDownload(chapter: Chapter) {
+    change(async () => {
+      await send('POST', `/downloads/${chapter.id}/retry`);
+      await loadQueue();
     });
   }
 
@@ -449,7 +497,7 @@
           ? `${chapter.pageCount} pages`
           : '';
     const from = merged ? title?.members.find((m) => m.id === chapter.mangaId)?.sourceName : null;
-    return [when, from, chapter.scanlator, where, chapter.downloaded ? 'saved' : '', here.has(chapter.id) ? 'on this device' : '', chapter.duplicate ? 'other upload' : '']
+    return [when, from, chapter.scanlator, where, here.has(chapter.id) ? 'on this device' : '', chapter.duplicate ? 'other upload' : '']
       .filter(Boolean)
       .join(' · ');
   }
@@ -467,7 +515,7 @@
   onkeydown={(e) => e.key === 'Escape' && picking && stopPicking()}
 />
 
-<div class="page" class:picking>
+<div class="page" style:--dock={dock ? `${dock}px` : null}>
   <Notice {loading} {error} retry={load} />
 
   {#if title}
@@ -679,8 +727,8 @@
               class="btn icon"
               aria-label="Download the unread chapters"
               title="Download the unread chapters"
-              disabled={!chapters.some((c) => !c.read && !c.downloaded)}
-              onclick={() => download(chapters.filter((c) => !c.read && !c.downloaded))}
+              disabled={!chapters.some((c) => !c.read && !c.downloaded && !queued[c.id])}
+              onclick={() => download(chapters.filter((c) => !c.read && !c.downloaded && !queued[c.id]))}
             >
               <Icon name="download" />
             </button>
@@ -726,11 +774,12 @@
         {/if}
 
         <Notice loading={refreshing} error={refreshError} retry={refresh} />
-        {#if note}<p role="status"><strong>{note}</strong> <a class="link" href="#/downloads">See downloads</a></p>{/if}
+        {#if inQueue.length || note}<p role="status"><strong>{inQueue.length ? queueLine : note}</strong> <a class="link" href="#/downloads">See downloads</a></p>{/if}
         {#if keeping}<p role="status"><strong>{keeping}</strong></p>{/if}
 
         <ul class="rows">
           {#each listed as chapter, at (chapter.id)}
+            {@const fetch = queued[chapter.id]}
             {#if view.volumes && (at === 0 || listed[at - 1].volume !== chapter.volume)}
               <li class="volume" aria-hidden="true"><strong>{volumeName(chapter.volume)}</strong></li>
             {/if}
@@ -757,11 +806,16 @@
               {:else if !chapter.read && chapter.lastPageRead > 0 && chapter.pageCount}
                 <span class="meter" aria-hidden="true"><span style:width="{Math.round(((chapter.lastPageRead + 1) / chapter.pageCount) * 100)}%"></span></span>
               {/if}
+              <DownloadTag saved={chapter.downloaded} entry={fetch} {waits} />
               {#if picking}
                 {#if picked[chapter.id]}<span class="tag ink">Selected</span>{/if}
               {:else}
                 {#if chapter.downloaded}
                   <button class="btn icon" aria-label="Delete the saved file of {chapter.name}" title="Delete the saved file" onclick={() => deleteFiles([chapter])}><Icon name="trash" /></button>
+                {:else if fetch?.state === 'failed'}
+                  <button class="btn icon" aria-label="Try downloading {chapter.name} again" title="Try again" onclick={() => retryDownload(chapter)}><Icon name="refresh" /></button>
+                {:else if fetch}
+                  <button class="btn icon" aria-label="Cancel the download of {chapter.name}" title="Cancel the download" onclick={() => cancelDownload(chapter)}><Icon name="close" /></button>
                 {:else}
                   <button class="btn icon" aria-label="Download {chapter.name}" title="Download" onclick={() => download([chapter])}><Icon name="download" /></button>
                 {/if}
@@ -806,7 +860,7 @@
       </div>
     </div>
 
-    <div class="dock" class:picking>
+    <div class="dock" class:picking bind:offsetHeight={dock}>
       {#if picking}
         <div class="line">
           <strong>{chosen.length} selected</strong>
@@ -826,7 +880,7 @@
           <button class="btn" disabled={!chosen.length} onclick={() => onPicked((list) => setBookmark(list, !allKept))}>
             <Icon name="bookmark" size={18} fill={allKept} />{allKept ? 'Take bookmarks off' : 'Bookmark'}
           </button>
-          <button class="btn" disabled={!chosen.some((c) => !c.downloaded)} onclick={() => onPicked((list) => download(list.filter((c) => !c.downloaded)))}>
+          <button class="btn" disabled={!chosen.some((c) => !c.downloaded && !queued[c.id])} onclick={() => onPicked((list) => download(list.filter((c) => !c.downloaded && !queued[c.id])))}>
             <Icon name="download" size={18} />Download
           </button>
           <button class="btn" disabled={!chosen.some((c) => c.downloaded)} onclick={deletePicked}>
@@ -855,12 +909,8 @@
 <style>
   .page {
     gap: 20px;
-    padding-bottom: calc(120px + var(--safe-bottom));
-  }
-
-  /* The actions on picked chapters take more of the bottom than the dock's one button. */
-  .page.picking {
-    padding-bottom: calc(220px + var(--safe-bottom));
+    /* The dock covers the bottom: the last chapter scrolls clear of it, however many lines its actions take. */
+    padding-bottom: calc(var(--dock, calc(96px + var(--safe-bottom))) + 24px);
   }
 
   .bar {
