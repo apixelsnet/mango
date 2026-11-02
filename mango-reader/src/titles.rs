@@ -1053,7 +1053,7 @@ pub(crate) fn read_title(conn: &Connection, id: i64) -> Result<TitleView> {
                     artist: r.get(7)?,
                     author: r.get(8)?,
                     description: r.get(9)?,
-                    genres: genre.iter().flat_map(|g| g.split(',')).map(str::trim).filter(|g| !g.is_empty()).map(str::to_owned).collect(),
+                    genres: genre_list(genre.as_deref()),
                     status: r.get(11)?,
                     cover: cover_url(id, thumbnail.as_deref()),
                     in_library: r.get(13)?,
@@ -1093,6 +1093,18 @@ pub(crate) fn read_title(conn: &Connection, id: i64) -> Result<TitleView> {
     let days = title.chapters.iter().filter(|c| c.date_upload > 0).map(|c| c.date_upload / DAY_MS).collect();
     title.release_days = rhythm(days).map(|(every, _)| every);
     Ok(title)
+}
+
+/// A title's genres, each once. Some sources name one twice, as a genre and as a tag
+/// (MangaLib does), and the title page lists them keyed by name.
+fn genre_list(genre: Option<&str>) -> Vec<String> {
+    let mut genres: Vec<String> = Vec::new();
+    for one in genre.iter().flat_map(|g| g.split(',')).map(str::trim).filter(|g| !g.is_empty()) {
+        if !genres.iter().any(|seen| seen == one) {
+            genres.push(one.to_owned());
+        }
+    }
+    genres
 }
 
 /// What sort of series a title is. The reader lays each sort out its own way until the
@@ -1442,6 +1454,17 @@ mod tests {
         for (name, volume) in [("Vol.2 Ch. 10", Some(2.0)), ("Volume 3 - 41 A Title", Some(3.0)), ("vol 4 chapter 1", Some(4.0)), ("Chapter 9", None), ("Volatile 2", None)] {
             assert_eq!(volume_from_name(name), volume, "{name}");
         }
+    }
+
+    #[test]
+    fn genres_named_twice_are_listed_once() {
+        let mut conn = database();
+        let id = save_listing(&mut conn, 7, &[manga("/a", "Alpha")]).unwrap()[0].id;
+        let mut source = manga("/a", "Alpha");
+        // A source may name a genre twice, as a genre and again as a tag.
+        source.genre = Some("Action, Magic, Drama, , Magic,Comedy, Drama".into());
+        apply_update(&mut conn, id, &source, &[], true, false).unwrap();
+        assert_eq!(read_title(&conn, id).unwrap().genres, ["Action", "Magic", "Drama", "Comedy"]);
     }
 
     #[test]
