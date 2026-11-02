@@ -14,7 +14,7 @@
 [![Platforms][platform-shield]][releases-url]
 [![Docker][docker-shield]][packages-url]
 [![Extensions][extensions-shield]](#extensions)
-[![Ko-fi][kofi-shield]][kofi-url]
+[![Buy Me a Coffee][bmc-shield]][bmc-url]
 
 </div>
 
@@ -44,7 +44,7 @@
     &middot;
     <a href="https://github.com/apixelsnet/mango/issues/new?template=2-feature-request.yml">Request Feature</a>
     &middot;
-    <a href="https://ko-fi.com/pixelsthecoder">Support on Ko-fi</a>
+    <a href="https://buymeacoffee.com/pixelsthecoder">Support on Buy Me a Coffee</a>
   </p>
 </div>
 
@@ -445,9 +445,9 @@ hand does the same.
 ## Support
 
 Mango is free and stays free. If it is of use to you and you would like to say
-thanks, there is a Ko-fi page:
+thanks, there is a Buy Me a Coffee page:
 
-[![Support Mango on Ko-fi][kofi-shield]][kofi-url]
+[![Support Mango on Buy Me a Coffee][bmc-shield]][bmc-url]
 
 <p align="right">(<a href="#readme-top">back to top</a>)</p>
 
@@ -528,8 +528,8 @@ Project Link: [https://github.com/apixelsnet/mango](https://github.com/apixelsne
 [contributors-url]: https://github.com/apixelsnet/mango/graphs/contributors
 [license-shield]: https://img.shields.io/github/license/apixelsnet/mango.svg?style=for-the-badge
 [license-url]: LICENSE
-[kofi-shield]: https://img.shields.io/badge/Ko--fi-support-FF5E5B?style=for-the-badge&logo=kofi&logoColor=white
-[kofi-url]: https://ko-fi.com/pixelsthecoder
+[bmc-shield]: https://img.shields.io/badge/Buy%20me%20a%20coffee-support-FF2D6F?style=for-the-badge&logo=buymeacoffee&logoColor=white
+[bmc-url]: https://buymeacoffee.com/pixelsthecoder
 [packages-url]: https://github.com/apixelsnet/mango/pkgs/container/mango
 [library-screenshot]: docs/images/library.jpg
 [library-dark-screenshot]: docs/images/library-dark.jpg
