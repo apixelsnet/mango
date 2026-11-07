@@ -21,7 +21,9 @@ toml = "0.8"
 prost = "0.13"
 flate2 = "1"
 futures-core = "0.3"
-zip = { version = "9.0.5", default-features = false, features = ["deflate"] }
+# deflate-flate2 rather than deflate: that one moves flate2 onto zlib-rs. Without it flate2
+# keeps miniz_oxide, through the flate2 line above.
+zip = { version = "9.0.5", default-features = false, features = ["deflate-flate2", "deflate-zopfli"] }
 sha2 = { version = "0.10", features = ["oid"] }
 argon2 = { version = "0.5", default-features = false, features = ["alloc", "password-hash"] }
 rsa = "0.9"
