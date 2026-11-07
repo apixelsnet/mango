@@ -15,6 +15,7 @@ use crate::{
 use rusqlite::{params, Connection};
 use serde_json::json;
 use std::{
+    borrow::Cow,
     cmp::Ordering,
     fs,
     io::Read,
@@ -190,8 +191,10 @@ impl Local {
         let archive = zip::ZipArchive::new(fs::File::open(&path)?)?;
         let mut names: Vec<String> = archive
             .file_names()
+            // A name that does not decode cannot be asked for by name, so it is no page.
+            .filter_map(|name| name.ok())
             .filter(|name| is_image(name) && !name.starts_with("__MACOSX/") && !name.rsplit('/').next().is_some_and(|file| file.starts_with('.')))
-            .map(str::to_owned)
+            .map(Cow::into_owned)
             .collect();
         names.sort_by(|a, b| natural_cmp(a, b));
         Ok(Pages::Archive(path, names))

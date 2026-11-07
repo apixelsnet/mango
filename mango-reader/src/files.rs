@@ -391,7 +391,7 @@ mod tests {
         write(&[first, second], &mut out).unwrap();
 
         let mut zip = zip::ZipArchive::new(Cursor::new(out)).unwrap();
-        let names: Vec<String> = (0..zip.len()).map(|i| zip.by_index(i).unwrap().name().to_owned()).collect();
+        let names: Vec<String> = (0..zip.len()).map(|i| zip.by_index(i).unwrap().name().unwrap().into_owned()).collect();
         assert_eq!(
             names,
             ["Salt Wind/ComicInfo.xml", "Salt Wind/cover.png", "Salt Wind/Chapter 1.cbz", "Salt Wind/Chapter 2.cbz", "Ünïcode ✓/ComicInfo.xml", "Ünïcode ✓/Ch 1.cbz"]

@@ -19,6 +19,7 @@ use rusqlite::{params, OptionalExtension};
 use serde::Deserialize;
 use serde_json::json;
 use std::{
+    borrow::Cow,
     collections::HashMap,
     fs,
     io::Read,
@@ -90,8 +91,12 @@ impl Archives {
                 return names.clone();
             }
         }
-        let mut names: Vec<String> =
-            archive.file_names().filter(|name| !name.ends_with('/') && !name.eq_ignore_ascii_case("ComicInfo.xml")).map(str::to_owned).collect();
+        let mut names: Vec<String> = archive
+            .file_names()
+            .filter_map(|name| name.ok())
+            .filter(|name| !name.ends_with('/') && !name.eq_ignore_ascii_case("ComicInfo.xml"))
+            .map(Cow::into_owned)
+            .collect();
         names.sort();
         let names = Arc::new(names);
         if held.len() >= ARCHIVES_KEPT {
