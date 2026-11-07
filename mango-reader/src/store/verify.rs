@@ -92,7 +92,7 @@ fn read_entries(jar: &[u8]) -> Result<Files, VerifyError> {
         if entry.is_dir() {
             continue;
         }
-        let name = entry.name().to_owned();
+        let name = entry.name().map_err(|e| invalid(format!("unreadable entry name: {e}")))?.into_owned();
         let mut data = Vec::new();
         (&mut entry)
             .take(MAX_UNPACKED - total + 1)
