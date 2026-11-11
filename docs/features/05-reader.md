@@ -87,3 +87,15 @@ Implementation: `lib/display.svelte.ts` (what the device is), `lib/reader.ts` (`
 Checked in Chromium against a Linux build, with a desktop window and a phone emulated with touch at 390×844: a manga opened at fit height on the desktop and fit width on the phone; F on the phone stored `devices.phone.fit` for the title and left the desktop at height; F on the desktop stored its own and left the phone alone; the phone's manga fit set from the desktop's Settings reached the phone and not the desktop; turned off, both read the same, and back on, the phone's answer returned.
 
 Not checked: a real phone or tablet, a touch laptop.
+
+## Loading, failed pages and accessibility (2026-11-11)
+
+Implementation: `routes/Reader.svelte`, `lib/reader.ts`.
+
+- **Loading.** A page still on its way shows a spinner and "Loading page N…", over the screen in the paged modes and over its own frame in a strip. It appears after 0.3 s, so a cached page does not flicker. After 10 s it says the page is slow and offers to try again.
+- **Failed pages.** A page that fails is tried again by itself twice, after 1 s and 2 s. Then it shows why, as Mango answered (for example the source's error), with Try again, and Try all again when more than one failed. R loads every failed or slow page again. Offline, the page says so and loads again by itself when the device is back online.
+- **Screen readers.** The page that is up is announced once turning settles ("Page 3 of 20"), and so is a page that did not load. A strip frame is `aria-busy` while its page loads.
+- **Keyboard.** `?` (or the info button in the top bar on a computer) lists every key, the owner's own included. The list and the settings sheet take focus when they open and give it back when they close; Escape closes them first.
+- **Motion.** Scrolling by Space, taps and auto-scroll steps does not glide when the system asks for reduced motion or the e-ink setting is on; the spinner pulses instead of turning.
+
+Checked in Chromium against a mock API: a page answering 502 was tried three times, then showed the source's message; a page failing twice then succeeding loaded on its own; a 15 s page showed the spinner and, at 10 s, the slow notice; R retried; `?` opened the list with focus inside and Escape closed it without leaving the reader. Not checked: a real screen reader, a real phone.
