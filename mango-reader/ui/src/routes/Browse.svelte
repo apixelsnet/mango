@@ -124,7 +124,7 @@
 
 <div class="page">
   <div class="page-head">
-    <h1 class="display">BROWSE</h1>
+    <h1 class="display caps">Browse</h1>
     <div class="tools">
       {#if langs.length > 1}
         <button class="btn icon" aria-label="Languages" title="Languages" aria-expanded={picking} onclick={() => (picking = !picking)}>
@@ -161,7 +161,7 @@
 
       {#if pinned.length}
         <section>
-          <div class="section-head"><h2 class="display">PINNED</h2></div>
+          <div class="section-head"><h2 class="display caps">Pinned</h2></div>
           <ul class="rows">
             {#each pinned as source (source.id)}{@render row(source)}{/each}
           </ul>
@@ -170,7 +170,7 @@
 
       <section>
         <div class="section-head">
-          <h2 class="display">SOURCES</h2>
+          <h2 class="display caps">Sources</h2>
           {#if hiddenCount}
             <button class="btn" aria-pressed={showHidden} onclick={() => (showHidden = !showHidden)}>
               <Icon name="eyeoff" size={18} />Hidden ({hiddenCount})

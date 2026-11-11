@@ -20,7 +20,7 @@
 
   // One group is on screen at a time. Which one is in the address: #/settings/<id>.
   const TABS: { id: string; label: string; icon: IconName; about: string }[] = [
-    { id: 'appearance', label: 'Appearance', icon: 'eye', about: 'Themes, colours and print effects.' },
+    { id: 'appearance', label: 'Appearance', icon: 'eye', about: 'Themes, colors and print effects.' },
     { id: 'reader', label: 'Reader', icon: 'book', about: 'How each kind of series is read.' },
     { id: 'library', label: 'Library', icon: 'bookmark', about: 'Categories, and the check for new chapters.' },
     { id: 'downloads', label: 'Downloads', icon: 'download', about: 'Chapters kept on this server.' },
@@ -65,7 +65,7 @@
     saveTheme({ ...t, ...patch }).catch((e) => (error = message(e)));
   }
 
-  // ---------- custom colours ----------
+  // ---------- custom colors ----------
 
   let paper = $state(theme.value.custom.paper);
   let ink = $state(theme.value.custom.ink);
@@ -840,13 +840,13 @@
     <div class="what"><strong>{label}</strong><span>{hint}</span></div>
     <div class="how">
       {#each names as name (name)}
-        {@const colours = palette(t, name)}
+        {@const colors = palette(t, name)}
         <button
           class="btn swatch"
           aria-pressed={t[slot] === name}
-          style:background={colours.paper}
-          style:color={colours.ink}
-          style:border-color={colours.ink}
+          style:background={colors.paper}
+          style:color={colors.ink}
+          style:border-color={colors.ink}
           onclick={() => change(slotted(slot, name))}
         >
           {#if t[slot] === name}<Icon name="check" size={16} stroke={4} />{/if}{name}
@@ -858,7 +858,7 @@
 
 <div class="page">
   <div class="page-head">
-    <h1 class="display">SETTINGS</h1>
+    <h1 class="display caps">Settings</h1>
   </div>
 
   <div class="layout">
@@ -895,12 +895,12 @@
           </div>
           {@render swatches('light', 'Day theme', 'Used when the device is in light mode.')}
           {@render swatches('dark', 'Night theme', 'Used when the device is in dark mode.')}
-          <div class="set stack" role="group" aria-label="Spot colour">
-            <div class="what"><strong>Spot colour</strong><span>The one accent: main buttons, badges, highlights.</span></div>
+          <div class="set stack" role="group" aria-label="Spot color">
+            <div class="what"><strong>Spot color</strong><span>The one accent: main buttons, badges, highlights.</span></div>
             <div class="how">
-              {#each Object.entries(SPOTS) as [name, colour] (name)}
-                <button class="btn swatch" aria-pressed={t.spot.toUpperCase() === colour} style:background={colour} style:color="#111111" style:border-color="var(--ink)" onclick={() => change({ spot: colour })}>
-                  {#if t.spot.toUpperCase() === colour}<Icon name="check" size={16} stroke={4} />{/if}{name}
+              {#each Object.entries(SPOTS) as [name, color] (name)}
+                <button class="btn swatch" aria-pressed={t.spot.toUpperCase() === color} style:background={color} style:color="#111111" style:border-color="var(--ink)" onclick={() => change({ spot: color })}>
+                  {#if t.spot.toUpperCase() === color}<Icon name="check" size={16} stroke={4} />{/if}{name}
                 </button>
               {/each}
               <label class="btn picker">
@@ -912,15 +912,15 @@
         </section>
 
         <section class="card">
-          <h3>Custom colours</h3>
-          <div class="set stack" role="group" aria-label="Custom colours">
+          <h3>Custom colors</h3>
+          <div class="set stack" role="group" aria-label="Custom colors">
             <div class="what"><strong>Paper and ink</strong><span>They go into whichever of the two themes is showing now.</span></div>
             <div class="how">
               <label class="btn picker">Paper <input type="color" bind:value={paper} oninput={() => (agreed = false)} /></label>
               <label class="btn picker">Ink <input type="color" bind:value={ink} oninput={() => (agreed = false)} /></label>
               <span class="sample" style:background={paper} style:color={ink} style:border-color={ink}>Ink on paper, {ratio.toFixed(1)} to 1</span>
               <button class="btn ink" onclick={useCustom}>
-                {weak && agreed ? 'Use them anyway' : 'Use these colours'}
+                {weak && agreed ? 'Use them anyway' : 'Use these colors'}
               </button>
             </div>
             {#if weak}

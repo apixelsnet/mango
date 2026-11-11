@@ -74,7 +74,7 @@
     {
       icon: 'sliders',
       title: 'That is all',
-      text: 'Themes, colours and the reader’s defaults are here in Settings. This tour is too, under About, if you want it again.',
+      text: 'Themes, colors and the reader’s defaults are here in Settings. This tour is too, under About, if you want it again.',
       to: '/settings',
       where: 'Settings',
     },

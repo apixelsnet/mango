@@ -19,7 +19,11 @@ type Options = { method?: string; json?: unknown; signal?: AbortSignal };
  */
 export const gate = { lost: (_code: string) => {}, plan: (_code: string) => {} };
 
+/** A change on its way (one held for Undo, lib/undoing.svelte.ts): reads wait for it, so they see it. */
+export const pending = { change: Promise.resolve() as Promise<unknown> };
+
 export async function api<T>(path: string, options: Options = {}): Promise<T> {
+  if ((options.method ?? 'GET') === 'GET') await pending.change;
   let response: Response;
   try {
     response = await fetch('api' + path, {
@@ -27,6 +31,8 @@ export async function api<T>(path: string, options: Options = {}): Promise<T> {
       signal: options.signal,
       headers: options.json === undefined ? undefined : { 'Content-Type': 'application/json' },
       body: options.json === undefined ? undefined : JSON.stringify(options.json),
+      // A change sent while the page is going away, such as one held back for Undo, still arrives.
+      keepalive: options.method !== undefined && options.method !== 'GET' && document.visibilityState === 'hidden',
     });
   } catch {
     throw new ApiError(0, 'offline', 'Mango did not answer. Is it still running?');

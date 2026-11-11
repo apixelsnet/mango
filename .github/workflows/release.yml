@@ -173,7 +173,7 @@ jobs:
           curl -fsS "$at/api/auth" | grep -F '"setup":true'
           curl -sS -o /dev/null -w '%{http_code}\n' "$at/api/library" | grep -x 401
           curl -fsS "$at/" | grep -cF '<title>Mango</title>'
-          # And it carries the licences.
+          # And it carries the licenses.
           docker exec "$TEST_NAME" test -s /usr/share/doc/mango/LICENSE -a -s /usr/share/doc/mango/THIRD-PARTY-LICENSES.txt
 
       - name: Pack
@@ -198,7 +198,7 @@ jobs:
           if-no-files-found: error
           retention-days: 1
 
-      # The same jars and the same list of licences go into the macOS and Windows archives.
+      # The same jars and the same list of licenses go into the macOS and Windows archives.
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: shared

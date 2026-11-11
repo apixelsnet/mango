@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { name } from '../lib/named.svelte';
   import { get, message, send, type Card, type FilterChange, type Listing, type Source } from '../lib/api';
   import { onDestroy } from 'svelte';
   import Icon from '../lib/Icon.svelte';
@@ -22,6 +23,7 @@
   const kept = before();
 
   let source = $state<Source | null>(null);
+  $effect(() => name(source?.name));
   let tab = $state<Tab>(kept?.tab ?? 'popular');
   let typed = $state(kept?.typed ?? '');
   let query = $state(kept?.query ?? '');

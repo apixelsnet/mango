@@ -1,5 +1,7 @@
 <script lang="ts">
+  import { tick } from 'svelte';
   import { get } from './lib/api';
+  import { named } from './lib/named.svelte';
   import { display } from './lib/display.svelte';
   import Icon, { type IconName } from './lib/Icon.svelte';
   import Notice from './lib/Notice.svelte';
@@ -9,6 +11,7 @@
   import { back, go, route } from './lib/router.svelte';
   import { loadSession, session } from './lib/session.svelte';
   import StorageFull from './lib/StorageFull.svelte';
+  import Undo from './lib/Undo.svelte';
   import { loadVersion, version } from './lib/version.svelte';
   import SignIn from './routes/SignIn.svelte';
   import Downloads from './routes/Downloads.svelte';
@@ -106,6 +109,74 @@
     if (session.signedIn && area === 'join') go('/', true);
   });
 
+  // What each screen is called where it has no name of its own (lib/named.svelte.ts).
+  const AREAS: Record<string, string> = {
+    '': 'Library',
+    browse: 'Browse',
+    updates: 'Updates',
+    downloads: 'Downloads',
+    history: 'History',
+    settings: 'Settings',
+    import: 'Import',
+    stats: 'Stats',
+    search: 'Search',
+    migrate: 'Move',
+    source: 'Source',
+    extensions: 'Extensions',
+    extension: 'Extension',
+    title: 'Title',
+    read: 'Reader',
+  };
+  const screenName = $derived(
+    !session.signedIn
+      ? session.signup
+        ? 'Welcome'
+        : 'Sign in'
+      : named.path === route.path && named.text
+        ? named.text
+        : (AREAS[area] ?? 'Nothing here'),
+  );
+
+  $effect(() => {
+    document.title = screenName === 'Library' ? 'Mango' : `${screenName} · Mango`;
+  });
+
+  // A new screen takes the focus to its heading, so a screen reader says where it now is and
+  // the keyboard starts from the top, not from the link that was pressed. Moving within a
+  // screen (Settings' sections, a search's words) does not count, nor does the first screen.
+  const screen = $derived(area + (['title', 'source', 'extension', 'migrate'].includes(area) ? '/' + parts.slice(1).join('/') : ''));
+  let mainEl = $state<HTMLElement>();
+  let firstScreen = true;
+  let looking = 0;
+
+  /** Focuses the screen's heading once it is there, or the screen itself after a while without one. */
+  function focusScreen() {
+    const mine = ++looking;
+    const until = performance.now() + 2000;
+    const step = () => {
+      if (mine !== looking || !mainEl) return;
+      // The screen already put the focus somewhere of its own, such as a search field.
+      if (mainEl.contains(document.activeElement) && document.activeElement !== mainEl) return;
+      const heading = mainEl.querySelector<HTMLElement>('h1');
+      if (heading) {
+        heading.tabIndex = -1;
+        heading.focus({ preventScroll: true });
+      } else if (performance.now() > until) mainEl.focus({ preventScroll: true });
+      else requestAnimationFrame(step);
+    };
+    tick().then(step);
+  }
+
+  $effect(() => {
+    void screen;
+    if (!session.signedIn || area === 'read') return;
+    if (firstScreen) {
+      firstScreen = false;
+      return;
+    }
+    focusScreen();
+  });
+
   /** A press on the tab already open goes back to its top, as in a phone's own apps. */
   function again(event: MouseEvent, to: string) {
     if (route.path !== to) return;
@@ -136,6 +207,7 @@
   {/await}
 {:else}
   <div class="shell" class:tabbed={tabbed && !pushed}>
+    <button class="btn skip" onclick={() => focusScreen()}>Skip to content</button>
     {#if !pushed}
       <header class="top">
         {#if deep}
@@ -143,7 +215,7 @@
         {/if}
         <a class="logo" class:alone={deep} href="#/" aria-label="Mango home">
           <span class="dot"></span>
-          <span class="display word">MANGO</span>
+          <span class="display caps word">Mango</span>
           <span class="kana" aria-hidden="true">マンゴー</span>
         </a>
         {#if display.value.incognito}
@@ -170,7 +242,7 @@
       </header>
     {/if}
 
-    <main>
+    <main bind:this={mainEl} tabindex="-1">
       {#if area === ''}
         <Library />
       {:else if area === 'browse'}
@@ -239,6 +311,7 @@
       </nav>
     {/if}
   </div>
+  <Undo />
 {/if}
 
 {#if word && session.signedIn && area !== 'read'}

@@ -1,8 +1,8 @@
 name: CI
 
 # Checks every push to the main branch and every pull request: the UI type-checks
-# and builds, the core's tests pass with that UI built in, and the desktop shell
-# compiles.
+# and builds, the core's tests pass with that UI built in, the UI's main paths work
+# in Chromium against a stand-in API, and the desktop shell compiles.
 
 on:
   push:
@@ -51,6 +51,40 @@ jobs:
       - name: Test the core
         working-directory: mango-reader
         run: cargo test --release --locked
+
+  browser:
+    name: UI in a browser
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          # Nothing after the checkout pushes with git; the token is not left in the folder.
+          persist-credentials: false
+
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: mango-reader/ui/package-lock.json
+
+      - name: Install the UI and Chromium
+        working-directory: mango-reader/ui
+        run: |
+          npm ci --no-audit --no-fund
+          npx playwright install --with-deps chromium
+
+      # The built UI against a stand-in API (e2e/mock.mjs), at a desktop and a phone size.
+      - name: Smoke test
+        working-directory: mango-reader/ui
+        run: npm run e2e
+
+      - name: Keep the traces of a failed run
+        if: failure()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: playwright-traces
+          path: mango-reader/ui/test-results/
+          retention-days: 7
 
   shell:
     name: Desktop shell

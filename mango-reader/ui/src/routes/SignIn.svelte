@@ -48,10 +48,10 @@
     {#if !inside}
       <div class="logo">
         <span class="dot"></span>
-        <span class="display word">MANGO</span>
+        <span class="display caps word">Mango</span>
       </div>
     {/if}
-    <svelte:element this={inside ? 'h2' : 'h1'} class="display title">{first ? 'SET A PASSWORD' : 'SIGN IN'}</svelte:element>
+    <svelte:element this={inside ? 'h2' : 'h1'} class="display caps title">{first ? 'Set a password' : 'Sign in'}</svelte:element>
     {#if first}
       <p>This Mango is new. Pick the password that will open it from now on: {SHORTEST} characters or more.</p>
     {/if}

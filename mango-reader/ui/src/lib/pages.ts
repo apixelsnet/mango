@@ -75,11 +75,11 @@ function margins(image: HTMLImageElement): Box | null {
     const at = (y * w + x) * 4;
     return (data[at] * 299 + data[at + 1] * 587 + data[at + 2] * 114) / 1000;
   };
-  // The margin's colour is the corners', when they agree and it is paper white or frame black.
+  // The margin's color is the corners', when they agree and it is paper white or frame black.
   const corners = [light(0, 0), light(w - 1, 0), light(0, h - 1), light(w - 1, h - 1)];
   const ground = corners.reduce((sum, value) => sum + value, 0) / corners.length;
   if (corners.some((value) => Math.abs(value - ground) > 30) || (ground > 60 && ground < 200)) return null;
-  // A line is plain when nearly all of it is the margin's colour: specks of dust do not count.
+  // A line is plain when nearly all of it is the margin's color: specks of dust do not count.
   const plain = (x: number, y: number) => Math.abs(light(x, y) - ground) < 40;
   const row = (y: number) => {
     let off = 0;

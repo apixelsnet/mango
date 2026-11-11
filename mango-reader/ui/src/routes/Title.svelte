@@ -1,4 +1,6 @@
 <script lang="ts">
+  import { offer, tell } from '../lib/undoing.svelte';
+  import { name } from '../lib/named.svelte';
   import { get, message, send, type Category, type Chapter, type Namesake, type PageMark, type Queued, type Title } from '../lib/api';
   import Cover from '../lib/Cover.svelte';
   import DownloadTag from '../lib/DownloadTag.svelte';
@@ -44,6 +46,7 @@
   }
 
   let title = $state<Title | null>(before());
+  $effect(() => name(title?.title));
   let loading = $state(true);
   let error = $state<string | null>(null);
   // A failed refresh keeps what is on screen and says so, instead of replacing it.
@@ -214,9 +217,27 @@
     });
   }
 
+  // Held back for Undo (lib/undoing.svelte.ts): shown as done at once, sent a few seconds later.
   function deleteFiles(list: Chapter[]) {
+    if (!list.length) return;
+    closeMenus();
     for (const chapter of list) chapter.downloaded = false;
-    change(() => Promise.all(list.map((c) => send('DELETE', `/chapters/${c.id}/download`))));
+    offer(list.length === 1 ? `Saved file of ${list[0].name} deleted.` : `Saved files of ${list.length} chapters deleted.`, {
+      undo: () => list.forEach((chapter) => (chapter.downloaded = true)),
+      commit: () => Promise.all(list.map((c) => send('DELETE', `/chapters/${c.id}/download`))),
+      failed: reload,
+    });
+  }
+
+  function closeMenus() {
+    menu = false;
+    opened = null;
+    refreshError = null;
+  }
+
+  /** A held change that failed puts the title back as Mango has it; the bar says why. */
+  async function reload() {
+    title = await get<Title>(`/manga/${id}`).catch(() => title);
   }
 
   function toggleAuto() {
@@ -250,8 +271,18 @@
       }
     }
     namesakes = null;
-    t.inLibrary = !t.inLibrary;
-    change(() => send('PUT', `/manga/${id}/library`, { inLibrary: t.inLibrary }));
+    if (t.inLibrary) {
+      closeMenus();
+      t.inLibrary = false;
+      offer('Taken out of the library.', {
+        undo: () => (t.inLibrary = true),
+        commit: () => send('PUT', `/manga/${id}/library`, { inLibrary: false }),
+        failed: reload,
+      });
+      return;
+    }
+    t.inLibrary = true;
+    change(() => send('PUT', `/manga/${id}/library`, { inLibrary: true })).then(() => t.inLibrary && tell('Added to the library.'));
   }
 
   /** Reads this title from under another, as one of its sources. */
@@ -372,11 +403,20 @@
   }
 
   function mark(list: Chapter[], read: boolean) {
+    if (!list.length) return;
+    closeMenus();
+    const before = list.map((chapter) => ({ chapter, read: chapter.read, page: chapter.lastPageRead }));
+    const changed = list.filter((c) => c.read !== read || c.lastPageRead > 0);
     for (const chapter of list) {
       chapter.read = read;
       chapter.lastPageRead = 0;
     }
-    change(() => send('PUT', `/manga/${id}/chapters`, { ids: list.map((c) => c.id), read }));
+    const what = changed.length === 1 ? changed[0].name : `${changed.length || list.length} chapters`;
+    offer(`${what} marked ${read ? 'read' : 'unread'}.`, {
+      undo: () => before.forEach((b) => ((b.chapter.read = b.read), (b.chapter.lastPageRead = b.page))),
+      commit: () => send('PUT', `/manga/${id}/chapters`, { ids: list.map((c) => c.id), read }),
+      failed: reload,
+    });
   }
 
   /** The chapters older than this one, in the source's order, that are still unread. */
@@ -614,7 +654,7 @@
 
         {#if panel === 'edit'}
           <form class="panel editor" onsubmit={saveEdit}>
-            <strong class="display">EDIT DETAILS</strong>
+            <strong class="display caps">Edit details</strong>
             <p class="muted">What you change stays as you wrote it; refreshing from the source leaves it alone.</p>
             <label class="field"><span>Name</span><input bind:value={form.title} required maxlength="300" /></label>
             <label class="field"><span>Author</span><input bind:value={form.author} maxlength="300" /></label>
@@ -641,7 +681,7 @@
           </form>
         {:else if panel === 'groups'}
           <div class="panel editor">
-            <strong class="display">SCANLATION GROUPS</strong>
+            <strong class="display caps">Scanlation groups</strong>
             <p class="muted">The groups whose uploads you want first. With one upload per chapter, the others are hidden and reading passes over them.</p>
             {#if merged}
               <p class="muted">Sources come before groups: {title.members.map((m) => m.sourceName ?? m.title).join(', ')}.</p>
@@ -717,7 +757,7 @@
 
       <div class="chapters">
         <div class="section-head">
-          <h2 class="display">CHAPTERS</h2>
+          <h2 class="display caps">Chapters</h2>
           <div class="tools">
             <button class="btn" aria-expanded={filters} onclick={() => (filters = !filters)}>
               <Icon name="filter" size={18} />Sort &amp; filter{filtering ? ' · on' : ''}

@@ -10,7 +10,7 @@ The home screen: what the user follows, and where they left off.
 - Filter: unread, downloaded, completed. Search by title.
 - Unread badge on every title.
 - Bulk select: mark read or unread, download, move category, remove.
-- Continue reading: the most recent title, front and centre.
+- Continue reading: the most recent title, front and center.
 - History: chapters read, by day; resume or remove an entry.
 - Per-title settings: reader mode, auto-download.
 
@@ -56,3 +56,17 @@ Verification: unit tests and `smoke.py` on Linux, and Chromium at both viewport 
 
 - Titles showing one upload per chapter are counted in a second, separate query. Before, every title paid for that counting, then threw it away. Statistics count titles with a lighter query of their own instead of building the whole library, and an index of read chapters (migration 014) speeds up the reading days and months.
 - Measured with 1,000 titles (20 shown one upload per chapter, 10 merged into another), 300,000 chapters and 10,000 history entries: `GET /api/library` went from 190 to 67 ms and `GET /api/stats` from 252 to 91 ms, both answering exactly as before. A database from the previous version takes the new index on start.
+
+## Undo, screen names and keyboard focus (2026-11-11)
+
+Implementation: `lib/undoing.svelte.ts`, `lib/Undo.svelte`, `lib/named.svelte.ts`, `App.svelte`, `lib/api.ts`.
+
+- **Undo.** Marking chapters read or unread, deleting saved files and taking a title out of the library (title page), marking titles read or unread and taking them out (library), and taking entries out of the history or clearing it show as done at once, with Undo in a bar at the foot of the screen (Ctrl+Z or ⌘Z too). Mango is told when the bar goes after 7 s, when another such action comes, when the screen is left, or when the page closes (the call is then sent with `keepalive`). Undo puts the screen back and nothing is sent, so a chapter's page is kept too. Reads made after a change is sent wait for it, so the next screen shows it. A change that fails says so in the same bar and puts the screen back as Mango has it.
+- **Announcements.** The same bar, a polite live region, says what happened after adding a title to the library, putting titles in a category and queueing downloads from the library.
+- **Screen names.** The browser's tab and history name the screen: "History · Mango", the title's name on its page, "Chapter 3 · Title · Mango" in the reader.
+- **Focus on a new screen.** Opening another screen moves the focus to its heading, so a screen reader says where it is and Tab starts from the top. Moving within a screen (Settings' sections) does not, nor does a screen that puts the focus on a field of its own. A "Skip to content" button comes up on the first Tab.
+- **Capitals.** Headings are written in normal case and set in capitals by CSS (`.caps`), because some screen readers spell out a word typed in capitals.
+- **Contrast.** With the system asking for more contrast, secondary text is ink like the rest. In Windows' contrast themes a pressed button and the screen open in the menu take the system's highlight, and counts and tags keep a border.
+- **Spelling.** Labels use US spelling ("Color wash", "Spot color", "Gray"). A reader background saved as "grey" is read as "gray".
+
+Checked in Chromium against a mock API: marking all chapters read and pressing Undo, or Ctrl+Z, sent nothing; taking a title out and leaving the screen sent one call; a library "Mark read" was sent after 7 s; a history entry came back on Undo; the heading took the focus on each new screen and the tab names were right; the menu's current screen kept its highlight in forced colors. Not checked: a real screen reader, Windows' own contrast themes.

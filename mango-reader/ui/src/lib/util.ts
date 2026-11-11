@@ -57,7 +57,7 @@ export function dayKey(seconds: number): number {
   return new Date(d.getFullYear(), d.getMonth(), d.getDate()).getTime() / 1000;
 }
 
-export const STATUS = ['Unknown', 'Ongoing', 'Completed', 'Licensed', 'Finished', 'Cancelled', 'On hiatus'];
+export const STATUS = ['Unknown', 'Ongoing', 'Completed', 'Licensed', 'Finished', 'Canceled', 'On hiatus'];
 
 const names = typeof Intl.DisplayNames === 'function' ? new Intl.DisplayNames(undefined, { type: 'language' }) : null;
 

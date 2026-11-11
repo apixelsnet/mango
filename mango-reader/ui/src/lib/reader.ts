@@ -39,7 +39,7 @@ export type Prefs = {
   autoSpeed: number;
   autoSeconds: number;
   autoNext: boolean;
-  ground: 'black' | 'grey' | 'white' | 'theme';
+  ground: 'black' | 'gray' | 'white' | 'theme';
   brightness: number;
   contrast: number;
   saturation: number;
@@ -137,7 +137,7 @@ export type Field = { key: keyof Prefs; label: string; hint?: string; when?: (p:
   | { type: 'choice'; options: [string, string][] }
   | { type: 'range'; min: number; max: number; step: number; unit: string }
   | { type: 'switch' }
-  | { type: 'colour' }
+  | { type: 'color' }
 );
 
 const paged = (p: Prefs) => p.mode !== 'webtoon' && p.mode !== 'sideways';
@@ -167,7 +167,7 @@ export const GROUPS: { title: string; fields: Field[] }[] = [
       { key: 'offset', label: 'Cover on its own', hint: 'Shifts the pairs by one, for when spreads come out split down the middle.', type: 'switch', when: (p) => book(p) && p.spread !== 'off' },
       { key: 'width', label: 'Strip width', hint: 'The widest a page gets on a large screen.', type: 'range', min: 300, max: 3000, step: 50, unit: ' px', when: strip },
       { key: 'gap', label: 'Space between pages', type: 'range', min: 0, max: 100, step: 2, unit: ' px', when: continuous },
-      { key: 'crop', label: 'Cut the margins', hint: 'The plain white or black border round a scan goes, so the art fills the screen.', type: 'switch' },
+      { key: 'crop', label: 'Cut the margins', hint: 'The plain white or black border around a scan goes, so the art fills the screen.', type: 'switch' },
       { key: 'split', label: 'Split wide pages', hint: 'A spread is read as its two halves, one after the other, in the reading direction.', type: 'switch', when: paged },
     ],
   },
@@ -208,7 +208,7 @@ export const GROUPS: { title: string; fields: Field[] }[] = [
         type: 'choice',
         options: [
           ['black', 'Black'],
-          ['grey', 'Grey'],
+          ['gray', 'Gray'],
           ['white', 'White'],
           ['theme', 'The theme’s paper'],
         ],
@@ -232,8 +232,8 @@ export const GROUPS: { title: string; fields: Field[] }[] = [
       { key: 'sepia', label: 'Warmth', hint: 'A sepia wash, easier on the eyes at night.', type: 'range', min: 0, max: 100, step: 5, unit: '%' },
       { key: 'grayscale', label: 'Black and white', type: 'switch' },
       { key: 'invert', label: 'Invert', type: 'switch' },
-      { key: 'tintAmount', label: 'Colour wash', hint: 'A colour laid over the page.', type: 'range', min: 0, max: 80, step: 5, unit: '%' },
-      { key: 'tint', label: 'Wash colour', type: 'colour', when: tinted },
+      { key: 'tintAmount', label: 'Color wash', hint: 'A color laid over the page.', type: 'range', min: 0, max: 80, step: 5, unit: '%' },
+      { key: 'tint', label: 'Wash color', type: 'color', when: tinted },
       {
         key: 'blend',
         label: 'Wash blends as',
@@ -267,7 +267,9 @@ export function sane(given: unknown): Partial<Prefs> {
   const out: Record<string, unknown> = {};
   if (!given || typeof given !== 'object') return out;
   for (const field of FIELDS) {
-    const value = (given as Record<string, unknown>)[field.key];
+    let value = (given as Record<string, unknown>)[field.key];
+    // Saved before the background's value was spelled the US way.
+    if (field.key === 'ground' && value === 'grey') value = 'gray';
     const fits =
       field.type === 'choice'
         ? field.options.some(([option]) => option === value)
@@ -437,7 +439,7 @@ export function zone(p: Prefs, x: number, y: number): 'next' | 'prev' | 'menu' {
   return hit;
 }
 
-/** The kernel of the sharpening filter: the centre pixel against its four neighbours. */
+/** The kernel of the sharpening filter: the center pixel against its four neighbours. */
 export function sharpenKernel(amount: number): string {
   const k = (amount / 100) * 1.2;
   return `0 ${-k} 0 ${-k} ${1 + 4 * k} ${-k} 0 ${-k} 0`;

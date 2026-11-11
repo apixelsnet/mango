@@ -92,7 +92,7 @@
 
 {#if shown.length}
   <section class="tracking" aria-label="Tracking">
-    <h2 class="display">TRACKING</h2>
+    <h2 class="display caps">Tracking</h2>
     <Notice {error} />
     <ul class="rows">
       {#each shown as t (t.id)}

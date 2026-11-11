@@ -1,4 +1,4 @@
-// The theme: three colours picked by the owner, the rest derived.
+// The theme: three colors picked by the owner, the rest derived.
 // See docs/features/07-themes.md.
 
 import { prefs, setPref } from './prefs.svelte';
@@ -114,18 +114,18 @@ export function activeName(t: Theme = theme.value): string {
 }
 
 export function apply(t: Theme = theme.value) {
-  const colours = palette(t, activeName(t));
+  const colors = palette(t, activeName(t));
   const root = document.documentElement;
-  root.style.setProperty('--paper', colours.paper);
-  root.style.setProperty('--ink', colours.ink);
-  root.style.setProperty('--surface', colours.surface);
+  root.style.setProperty('--paper', colors.paper);
+  root.style.setProperty('--ink', colors.ink);
+  root.style.setProperty('--surface', colors.surface);
   root.style.setProperty('--spot', t.spot);
-  // Text on the spot colour is whichever of dark and light reads better.
+  // Text on the spot color is whichever of dark and light reads better.
   root.style.setProperty('--on-spot', contrast(t.spot, '#111111') >= contrast(t.spot, '#FFFFFF') ? '#111111' : '#FFFFFF');
   // A phone draws its own clock in white over an app opened from its home screen: the band behind it is the darker of the two.
-  root.style.setProperty('--bar', luminance(colours.paper) < luminance(colours.ink) ? colours.paper : colours.ink);
-  for (const meta of document.querySelectorAll('meta[name="theme-color"]')) meta.setAttribute('content', colours.paper);
-  root.style.colorScheme = luminance(colours.paper) < 0.4 ? 'dark' : 'light';
+  root.style.setProperty('--bar', luminance(colors.paper) < luminance(colors.ink) ? colors.paper : colors.ink);
+  for (const meta of document.querySelectorAll('meta[name="theme-color"]')) meta.setAttribute('content', colors.paper);
+  root.style.colorScheme = luminance(colors.paper) < 0.4 ? 'dark' : 'light';
   root.dataset.themed = 'yes';
   root.dataset.shadows = t.shadows ? 'on' : 'off';
   root.dataset.dots = t.dots ? 'on' : 'off';

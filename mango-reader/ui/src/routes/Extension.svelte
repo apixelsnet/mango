@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { name } from '../lib/named.svelte';
   import { get, message, send, type Installed, type Source, type SourcePref } from '../lib/api';
   import Icon from '../lib/Icon.svelte';
   import Notice from '../lib/Notice.svelte';
@@ -7,6 +8,7 @@
   let { pkg }: { pkg: string } = $props();
 
   let ext = $state<Installed | null>(null);
+  $effect(() => name(ext?.name));
   let loading = $state(true);
   let error = $state<string | null>(null);
   // The source whose settings are open, and what it lets its user set.
@@ -130,7 +132,7 @@
 
   {#if ext}
     <section>
-      <div class="section-head"><h2 class="display">SOURCES</h2></div>
+      <div class="section-head"><h2 class="display caps">Sources</h2></div>
       <ul class="rows">
         {#each ext.sources as source (source.id)}
           <li>

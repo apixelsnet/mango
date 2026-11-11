@@ -336,7 +336,7 @@ impl Downloads {
         }
     }
 
-    /// Fetches a chapter and writes its CBZ. None when it was cancelled or paused part way.
+    /// Fetches a chapter and writes its CBZ. None when it was canceled or paused part way.
     async fn save(&self, job: &Job) -> Result<Option<(String, i64)>> {
         // A disk that fills up takes the database's next write with it.
         if self.keep_free > 0 && free_space(&self.data_dir).is_some_and(|free| free < self.keep_free) {
@@ -413,7 +413,7 @@ impl Downloads {
         Ok(true)
     }
 
-    /// Is this chapter still to be fetched? Not when it was cancelled, or the queue was paused.
+    /// Is this chapter still to be fetched? Not when it was canceled, or the queue was paused.
     async fn wanted(&self, chapter: i64) -> bool {
         self.db
             .call(move |conn| {
@@ -707,7 +707,7 @@ mod tests {
         assert!(states(&conn).contains(&(12, "failed".into(), 5)));
 
         record(&conn, 10, 0, Ok(None)).unwrap();
-        assert!(states(&conn).contains(&(10, "queued".into(), 0)), "a cancelled fetch goes back in line");
+        assert!(states(&conn).contains(&(10, "queued".into(), 0)), "a canceled fetch goes back in line");
         record(&conn, 10, 0, Ok(Some(("Src/Alpha/Ch 10.cbz".into(), 30)))).unwrap();
         let saved: (Option<String>, Option<i64>) =
             conn.query_row("SELECT download_path, page_count FROM chapters WHERE id = 10", [], |r| Ok((r.get(0)?, r.get(1)?))).unwrap();
