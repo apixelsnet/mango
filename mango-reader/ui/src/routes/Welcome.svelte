@@ -53,10 +53,10 @@
   <header class="hero">
     <div class="logo">
       <span class="dot"></span>
-      <span class="display word">MANGO</span>
+      <span class="display caps word">Mango</span>
       <span class="kana" aria-hidden="true">マンゴー</span>
     </div>
-    <h1 class="display">ONE SHELF FOR <span class="mark">EVERYTHING</span> YOU READ</h1>
+    <h1 class="display caps">One shelf for <span class="mark">everything</span> you read</h1>
     <p class="lead">Mango gathers manga and manhwa from the sources you choose into one library, and reads them in the browser on any screen.</p>
   </header>
 
@@ -69,7 +69,7 @@
       <SignIn inside />
     {:else}
       <form class="panel" onsubmit={join}>
-        <h2 class="display">CREATE ACCOUNT</h2>
+        <h2 class="display caps">Create account</h2>
         <p>An account takes an invitation from whoever runs this Mango. With it you get a library of your own.</p>
         <label class="field">
           <span class="sr">Name</span>
@@ -185,7 +185,7 @@
     line-height: 1.12;
   }
 
-  /* A block of its own, so the colour stays within its line and off the one above. */
+  /* A block of its own, so the color stays within its line and off the one above. */
   .mark {
     display: inline-block;
     padding: 0 0.12em;

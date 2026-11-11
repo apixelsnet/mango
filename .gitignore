@@ -4,3 +4,5 @@ data/
 node_modules/
 __pycache__/
 ui/dist/
+test-results/
+playwright-report/

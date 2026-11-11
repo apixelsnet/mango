@@ -73,7 +73,7 @@ On a wide window a name sat far from its button, with nothing to lead the eye ac
 
 - The available extensions are laid out in as many columns as fit, each at least 340 px wide, a name and its button boxed together. A phone still gets one column.
 - Stores and installed extensions stay rows, every other one shaded.
-- The row or box under the pointer, or the one holding the keyboard's focus, is lit in the spot colour with its Install button filled.
+- The row or box under the pointer, or the one holding the keyboard's focus, is lit in the spot color with its Install button filled.
 - The mark that loads the next sixty is made anew after each load. In columns a load may not push it out of sight, and it is only asked once per sighting.
 
 Checked in a browser on Linux against a store of 1,433 extensions, in the light theme, the dark one and on a black paper: 5 columns at 2000 px, 7 at 2560, 3 at 1280, 1 at 390, a button at most 295 px from its name, nothing running off the side, with and without the 18+ mark. At 2560 by 1440 the list went on to 180 by itself and stopped.

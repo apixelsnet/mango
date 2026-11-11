@@ -139,7 +139,7 @@ it does, how it was built, and what was and was not tried.
 * **Migration.** Move a title to another source and keep your progress,
   categories and tracker links.
 * **Themes.** Day by default, or Night, or whatever the system says. Six
-  presets, six accent colours, or your own colours.
+  presets, six accent colors, or your own colors.
 * **Phones.** Tabs along the bottom on a narrow screen, and it can be added to
   a home screen as an app.
 * **Tour.** A new account is walked through the app once, and the reader shows
@@ -167,9 +167,9 @@ The titles and covers in these pictures are made up for them.
 | [![A title and its chapters][title-screenshot]][title-screenshot] | [![New chapters, by day][updates-screenshot]][updates-screenshot] |
 | A title and its chapters | New chapters, by day |
 
-Themes and colours, under Settings:
+Themes and colors, under Settings:
 
-[![Themes and colours][settings-screenshot]][settings-screenshot]
+[![Themes and colors][settings-screenshot]][settings-screenshot]
 
 The same library in the Midnight theme:
 
@@ -396,9 +396,11 @@ are listed in [.github/labels.yml](.github/labels.yml).
 5. Open a Pull Request
 
 Every pull request is checked: `npm run check` and `npm run build` for the UI,
-`cargo test` for the core, `cargo check` for the desktop shell.
+`npm run e2e` for the UI in Chromium against a stand-in API (run
+`npx playwright install chromium` once first), `cargo test` for the core,
+`cargo check` for the desktop shell.
 
-What you send in goes under the same [licence](LICENSE) as the rest. A security
+What you send in goes under the same [license](LICENSE) as the rest. A security
 problem does not go in an issue: [SECURITY.md](SECURITY.md) says where it goes.
 
 ### Building
@@ -465,7 +467,7 @@ this repository holds none.
 * Mango is not affiliated with Mihon, Suwayomi, any extension repository, AniList,
   MyAnimeList, Kitsu, MangaUpdates, FlareSolverr, Cloudflare or any source, and
   none of them endorses it. Their names belong to their owners.
-* Mango comes as it is, with no warranty of any kind. The [licence](LICENSE)
+* Mango comes as it is, with no warranty of any kind. The [license](LICENSE)
   says so in full.
 
 **If you hold the rights to something a source shows:** Mango does not host it,
@@ -481,7 +483,7 @@ repository itself is yours and should not be here, open an
 
 Mango is under the Apache License 2.0: see [LICENSE](LICENSE).
 
-It ships with other people's work under their own licences. [NOTICE](NOTICE)
+It ships with other people's work under their own licenses. [NOTICE](NOTICE)
 says what, and a release carries the full texts in `THIRD-PARTY-LICENSES.txt`.
 
 <p align="right">(<a href="#readme-top">back to top</a>)</p>

@@ -1,9 +1,9 @@
 # The repository's labels. The Labels workflow creates each one that is missing
-# and brings the colour and description of the others in line with this file.
+# and brings the color and description of the others in line with this file.
 # A label that is not listed here is left alone, so removing one from this file
 # does not delete it.
 #
-# Keep each colour in quotes: unquoted, 5319e7 reads as a number in scientific
+# Keep each color in quotes: unquoted, 5319e7 reads as a number in scientific
 # notation and 008672 as 8672, and GitHub refuses both.
 
 # What kind of issue it is. The first three are GitHub's own names, kept so old

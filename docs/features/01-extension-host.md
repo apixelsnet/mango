@@ -103,7 +103,7 @@ What it does not settle:
 - Size of an extracted host jar. The spike ran against the full 183 MB server jar.
 - WebView and JS-engine extensions; none were exercised.
 - Windows and macOS. Not run yet.
-- Long-running behaviour: memory after hours of use, many concurrent calls.
+- Long-running behavior: memory after hours of use, many concurrent calls.
 
 ## Host 0.1 result (2026-10-10) — passed on Linux and Windows
 

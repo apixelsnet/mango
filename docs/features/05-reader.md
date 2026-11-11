@@ -43,7 +43,7 @@ Code: `ui/src/lib/reader.ts` (every setting, its limits, the layers), `ui/src/li
 - Layout: a fourth fit (the whole page on screen); two pages side by side, always or on a wide screen, with the cover alone if wanted, and a page wider than tall never paired; strip width and the space between pages.
 - Auto-scroll: pixels a second down a strip, seconds a page otherwise; it pauses under a finger and while the controls are up, and can carry on into the next chapter.
 - Tap zones: sides, Kindle, L shape or off, and swapped if wanted. How far a tap or Space scrolls. How many pages load ahead.
-- Picture: background, brightness, contrast, saturation, hue, warmth, black and white, invert, and a colour wash with a blend mode.
+- Picture: background, brightness, contrast, saturation, hue, warmth, black and white, invert, and a color wash with a blend mode.
 - On screen: page number, progress bar, the screen kept on, full screen.
 - Keys added: `A` auto-scroll, `[` `]` its speed, `S` settings, `D` two pages. `F` goes round the four fits.
 
@@ -59,7 +59,7 @@ A 60-page chapter and a 200-image webtoon chapter both read end to end on deskto
 
 Implementation: `lib/pages.ts` (page processing on a canvas), `lib/reader.ts` and `routes/Reader.svelte`.
 
-- **Crop margins.** Plain white or black borders are detected on a downscaled copy of the page and removed, leaving a small margin. The four corners must agree on the border colour, and a row or column counts as plain when fewer than 1% of its pixels differ. No crop is applied if it would remove less than 3% of the area or leave less than 40% of either dimension. Pages larger than 16 megapixels are left unchanged, as mobile browsers may refuse a canvas of that size.
+- **Crop margins.** Plain white or black borders are detected on a downscaled copy of the page and removed, leaving a small margin. The four corners must agree on the border color, and a row or column counts as plain when fewer than 1% of its pixels differ. No crop is applied if it would remove less than 3% of the area or leave less than 40% of either dimension. Pages larger than 16 megapixels are left unchanged, as mobile browsers may refuse a canvas of that size.
 - **Split wide pages.** In the paged modes, a page wider than it is tall is shown as two halves in reading order (the right half first in right-to-left mode). Page navigation passes through both halves.
 - Processed pages are served as blob URLs; up to sixteen are retained at a time. Whether a page is wide is determined from the original image.
 - **Sideways strip.** A fifth reading mode places pages side by side at screen height with horizontal scrolling. The mouse wheel scrolls horizontally, and auto-scroll and page spacing apply.
@@ -99,3 +99,15 @@ Implementation: `routes/Reader.svelte`, `lib/reader.ts`.
 - **Motion.** Scrolling by Space, taps and auto-scroll steps does not glide when the system asks for reduced motion or the e-ink setting is on; the spinner pulses instead of turning.
 
 Checked in Chromium against a mock API: a page answering 502 was tried three times, then showed the source's message; a page failing twice then succeeding loaded on its own; a 15 s page showed the spinner and, at 10 s, the slow notice; R retried; `?` opened the list with focus inside and Escape closed it without leaving the reader. Not checked: a real screen reader, a real phone.
+
+## Pinch zoom, page previews, sharing a page and focus (2026-11-11)
+
+Implementation: `routes/Reader.svelte`, `lib/Icon.svelte`.
+
+- **Pinch zoom.** Two fingers zoom the page itself, from 50% to 400%, in the paged modes and the long strip, keeping the spot between the fingers where it is. The rest of the app no longer zooms with it (`touch-action: pan-x pan-y`). A pinch is never taken as a swipe, and a zoom ending within 8% of the page's own size snaps back to it. Ctrl and the wheel now zoom at the pointer, and the zoom keys say the new level ("Zoom 120%"). In a strip, a zoom past the screen's width can be scrolled across.
+- **Page previews.** While the page slider is dragged, the page under the thumb shows small above it with its number, and the reader turns to it on letting go. Arrow keys on the slider still turn at once. The slider tells a screen reader "Page 3 of 20" rather than a bare number.
+- **Sharing a page.** A button beside the reader settings hands the page that is up to the system's share sheet on a phone or tablet that has one, and downloads it as a picture elsewhere, named "title - chapter - page N".
+- **Focus.** The settings sheet and the list of keys are dialogs: Tab goes round inside them instead of out to the page behind.
+- **High contrast.** In Windows' contrast themes the spinner's turning part and the progress bar take the system's highlight color.
+
+Checked in Chromium against a mock API: a synthetic two-finger pinch from 90 to 290 px apart zoomed to 322% without turning the page, and the live region said so; dragging the slider showed page 7 above the thumb while page 1 stayed up; the download was named "Test title - Chapter 1 - page 1.svg"; Tab from the sheet's last control came back to its first. Not checked: a real phone's pinch and share sheet, iOS Safari.

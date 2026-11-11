@@ -26,7 +26,7 @@
 
 {#snippet bars(title: string, list: Count[])}
   <section class="panel block">
-    <h2 class="display">{title}</h2>
+    <h2 class="display caps">{title}</h2>
     {#if list.length === 0}
       <p class="muted">Nothing yet.</p>
     {:else}
@@ -45,7 +45,7 @@
 
 <div class="page">
   <div class="page-head">
-    <h1 class="display">STATS</h1>
+    <h1 class="display caps">Stats</h1>
     <span class="muted">What your reading adds up to. Days are counted in UTC.</span>
   </div>
 
@@ -72,9 +72,9 @@
     </section>
 
     <div class="split">
-      {@render bars('SOURCES', data.sources)}
-      {@render bars('GENRES', data.genres)}
-      {@render bars('STATUS', data.statuses)}
+      {@render bars('Sources', data.sources)}
+      {@render bars('Genres', data.genres)}
+      {@render bars('Status', data.statuses)}
     </div>
   {/if}
 </div>

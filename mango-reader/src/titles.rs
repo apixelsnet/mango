@@ -1182,7 +1182,7 @@ fn read_reader(conn: &Connection, chapter: i64) -> Result<ReaderView> {
 }
 
 /// Stores what a source answered about a title. Returns the ids of chapters that are new,
-/// which is none on the first fetch: a title's whole back catalogue is not news.
+/// which is none on the first fetch: a title's whole back catalog is not news.
 pub(crate) fn apply_update(
     conn: &mut Connection,
     id: i64,

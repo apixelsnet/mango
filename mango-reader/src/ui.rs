@@ -11,7 +11,7 @@ use rust_embed::RustEmbed;
 struct Assets;
 
 /// The page may load its own scripts, styles and fonts, and images from Mango only.
-/// Inline styles are allowed because the UI sets colours and sizes through them.
+/// Inline styles are allowed because the UI sets colors and sizes through them.
 const POLICY: &str = "default-src 'self'; img-src 'self' data: blob:; style-src 'self' 'unsafe-inline'; \
                       object-src 'none'; base-uri 'self'; frame-ancestors 'self'";
 

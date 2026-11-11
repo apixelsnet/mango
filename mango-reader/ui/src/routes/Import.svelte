@@ -86,7 +86,7 @@
 
 <div class="page">
   <div class="page-head">
-    <h1 class="display">IMPORT</h1>
+    <h1 class="display caps">Import</h1>
     <a class="btn" href="#/settings"><Icon name="back" size={16} stroke={3} />Settings</a>
   </div>
 
@@ -105,7 +105,7 @@
 
   {#if preview && !status}
     <section class="panel box">
-      <h2 class="display">IN THIS BACKUP</h2>
+      <h2 class="display caps">In this backup</h2>
       <ul class="facts">
         <li><strong>{preview.titles}</strong> {preview.titles === 1 ? 'title' : 'titles'}, {preview.inLibrary} of them in the library</li>
         <li><strong>{preview.chapters}</strong> {preview.chapters === 1 ? 'chapter' : 'chapters'}, {preview.readChapters} read</li>
@@ -119,7 +119,7 @@
 
   {#if status?.running}
     <section class="panel box" role="status">
-      <h2 class="display">IMPORTING</h2>
+      <h2 class="display caps">Importing</h2>
       <span class="meter"><span style:width="{status.total ? Math.round((status.done / status.total) * 100) : 0}%"></span></span>
       <strong>{status.done} of {status.total} titles</strong>
     </section>
@@ -148,7 +148,7 @@
 
   {#if missing.length}
     <section>
-      <div class="section-head"><h2 class="display">EXTENSIONS NEEDED</h2></div>
+      <div class="section-head"><h2 class="display caps">Extensions needed</h2></div>
       <p class="muted">These titles are imported all the same. They can be opened and read again once their extension is installed.</p>
       <ul class="rows">
         {#each missing as source (source.id)}

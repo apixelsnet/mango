@@ -22,7 +22,7 @@ Mango on a narrow screen, and as an app on a phone's home screen. All of it is i
 ## Reading and touching
 
 - Fields are 16px on a touch screen, or iOS zooms the page in on them.
-- A tap has no wait and no grey flash. Rows of chips slide sideways to the screen's edges instead of wrapping.
+- A tap has no wait and no gray flash. Rows of chips slide sideways to the screen's edges instead of wrapping.
 - In the library, the order and the layout wait behind the Filter button, to keep the tools to one line. The selection bar stays in reach while scrolling.
 
 ## For each device

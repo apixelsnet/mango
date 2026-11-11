@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { offer, tell } from '../lib/undoing.svelte';
   import { get, message, send, type Category, type Library, type LibraryItem } from '../lib/api';
   import Cover from '../lib/Cover.svelte';
   import { display } from '../lib/display.svelte';
@@ -150,17 +151,43 @@
 
   async function act(body: Record<string, unknown>) {
     error = null;
+    const count = chosen.length;
     try {
       await send('POST', '/library/bulk', { ids: chosen, ...body });
       stopPicking();
+      if (body.action === 'download') tell(`Unread chapters of ${many(count, 'title')} queued for download.`);
+      else if (body.action === 'categories') tell(`${many(count, 'title')} put in the category.`);
       await load();
     } catch (e) {
       error = message(e);
     }
   }
 
+  const many = (n: number, one: string) => `${n} ${one}${n === 1 ? '' : 's'}`;
+
+  /**
+   * Taking titles out and marking them read or unread are held back for Undo (lib/undoing.svelte.ts):
+   * the shelf shows the change at once and Mango is told a few seconds later.
+   */
+  function hold(action: 'remove' | 'read' | 'unread') {
+    if (!data || !chosen.length) return;
+    error = null;
+    const ids = chosen;
+    const before = $state.snapshot(data);
+    if (action === 'remove') data.items = data.items.filter((item) => !ids.includes(item.id));
+    else for (const item of data.items) if (ids.includes(item.id)) item.unread = action === 'read' ? 0 : item.total;
+    stopPicking();
+    const text = { remove: 'taken out of the library', read: 'marked read', unread: 'marked unread' }[action];
+    offer(`${many(ids.length, 'title')} ${text}.`, {
+      undo: () => (data = before),
+      commit: () => send('POST', '/library/bulk', { ids, action }),
+      then: load,
+      failed: load,
+    });
+  }
+
   function remove() {
-    if (sure) act({ action: 'remove' });
+    if (sure) hold('remove');
     else sure = true;
   }
 
@@ -177,7 +204,7 @@
 <div class="page">
   <div class="page-head">
     <div class="heading">
-      <h1 class="display">LIBRARY</h1>
+      <h1 class="display caps">Library</h1>
       {#if data}
         <strong>{data.items.length} {data.items.length === 1 ? 'title' : 'titles'} · {data.categories.length} {data.categories.length === 1 ? 'category' : 'categories'}</strong>
       {/if}
@@ -227,7 +254,7 @@
     {:else}
       <section class="shelf">
         <div class="section-head">
-          <h2 class="display">{category === null ? 'ALL TITLES' : data.categories.find((c) => c.id === category)?.name}</h2>
+          <h2 class="display" class:caps={category === null}>{category === null ? 'All titles' : data.categories.find((c) => c.id === category)?.name}</h2>
           <div class="tools">
             <label class="field find">
               <span class="sr">Search the library</span>
@@ -267,8 +294,8 @@
           <div class="panel bulk" role="group" aria-label="Selected titles">
             <strong>{chosen.length} selected</strong>
             <button class="btn" onclick={() => (picked = Object.fromEntries(shown.map((item) => [item.id, true])))}>All shown</button>
-            <button class="btn" disabled={!chosen.length} onclick={() => act({ action: 'read' })}>Mark read</button>
-            <button class="btn" disabled={!chosen.length} onclick={() => act({ action: 'unread' })}>Mark unread</button>
+            <button class="btn" disabled={!chosen.length} onclick={() => hold('read')}>Mark read</button>
+            <button class="btn" disabled={!chosen.length} onclick={() => hold('unread')}>Mark unread</button>
             <button class="btn" disabled={!chosen.length} onclick={() => act({ action: 'download' })}><Icon name="download" size={18} />Download unread</button>
             <button class="btn" disabled={!chosen.length} onclick={() => go(`/migrate/many?ids=${chosen.join(',')}`)}><Icon name="arrow" size={18} />Move to other sources</button>
             {#if data.categories.length}

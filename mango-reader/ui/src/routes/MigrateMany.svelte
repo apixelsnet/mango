@@ -122,7 +122,7 @@
 
 <div class="page">
   <div class="page-head">
-    <h1 class="display">MOVE {rows.length || ''} TITLES</h1>
+    <h1 class="display caps">Move {rows.length || ''} titles</h1>
     <a class="btn" href="#/"><Icon name="back" size={16} stroke={3} />Back to the library</a>
   </div>
 

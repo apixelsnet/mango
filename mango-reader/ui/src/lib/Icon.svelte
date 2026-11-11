@@ -37,6 +37,7 @@
     info: '<circle cx="12" cy="12" r="9"/><path d="M12 11v6M12 7v.5"/>',
     upload: '<path d="M12 15V4M7 9l5-5 5 5M5 20h14"/>',
     lock: '<rect x="5" y="11" width="14" height="10"/><path d="M8 11V8a4 4 0 0 1 8 0v3"/>',
+    share: '<circle cx="18" cy="5" r="2.5"/><circle cx="6" cy="12" r="2.5"/><circle cx="18" cy="19" r="2.5"/><path d="m8.2 10.8 7.6-4.4M8.2 13.2l7.6 4.4"/>',
     link: '<path d="M10 14a4 4 0 0 0 5.7 0l3-3a4 4 0 0 0-5.7-5.7l-1 1M14 10a4 4 0 0 0-5.7 0l-3 3a4 4 0 0 0 5.7 5.7l1-1"/>',
   };
   export type IconName = keyof typeof SHAPES;

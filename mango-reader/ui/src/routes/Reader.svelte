@@ -4,7 +4,8 @@
 </script>
 
 <script lang="ts">
-  import { untrack } from 'svelte';
+  import { name } from '../lib/named.svelte';
+  import { flushSync, untrack } from 'svelte';
   import { get, message, send, type PageMark, type ReaderInfo } from '../lib/api';
   import { DEVICES, display, thisDevice } from '../lib/display.svelte';
   import Icon from '../lib/Icon.svelte';
@@ -38,6 +39,7 @@
   let { id }: { id: number } = $props();
 
   let info = $state<ReaderInfo | null>(null);
+  $effect(() => name(info && `${info.chapter.name} · ${info.title}`));
   let count = $state(0);
   let index = $state(0);
   let ready = $state(false);
@@ -62,6 +64,8 @@
   let why = $state<Record<number, string>>({});
   // The list of keys, over the page.
   let help = $state(false);
+  // The page under the slider while it is being dragged.
+  let peek = $state<number | null>(null);
   // What a screen reader is told: the page that is up, a page that failed.
   let spoken = $state('');
   // Webtoon only: which pages are close enough to be in the document, and their shapes once seen.
@@ -524,7 +528,30 @@
   function focusIn(node: HTMLElement) {
     const before = document.activeElement;
     node.focus();
-    return { destroy: () => before instanceof HTMLElement && before.isConnected && before.focus() };
+    // Tab goes round inside it, not out to the page behind, until it is closed.
+    const round = (event: KeyboardEvent) => {
+      if (event.key !== 'Tab') return;
+      const stops = [...node.querySelectorAll<HTMLElement>('button, a[href], input, select, textarea, [tabindex]:not([tabindex="-1"])')].filter(
+        (el) => !(el as HTMLButtonElement).disabled && el.offsetParent !== null,
+      );
+      if (!stops.length) return;
+      const [first, last] = [stops[0], stops[stops.length - 1]];
+      const at = document.activeElement;
+      if (event.shiftKey && (at === first || at === node)) {
+        event.preventDefault();
+        last.focus();
+      } else if (!event.shiftKey && at === last) {
+        event.preventDefault();
+        first.focus();
+      }
+    };
+    node.addEventListener('keydown', round);
+    return {
+      destroy: () => {
+        node.removeEventListener('keydown', round);
+        if (before instanceof HTMLElement && before.isConnected) before.focus();
+      },
+    };
   }
 
   /** The keys as the reader goes by them, the owner's own included, for the list of keys. */
@@ -645,6 +672,41 @@
     };
   });
 
+  // ---------- handing a page on ----------
+
+  // On a phone or tablet whose system has a share sheet that takes files, a page goes there;
+  // elsewhere, a computer included, it is downloaded as a picture.
+  const canShare = thisDevice() !== 'computer' && typeof navigator.canShare === 'function' && navigator.canShare({ files: [new File([''], 'page.jpg', { type: 'image/jpeg' })] });
+  let handing = $state(false);
+
+  async function handPage() {
+    if (!info) return;
+    const i = reached;
+    handing = true;
+    try {
+      const answer = await fetch(src(i));
+      if (!answer.ok) throw new Error(`Page ${i + 1} did not load.`);
+      const blob = await answer.blob();
+      const extension = (blob.type.split('/')[1] ?? 'jpg').replace('jpeg', 'jpg').replace(/\+.*/, '');
+      const named = `${info.title} - ${info.chapter.name} - page ${i + 1}`.replace(/[\\/:*?"<>|]+/g, ' ').trim();
+      const file = new File([blob], `${named}.${extension}`, { type: blob.type });
+      if (canShare && navigator.canShare({ files: [file] })) {
+        await navigator.share({ files: [file], title: named });
+      } else {
+        const url = URL.createObjectURL(file);
+        const link = Object.assign(document.createElement('a'), { href: url, download: file.name });
+        link.click();
+        setTimeout(() => URL.revokeObjectURL(url), 10_000);
+        say(`Page ${i + 1} downloaded`);
+      }
+    } catch (e) {
+      // Closing the share sheet is not a failure.
+      if (!(e instanceof DOMException && e.name === 'AbortError')) say(message(e));
+    } finally {
+      handing = false;
+    }
+  }
+
   function fullscreen() {
     (document.fullscreenElement ? document.exitFullscreen() : document.documentElement.requestFullscreen()).catch(() => {});
   }
@@ -698,10 +760,57 @@
   let wheeled = 0;
   let wheelRest = 0;
 
+  // ---------- zoom ----------
+
+  /**
+   * Zooms to `to`, keeping the spot at `x`, `y` (from the box's corner, on screen) where it
+   * is: under the fingers of a pinch, under the pointer of a wheel. Pages grow in step with
+   * the zoom, so the scroll is scaled with it once the new size is laid out.
+   */
+  function zoomAt(to: number, x?: number, y?: number) {
+    const box = paged ? stage : strip;
+    if (!box || to === zoom) return;
+    const ratio = to / zoom;
+    const [left, top] = [box.scrollLeft, box.scrollTop];
+    const [cx, cy] = [x ?? box.clientWidth / 2, y ?? box.clientHeight / 2];
+    zoom = to;
+    flushSync();
+    box.scrollLeft = (left + cx) * ratio - cx;
+    box.scrollTop = (top + cy) * ratio - cy;
+  }
+
+  // Two fingers on the page: how far apart they started, and the zoom then.
+  let pinch: { gap: number; zoom: number } | null = null;
+  const gapOf = (t: TouchList) => Math.hypot(t[0].clientX - t[1].clientX, t[0].clientY - t[1].clientY);
+
+  function pinchStart(event: TouchEvent) {
+    if (event.touches.length !== 2) return;
+    pinch = { gap: gapOf(event.touches), zoom };
+    // A pinch is not a swipe.
+    touch = null;
+  }
+
+  function pinchMove(event: TouchEvent) {
+    const box = paged ? stage : strip;
+    if (!pinch || !box || event.touches.length !== 2 || pinch.gap < 1) return;
+    const [a, b] = [event.touches[0], event.touches[1]];
+    const rect = box.getBoundingClientRect();
+    zoomAt(clamp((pinch.zoom * gapOf(event.touches)) / pinch.gap), (a.clientX + b.clientX) / 2 - rect.left, (a.clientY + b.clientY) / 2 - rect.top);
+  }
+
+  function pinchEnd(event: TouchEvent) {
+    if (!pinch || event.touches.length >= 2) return;
+    pinch = null;
+    // Close enough to the page's own size is taken as it.
+    if (Math.abs(zoom - 1) < 0.08) zoomAt(1);
+    speak(`Zoom ${Math.round(zoom * 100)}%`);
+  }
+
   function wheel(event: WheelEvent) {
     if (event.ctrlKey) {
       event.preventDefault();
-      zoom = clamp(zoom * (event.deltaY < 0 ? 1.1 : 0.9));
+      const rect = (event.currentTarget as HTMLElement).getBoundingClientRect();
+      zoomAt(clamp(zoom * (event.deltaY < 0 ? 1.1 : 0.9)), event.clientX - rect.left, event.clientY - rect.top);
       return;
     }
     // A mouse wheel turns a sideways strip across.
@@ -759,13 +868,16 @@
         }
         break;
       case 'zoomIn':
-        zoom = clamp(zoom * 1.2);
+        zoomAt(clamp(zoom * 1.2));
+        say(`Zoom ${Math.round(zoom * 100)}%`);
         break;
       case 'zoomOut':
-        zoom = clamp(zoom / 1.2);
+        zoomAt(clamp(zoom / 1.2));
+        say(`Zoom ${Math.round(zoom * 100)}%`);
         break;
       case 'zoomReset':
-        zoom = 1;
+        zoomAt(1);
+        say('Zoom 100%');
         break;
       case 'mark':
         keepPage(marked ? null : '');
@@ -913,9 +1025,10 @@
       style:--z={zoom}
       bind:this={stage}
       onclick={tap}
-      ontouchstart={touchstart}
-      ontouchend={touchend}
-      ontouchcancel={() => ((held = false), (touch = null))}
+      ontouchstart={(e) => (touchstart(e), pinchStart(e))}
+      ontouchmove={pinchMove}
+      ontouchend={(e) => (pinchEnd(e), touchend(e))}
+      ontouchcancel={(e) => ((held = false), (touch = null), pinchEnd(e))}
       onwheel={wheel}
     >
       {#key shown.join()}
@@ -948,9 +1061,10 @@
       bind:this={strip}
       onclick={tap}
       onwheel={wheel}
-      ontouchstart={() => (held = true)}
-      ontouchend={(e) => (held = e.touches.length > 0)}
-      ontouchcancel={() => (held = false)}
+      ontouchstart={(e) => ((held = true), pinchStart(e))}
+      ontouchmove={pinchMove}
+      ontouchend={(e) => ((held = e.touches.length > 0), pinchEnd(e))}
+      ontouchcancel={(e) => ((held = false), pinchEnd(e))}
     >
       {#each pages as i (i)}
         <div
@@ -958,6 +1072,7 @@
           data-page={i}
           aria-busy={near[i] && !loaded[i] && !broken[i]}
           style:aspect-ratio={shapes[i] ?? '2 / 3'}
+          style:width={sideways ? null : `${100 * zoom}%`}
           style:max-width={sideways ? null : `${p.width * zoom}px`}
           style:margin-bottom={sideways ? null : `${p.gap}px`}
           style:margin-right={sideways ? `${p.gap}px` : null}
@@ -1057,15 +1172,35 @@
         <button class="btn icon" aria-label="Previous chapter" disabled={!info.prev} onclick={() => go(`/read/${info?.prev}`, true)}>
           <Icon name="first" />
         </button>
-        <input
-          type="range"
-          min="0"
-          max={count - 1}
-          value={index}
-          dir={mode === 'rtl' ? 'rtl' : 'ltr'}
-          aria-label="Page"
-          oninput={(e) => show(Number(e.currentTarget.value))}
-        />
+        <div class="scrub">
+          {#if peek !== null}
+            <!-- While the slider is dragged, the page under it is shown small; the reader turns to it on letting go. -->
+            <div class="peek" aria-hidden="true" style:--at={count > 1 ? peek / (count - 1) : 0} class:rtl={mode === 'rtl'}>
+              <img src={src(peek)} alt="" draggable="false" />
+              <strong>{peek + 1}</strong>
+            </div>
+          {/if}
+          <input
+            type="range"
+            min="0"
+            max={count - 1}
+            value={index}
+            dir={mode === 'rtl' ? 'rtl' : 'ltr'}
+            aria-label="Page"
+            aria-valuetext="Page {index + 1} of {count}"
+            onpointerdown={(e) => (peek = Number(e.currentTarget.value))}
+            oninput={(e) => {
+              const to = Number(e.currentTarget.value);
+              if (peek === null) show(to);
+              else peek = to;
+            }}
+            onpointerup={(e) => {
+              if (peek !== null) show(Number(e.currentTarget.value));
+              peek = null;
+            }}
+            onpointercancel={() => (peek = null)}
+          />
+        </div>
         <strong class="count">{reached + 1} / {count}</strong>
         <button class="btn icon" aria-label="Next chapter" disabled={!info.next} onclick={() => go(`/read/${info?.next}`, true)}>
           <Icon name="last" />
@@ -1082,6 +1217,9 @@
         </select>
         <button class="btn" aria-pressed={auto} onclick={toggleAuto}><Icon name={auto ? 'pause' : 'play'} size={16} fill />Auto</button>
         <button class="btn icon" aria-label="Reader settings" onclick={() => ((panel = true), (overlay = false))}><Icon name="sliders" /></button>
+        <button class="btn icon" aria-label={canShare ? `Share page ${reached + 1}` : `Download page ${reached + 1}`} disabled={handing} onclick={handPage}>
+          <Icon name={canShare ? 'share' : 'download'} />
+        </button>
       </div>
     </div>
   {/if}
@@ -1092,9 +1230,9 @@
 
   {#if panel && info && ready}
     {@const entry = KINDS.find((each) => each.id === kind) ?? KINDS[0]}
-    <aside class="sheet" aria-label="Reader settings" tabindex="-1" use:focusIn>
+    <div class="sheet" role="dialog" aria-modal="true" aria-label="Reader settings" tabindex="-1" use:focusIn>
       <header>
-        <strong class="display">READER</strong>
+        <strong class="display caps">Reader</strong>
         <button class="btn icon" aria-label="Close the settings" onclick={() => (panel = false)}><Icon name="close" /></button>
       </header>
       <div class="scroll">
@@ -1117,7 +1255,7 @@
         <ReaderPrefs value={p} onchange={change} {device} />
         <button class="btn" disabled={!Object.keys(own).length} onclick={forget}>Forget what this title keeps for itself</button>
       </div>
-    </aside>
+    </div>
   {/if}
 
   {#if help}
@@ -1159,7 +1297,7 @@
     color: #f1f1ec;
   }
 
-  .reader[data-ground='grey'] {
+  .reader[data-ground='gray'] {
     background: #55554f;
   }
 
@@ -1206,6 +1344,8 @@
     height: 100%;
     overflow: auto;
     overscroll-behavior: contain;
+    /* Two fingers zoom the page, not the whole app around it. */
+    touch-action: pan-x pan-y;
   }
 
   /* One page, or two side by side. Each fit sizes it from the screen times the zoom. */
@@ -1298,8 +1438,9 @@
 
   .strip {
     height: 100%;
-    overflow-y: auto;
+    overflow: auto;
     overscroll-behavior: contain;
+    touch-action: pan-x pan-y;
   }
 
   .frame {
@@ -1493,6 +1634,20 @@
     background: var(--spot);
   }
 
+  /* Windows' contrast themes drop background and border colors: the spinner's turning part and the progress keep the system's highlight. */
+  @media (forced-colors: active) {
+    .spinner {
+      forced-color-adjust: none;
+      border-color: GrayText;
+      border-top-color: Highlight;
+    }
+
+    .progress span {
+      forced-color-adjust: none;
+      background: Highlight;
+    }
+  }
+
   .hud,
   .flash {
     position: absolute;
@@ -1574,11 +1729,50 @@
     gap: 10px;
   }
 
-  .line input {
+  .scrub {
+    position: relative;
+    display: flex;
     flex: 1 1 160px;
+    min-width: 0;
+  }
+
+  .scrub input {
+    flex: 1;
     min-width: 0;
     height: 44px;
     accent-color: var(--ink);
+  }
+
+  /* Rides above the slider's thumb: --at is how far along, 0 to 1. */
+  .peek {
+    position: absolute;
+    bottom: calc(100% + 10px);
+    left: clamp(0px, calc(var(--at) * 100% - 48px), calc(100% - 96px));
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    width: 96px;
+    padding: 4px;
+    border: 3px solid var(--ink);
+    background: var(--paper);
+    box-shadow: 4px 4px 0 var(--ink);
+    pointer-events: none;
+  }
+
+  .peek.rtl {
+    left: clamp(0px, calc((1 - var(--at)) * 100% - 48px), calc(100% - 96px));
+  }
+
+  .peek img {
+    width: 100%;
+    height: 132px;
+    object-fit: contain;
+    background: #111111;
+  }
+
+  .peek strong {
+    padding-top: 2px;
+    font-weight: 900;
   }
 
   .line select {

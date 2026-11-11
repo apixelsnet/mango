@@ -1,6 +1,6 @@
 <script lang="ts">
   // How much of a plan's storage the reader's files take, as a bar. Turns to stripes when
-  // nearly full, so it reads without colour.
+  // nearly full, so it reads without color.
   import { sized, type Plan } from './plan.svelte';
 
   let { storage, full = false }: { storage: NonNullable<Plan['storage']>; full?: boolean } = $props();

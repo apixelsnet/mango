@@ -110,7 +110,7 @@
 
 <div class="page">
   <div class="page-head">
-    <h1 class="display">UPDATES</h1>
+    <h1 class="display caps">Updates</h1>
     <div class="tools">
       {#if data?.status.finishedAt && !running}
         <strong>Checked {ago(data.status.finishedAt)}: {data.status.found} new{data.status.failed ? `, ${data.status.failed} failed` : ''}{data.status.waiting ? `, ${data.status.waiting} not due yet` : ''}</strong>

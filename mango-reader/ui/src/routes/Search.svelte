@@ -115,7 +115,7 @@
 
 <div class="page">
   <div class="page-head">
-    <h1 class="display">{from ? 'MOVE' : merge ? 'ADD A SOURCE' : 'SEARCH'}</h1>
+    <h1 class="display caps">{from ? 'Move' : merge ? 'Add a source' : 'Search'}</h1>
     <strong>“{q}” in {scope || '…'}</strong>
   </div>
 

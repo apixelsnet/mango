@@ -164,20 +164,20 @@ One `Dockerfile` at the repository root builds everything: the host's jars, the 
 
 The `full` image (`--target full`, published as `<version>-full` and `full`) is the same with one more layer: the libraries Chromium links and `xvfb-run`, 252 MB. That makes about 610 MB against about 360 MB for the plain one. The browser is not in either; it goes into the volume when a source first opens a web view.
 
-## Licence and notices (2026-10-11)
+## License and notices (2026-10-11)
 
 - Mango's own code is under the Apache License 2.0 (`LICENSE`). `NOTICE` names what it ships of other people's.
-- The `Dockerfile`'s `notices` stage runs `cargo about` over the manifests of the server and the desktop shell and adds the licences of Svelte and the two fonts from the UI's packages: one text file, `THIRD-PARTY-LICENSES.txt`. `mango-reader/about.toml` lists the licences a crate may come under; a crate under any other fails the build, so a new dependency's licence gets looked at.
+- The `Dockerfile`'s `notices` stage runs `cargo about` over the manifests of the server and the desktop shell and adds the licenses of Svelte and the two fonts from the UI's packages: one text file, `THIRD-PARTY-LICENSES.txt`. `mango-reader/about.toml` lists the licenses a crate may come under; a crate under any other fails the build, so a new dependency's license gets looked at.
 - A release archive carries `LICENSE`, `NOTICE` and that file beside the binary. The image has them in `/usr/share/doc/mango`.
 - `.dockerignore` names what the build reads and leaves out everything else, instead of listing what to leave out.
 - The smoke tests no longer name a store or an extension: they take them from `MANGO_SMOKE_STORE`, `MANGO_SMOKE_STORE_LINK` and `MANGO_SMOKE_PKG`, and say so when one is missing.
 - The pictures in the README show a library of made-up titles with drawn covers, read from the local source.
 
-Checked on Linux: the image built with the new `.dockerignore`; the three files are in it, and `--target dist` gives the same licence file (764 KB: 557 crate entries under seven licences, then Svelte and the fonts). The core's 74 unit tests pass, its smoke test passed against that image (171 checks) and the host's against the same jars. `actionlint` passes on both workflows.
+Checked on Linux: the image built with the new `.dockerignore`; the three files are in it, and `--target dist` gives the same license file (764 KB: 557 crate entries under seven licenses, then Svelte and the fonts). The core's 74 unit tests pass, its smoke test passed against that image (171 checks) and the host's against the same jars. `actionlint` passes on both workflows.
 
 Checked with release 1.0.3: the release workflow's changed steps ran, on GitHub's machines. The Windows archive holds the three files beside the two programs and `host/`, its checksum matches `SHA256SUMS`, and every tag of the image pulls without a login; the pulled image has the three files too.
 
-Not checked: the other four archives were not opened. The release's Linux job has not run on a machine of the owner's yet. Windows was not run: nothing a program does changed. What `runtime.jar` carries is not in the licence file.
+Not checked: the other four archives were not opened. The release's Linux job has not run on a machine of the owner's yet. Windows was not run: nothing a program does changed. What `runtime.jar` carries is not in the license file.
 
 ## Build rules
 

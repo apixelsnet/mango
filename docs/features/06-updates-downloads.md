@@ -28,7 +28,7 @@ Code: `mango-reader/src/updates.rs`, `downloads.rs`; the reader's side is in `im
 
 Updates
 - A run takes the library titles whose extension is installed, grouped by source. Four sources at a time; within a source one title after another, a second apart. Each title is one chapter-list call.
-- A chapter counts as an update when Mango first saw it after its title joined the library. A title's back catalogue is never news.
+- A chapter counts as an update when Mango first saw it after its title joined the library. A title's back catalog is never news.
 - Options, all in Settings: the interval (12 hours by default, or only when asked), skip completed titles, skip titles with unread chapters, only or never certain categories.
 - A title that fails is listed with the reason until a later run succeeds. Titles whose extension is gone are skipped.
 

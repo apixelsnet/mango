@@ -458,7 +458,7 @@ pub fn stats(conn: &Connection) -> Result<Stats> {
             1 => "Ongoing",
             2 | 4 => "Completed",
             3 => "Licensed",
-            5 => "Cancelled",
+            5 => "Canceled",
             6 => "On hiatus",
             _ => "Unknown",
         };

@@ -77,7 +77,7 @@
 
 <div class="page">
   <div class="page-head">
-    <h1 class="display">MOVE</h1>
+    <h1 class="display caps">Move</h1>
     <a class="btn" href="#/title/{from}"><Icon name="back" size={16} stroke={3} />Back to the title</a>
   </div>
 
@@ -96,7 +96,7 @@
     {/if}
 
     <section class="what">
-      <div class="section-head"><h2 class="display">WHAT GOES ALONG</h2></div>
+      <div class="section-head"><h2 class="display caps">What goes along</h2></div>
       <ul class="rows">
         {@render choice(
           'chapters',

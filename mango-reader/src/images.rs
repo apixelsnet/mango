@@ -653,11 +653,11 @@ fn opaque(pixels: Vec<u8>, channels: usize) -> Option<(Vec<u8>, usize)> {
     match channels {
         1 | 3 => Some((pixels, channels)),
         2 | 4 => {
-            let colour = channels - 1;
-            if pixels.chunks_exact(channels).any(|pixel| pixel[colour] != 255) {
+            let color = channels - 1;
+            if pixels.chunks_exact(channels).any(|pixel| pixel[color] != 255) {
                 return None;
             }
-            Some((pixels.chunks_exact(channels).flat_map(|pixel| &pixel[..colour]).copied().collect(), colour))
+            Some((pixels.chunks_exact(channels).flat_map(|pixel| &pixel[..color]).copied().collect(), color))
         }
         _ => None,
     }

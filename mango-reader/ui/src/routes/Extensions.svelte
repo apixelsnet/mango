@@ -95,7 +95,7 @@
 
 <div class="page">
   <div class="page-head">
-    <h1 class="display">EXTENSIONS</h1>
+    <h1 class="display caps">Extensions</h1>
     <strong>{installed.length} installed · {stores.length} {stores.length === 1 ? 'repository' : 'repositories'}</strong>
   </div>
 
@@ -103,7 +103,7 @@
 
   {#if !loading}
     <section>
-      <div class="section-head"><h2 class="display">REPOSITORIES</h2></div>
+      <div class="section-head"><h2 class="display caps">Repositories</h2></div>
       <ul class="rows">
         {#each stores as store (store.id)}
           <li class="store">
@@ -150,7 +150,7 @@
     {#if installed.length}
       <section>
         <div class="section-head">
-          <h2 class="display">INSTALLED</h2>
+          <h2 class="display caps">Installed</h2>
           {#if updates}
             <button class="btn spot" disabled={busy['update-all']} onclick={updateAll}>
               {busy['update-all'] ? 'Updating…' : `Update all (${updates})`}
@@ -187,7 +187,7 @@
     {#if stores.length}
       <section>
         <div class="section-head">
-          <h2 class="display">AVAILABLE</h2>
+          <h2 class="display caps">Available</h2>
           <div class="tools">
             <label class="field find">
               <span class="sr">Find an extension</span>

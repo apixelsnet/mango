@@ -1,7 +1,7 @@
 <script lang="ts">
   import { hash } from './util';
 
-  // Behind every cover sits a printed stand-in: a colour and the title's first
+  // Behind every cover sits a printed stand-in: a color and the title's first
   // character. It shows while the image loads, and stays when there is none.
   const PRINTS = [
     ['#2F6FDE', '#FFFFFF'],

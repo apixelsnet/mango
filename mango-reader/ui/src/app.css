@@ -1,4 +1,4 @@
-/* Tankōbon: manga print. Ink lines, hard offset shadows, halftone dots, one spot colour.
+/* Tankōbon: manga print. Ink lines, hard offset shadows, halftone dots, one spot color.
    Everything is drawn from the tokens below; lib/theme.svelte.ts sets them. */
 
 @import '@fontsource/dela-gothic-one/latin-400.css';
@@ -166,6 +166,11 @@ p {
   line-height: 1.05;
 }
 
+/* Capitals are set here, not typed: a screen reader spells out a word written in capitals. */
+.caps {
+  text-transform: uppercase;
+}
+
 .muted {
   color: var(--muted);
 }
@@ -177,6 +182,25 @@ p {
   overflow: hidden;
   clip-path: inset(50%);
   white-space: nowrap;
+}
+
+/* The way past the menu for a keyboard: out of sight until it holds the focus. */
+.skip {
+  position: fixed;
+  top: 8px;
+  left: 8px;
+  z-index: 1000;
+  transform: translateY(-200%);
+}
+
+.skip:focus-visible {
+  transform: none;
+}
+
+/* A screen's heading takes the focus on arrival (App.svelte); it is not a control, so no ring. */
+main:focus,
+h1[tabindex='-1']:focus {
+  outline: none;
 }
 
 /* ---------- controls ---------- */
@@ -504,4 +528,44 @@ select.btn {
 
 :root[data-shadows='off'] .cover.tilt {
   box-shadow: none;
+}
+
+/* ---------- contrast ---------- */
+
+/* Asked for more contrast: secondary text is ink like the rest. */
+@media (prefers-contrast: more) {
+  :root {
+    --muted: var(--ink);
+  }
+}
+
+/*
+ * Windows' contrast themes paint every background the same, so a pressed button or the screen
+ * open in the menu would look like the others. They take the system's highlight instead, and
+ * counts and tags keep a border to stand apart.
+ */
+@media (forced-colors: active) {
+  .btn[aria-pressed='true'],
+  .btn[aria-current='page'],
+  nav a[aria-current='page'] {
+    forced-color-adjust: none;
+    border-color: Highlight;
+    background: Highlight;
+    color: HighlightText;
+  }
+
+  .btn:disabled {
+    border-color: GrayText;
+    color: GrayText;
+    opacity: 1;
+  }
+
+  .badge,
+  .tag {
+    border: 1px solid CanvasText;
+  }
+
+  :focus-visible {
+    outline-color: Highlight;
+  }
 }

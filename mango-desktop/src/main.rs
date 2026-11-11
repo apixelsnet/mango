@@ -152,14 +152,14 @@ fn browse(address: &str) {
     let _ = command.stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null()).spawn();
 }
 
-/// Mango's mark: a spot of colour inside an ink ring. `size` pixels square, as RGBA.
+/// Mango's mark: a spot of color inside an ink ring. `size` pixels square, as RGBA.
 fn mark(size: u32) -> Vec<u8> {
-    let (centre, outer) = ((size as f32 - 1.0) / 2.0, size as f32 / 2.0 - 1.0);
+    let (center, outer) = ((size as f32 - 1.0) / 2.0, size as f32 / 2.0 - 1.0);
     let inner = outer - (size as f32 / 8.0).max(2.0);
     let mut pixels = Vec::with_capacity((size * size * 4) as usize);
     for y in 0..size {
         for x in 0..size {
-            let far = ((x as f32 - centre).powi(2) + (y as f32 - centre).powi(2)).sqrt();
+            let far = ((x as f32 - center).powi(2) + (y as f32 - center).powi(2)).sqrt();
             pixels.extend_from_slice(match far {
                 far if far <= inner => &[0xFF, 0xC4, 0x00, 0xFF],
                 far if far <= outer => &[0x14, 0x14, 0x14, 0xFF],

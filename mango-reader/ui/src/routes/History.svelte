@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { offer } from '../lib/undoing.svelte';
   import { get, message, send, type HistoryEntry } from '../lib/api';
   import Icon from '../lib/Icon.svelte';
   import { keep, recall } from '../lib/keep';
@@ -45,14 +46,15 @@
   }
   load(true);
 
-  async function forget(entry: HistoryEntry) {
+  // Taking out is held back for Undo (lib/undoing.svelte.ts): gone from the list at once, sent a few seconds later.
+  function forget(entry: HistoryEntry) {
+    const before = entries;
     entries = entries.filter((e) => e.chapterId !== entry.chapterId);
-    try {
-      await send('DELETE', `/history/${entry.chapterId}`);
-    } catch (e) {
-      error = message(e);
-      load(true);
-    }
+    offer(`${entry.chapterName} taken out of the history.`, {
+      undo: () => (entries = before),
+      commit: () => send('DELETE', `/history/${entry.chapterId}`),
+      failed: () => load(true),
+    });
   }
 
   async function clear() {
@@ -61,14 +63,15 @@
       return;
     }
     sure = false;
-    try {
-      await send('DELETE', '/history');
-      entries = [];
-      more = false;
-      keep('history', { entries, more });
-    } catch (e) {
-      error = message(e);
-    }
+    const [before, wasMore] = [entries, more];
+    entries = [];
+    more = false;
+    offer('History cleared.', {
+      undo: () => ((entries = before), (more = wasMore)),
+      commit: () => send('DELETE', '/history'),
+      then: () => keep('history', { entries: [], more: false }),
+      failed: () => load(true),
+    });
   }
 
   const time = (seconds: number) => new Date(seconds * 1000).toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' });
@@ -81,7 +84,7 @@
 
 <div class="page">
   <div class="page-head">
-    <h1 class="display">HISTORY</h1>
+    <h1 class="display caps">History</h1>
     {#if entries.length}
       <button class="btn" onclick={clear}><Icon name="trash" size={18} />{sure ? 'Really clear all of it?' : 'Clear history'}</button>
     {/if}

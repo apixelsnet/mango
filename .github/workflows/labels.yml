@@ -1,7 +1,7 @@
 name: Labels
 
 # Makes the repository's labels match .github/labels.yml: every label there is
-# created if it is missing and has its colour and description set. Labels that
+# created if it is missing and has its color and description set. Labels that
 # are not in the file are left as they are. Runs when the file changes on the main
 # branch, and by hand from the Actions tab.
 

@@ -69,7 +69,7 @@
 <div class="page">
   <div class="page-head">
     <div class="heading">
-      <h1 class="display">DOWNLOADS</h1>
+      <h1 class="display caps">Downloads</h1>
       <strong>{queue.length} in the queue{data?.paused ? ', paused' : ''}</strong>
     </div>
     {#if data}
