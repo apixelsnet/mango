@@ -460,7 +460,9 @@ export type Action =
   | 'zoomReset'
   | 'mark'
   | 'nextChapter'
-  | 'prevChapter';
+  | 'prevChapter'
+  | 'retry'
+  | 'keys';
 
 /** What each key does unless the owner says otherwise. Arrows, Space, Home, End and Escape always do what they do. */
 export const ACTIONS: { id: Action; label: string; keys: string[] }[] = [
@@ -479,6 +481,8 @@ export const ACTIONS: { id: Action; label: string; keys: string[] }[] = [
   { id: 'zoomOut', label: 'Zoom out', keys: ['-'] },
   { id: 'zoomReset', label: 'Zoom back', keys: ['0'] },
   { id: 'mark', label: 'Save this page', keys: ['b'] },
+  { id: 'retry', label: 'Load failed pages again', keys: ['r'] },
+  { id: 'keys', label: 'Show the keys', keys: ['?'] },
 ];
 
 /** Keys that keep their own work whatever is set: moving about, and leaving. */

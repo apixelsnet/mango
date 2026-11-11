@@ -11,6 +11,7 @@
   import { makeOver, type Part } from '../lib/pages';
   import ReaderPrefs from '../lib/ReaderPrefs.svelte';
   import {
+    ACTIONS,
     filterOf,
     FITS,
     keymap,
@@ -51,6 +52,18 @@
   let full = $state(false);
   let broken = $state<Record<number, boolean>>({});
   let tries = $state<Record<number, number>>({});
+  // Pages whose picture has arrived, and those that have kept the reader waiting a while.
+  let loaded = $state<Record<number, boolean>>({});
+  let slow = $state<Record<number, boolean>>({});
+  // A failed page is tried again by itself a couple of times before it asks: how often so far,
+  // and whether it is waiting for its next try. Then why it failed, as Mango tells it.
+  let again = $state<Record<number, number>>({});
+  let waiting = $state<Record<number, boolean>>({});
+  let why = $state<Record<number, string>>({});
+  // The list of keys, over the page.
+  let help = $state(false);
+  // What a screen reader is told: the page that is up, a page that failed.
+  let spoken = $state('');
   // Webtoon only: which pages are close enough to be in the document, and their shapes once seen.
   let near = $state<Record<number, boolean>>({});
   let shapes = $state<Record<number, string>>({});
@@ -285,8 +298,8 @@
   /** Space and its kin: scroll within a tall page first, turn at its end. A sideways strip scrolls across. */
   function advance(direction: 1 | -1) {
     const box = paged ? stage : strip;
-    if (sideways) box?.scrollBy({ left: ((box.clientWidth * p.step) / 100) * direction, behavior: 'smooth' });
-    else if (!paged || room('y', direction)) box?.scrollBy({ top: ((box.clientHeight * p.step) / 100) * direction, behavior: 'smooth' });
+    if (sideways) box?.scrollBy({ left: ((box.clientWidth * p.step) / 100) * direction, behavior: glide() });
+    else if (!paged || room('y', direction)) box?.scrollBy({ top: ((box.clientHeight * p.step) / 100) * direction, behavior: glide() });
     else if (direction > 0) next();
     else prev();
   }
@@ -356,7 +369,10 @@
       for (const i of [...ahead, shown[0] - 1]) {
         if (i < 0 || i >= count) continue;
         const image = new Image();
-        image.onload = () => seen(i, image);
+        image.onload = () => {
+          seen(i, image);
+          drawn(i);
+        };
         image.src = src(i);
       }
     }
@@ -376,10 +392,19 @@
     const box = strip;
     const across = sideways;
     const page = (entry: IntersectionObserverEntry) => Number((entry.target as HTMLElement).dataset.page);
-    const loader = new IntersectionObserver((entries) => entries.forEach((e) => (near[page(e)] = e.isIntersecting)), {
+    const loader = new IntersectionObserver(
+      (entries) =>
+        entries.forEach((e) => {
+          const i = page(e);
+          near[i] = e.isIntersecting;
+          // A page let go before it arrived starts its wait over when it comes back.
+          if (!e.isIntersecting) since.delete(`${i}:${tries[i] ?? 0}`);
+        }),
+      {
       root: box,
-      rootMargin: across ? '0px 250%' : '250% 0px',
-    });
+        rootMargin: across ? '0px 250%' : '250% 0px',
+      },
+    );
     // The page crossing the middle of the screen is the one being read.
     const tracker = new IntersectionObserver((entries) => entries.forEach((e) => e.isIntersecting && (index = page(e))), {
       root: box,
@@ -400,9 +425,118 @@
     if (image.naturalWidth) shapes[i] = `${image.naturalWidth} / ${image.naturalHeight}`;
   }
 
+  // ---------- loading, and pages that fail ----------
+
+  /** How often a failed page is tried again before it asks, and how long a page loads before it is called slow. */
+  const AUTO_TRIES = 2;
+  const SLOW_MS = 10_000;
+
+  /** A page's picture arrived. */
+  function drawn(i: number) {
+    loaded[i] = true;
+    slow[i] = false;
+  }
+
+  /** A page did not load: tried again by itself after a moment, a couple of times, then it shows why and asks. */
+  function failed(i: number) {
+    if (waiting[i] || broken[i]) return;
+    const done = again[i] ?? 0;
+    if (done < AUTO_TRIES && navigator.onLine) {
+      again[i] = done + 1;
+      waiting[i] = true;
+      setTimeout(() => {
+        waiting[i] = false;
+        loaded[i] = false;
+        tries[i] = (tries[i] ?? 0) + 1;
+      }, 1000 * 2 ** done);
+      return;
+    }
+    broken[i] = true;
+    slow[i] = false;
+    speak(`Page ${i + 1} did not load.`);
+    if (!navigator.onLine) {
+      why[i] = 'This device is offline. The page loads again when it is back online.';
+      return;
+    }
+    // The picture says nothing of why it failed; Mango's answer does.
+    fetch(src(i))
+      .then(async (response) => {
+        if (response.ok) why[i] = 'The picture came but could not be shown.';
+        else why[i] = (await response.json().catch(() => null))?.error?.message ?? `Mango answered ${response.status}.`;
+      })
+      .catch(() => (why[i] = 'Mango did not answer.'));
+  }
+
   function retry(i: number) {
     tries[i] = (tries[i] ?? 0) + 1;
     broken[i] = false;
+    loaded[i] = false;
+    slow[i] = false;
+    why[i] = '';
+  }
+
+  /** Every page that failed or is stuck, loaded again: R, or coming back online. */
+  function retryAll() {
+    const stuck = pages.filter((i) => broken[i] || slow[i]);
+    stuck.forEach(retry);
+    say(stuck.length ? `Loading ${stuck.length === 1 ? 'a page' : `${stuck.length} pages`} again` : 'No page to load again');
+  }
+
+  const failures = $derived(pages.filter((i) => broken[i]).length);
+
+  // When each page on screen started loading, by page and try: past SLOW_MS it is slow, and offers a new try.
+  const since = new Map<string, number>();
+  $effect(() => {
+    if (!ready) return;
+    const on = paged ? shown : pages.filter((i) => near[i]);
+    const late = on.filter((i) => !loaded[i] && !broken[i] && !waiting[i] && !slow[i]);
+    if (!late.length) return;
+    const now = Date.now();
+    const due = late.map((i) => {
+      const key = `${i}:${tries[i] ?? 0}`;
+      if (!since.has(key)) since.set(key, now);
+      return [i, since.get(key)! + SLOW_MS] as const;
+    });
+    const first = Math.min(...due.map(([, at]) => at));
+    const timer = setTimeout(() => due.forEach(([i, at]) => at <= Date.now() && (slow[i] = true)), Math.max(0, first - now));
+    return () => clearTimeout(timer);
+  });
+
+  // ---------- for screen readers and keyboards ----------
+
+  let speaking: ReturnType<typeof setTimeout> | undefined;
+
+  /** Tells a screen reader, once things have settled: turning fast through pages is not read out page by page. */
+  function speak(text: string, wait = 0) {
+    clearTimeout(speaking);
+    speaking = setTimeout(() => (spoken = text), wait);
+  }
+
+  $effect(() => {
+    if (!ready || !count) return;
+    speak(shown.length > 1 ? `Pages ${shown[0] + 1} and ${reached + 1} of ${count}` : `Page ${reached + 1} of ${count}`, 700);
+  });
+
+  /** Scrolls glide unless the device asks for stillness. */
+  const glide = (): ScrollBehavior => (display.value.still || matchMedia('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth');
+
+  /** Moves focus into a sheet or a dialog as it opens, and back where it was when it closes. */
+  function focusIn(node: HTMLElement) {
+    const before = document.activeElement;
+    node.focus();
+    return { destroy: () => before instanceof HTMLElement && before.isConnected && before.focus() };
+  }
+
+  /** The keys as the reader goes by them, the owner's own included, for the list of keys. */
+  const keyList = $derived(
+    ACTIONS.map((action) => ({
+      label: action.label,
+      keys: [...keys].filter(([, what]) => what === action.id).map(([name]) => keyLabel(name)),
+    })).filter((action) => action.keys.length),
+  );
+
+  function keyLabel(name: string): string {
+    return name === ' ' ? 'Space' : name.length === 1 ? name.toUpperCase() : name;
   }
 
   // ---------- auto-scroll ----------
@@ -636,6 +770,13 @@
       case 'mark':
         keepPage(marked ? null : '');
         break;
+      case 'retry':
+        retryAll();
+        break;
+      case 'keys':
+        help = true;
+        overlay = panel = false;
+        break;
       case 'fit': {
         const [next, label] = FITS[(FITS.findIndex(([name]) => name === fit) + 1) % FITS.length];
         change({ fit: next });
@@ -653,6 +794,7 @@
     const on = event.target instanceof Element ? event.target : null;
     if (event.key === 'Escape') {
       if (noting !== null) noting = null;
+      else if (help) help = false;
       else if (zones) closeZones();
       else if (panel) panel = false;
       else if (overlay) overlay = false;
@@ -661,6 +803,14 @@
       return;
     }
     if (on?.matches('input, select, textarea')) return;
+    // Over the list of keys, only its own key does anything; Tab still moves about in it.
+    if (help) {
+      if (keys.get(keyName(event.key)) === 'keys') {
+        help = false;
+        event.preventDefault();
+      }
+      return;
+    }
     // A button in focus keeps the keys that press it.
     if ((event.key === ' ' || event.key === 'Enter') && on?.closest('button, a')) return;
     const box = paged ? stage : strip;
@@ -701,7 +851,36 @@
   }
 </script>
 
-<svelte:window onkeydown={key} onpagehide={() => save(true)} bind:innerWidth={vw} bind:innerHeight={vh} />
+<svelte:window
+  onkeydown={key}
+  onpagehide={() => save(true)}
+  ononline={() => pages.filter((i) => broken[i]).forEach(retry)}
+  bind:innerWidth={vw}
+  bind:innerHeight={vh}
+/>
+
+{#snippet loading(i: number, live: boolean)}
+  <div class="loading" class:late={slow[i]} role={live ? 'status' : undefined}>
+    <span class="spinner" aria-hidden="true"></span>
+    <span class="says">
+      {waiting[i] ? `Trying page ${i + 1} again…` : slow[i] ? `Page ${i + 1} is slow to load` : `Loading page ${i + 1}…`}
+    </span>
+    {#if slow[i]}
+      <button class="btn" onclick={() => retry(i)}><Icon name="refresh" size={16} />Try again</button>
+    {/if}
+  </div>
+{/snippet}
+
+{#snippet failure(i: number)}
+  <div class="panel message failed">
+    <strong>Page {i + 1} did not load.</strong>
+    {#if why[i]}<span>{why[i]}</span>{/if}
+    <div class="tools">
+      <button class="btn ink" onclick={() => retry(i)}><Icon name="refresh" size={16} />Try again</button>
+      {#if failures > 1}<button class="btn" onclick={retryAll}>Try all {failures} again</button>{/if}
+    </div>
+  </div>
+{/snippet}
 <svelte:document onfullscreenchange={() => (full = !!document.fullscreenElement)} />
 
 <div class="reader" data-ground={p.ground} data-scaling={p.scaling} style:--filter={filterOf(p)}>
@@ -722,7 +901,10 @@
       </div>
     </div>
   {:else if !ready}
-    <div class="center" role="status">Opening…</div>
+    <div class="center" role="status">
+      <span class="spinner" aria-hidden="true"></span>
+      <span>Opening…</span>
+    </div>
   {:else if paged}
     <!-- svelte-ignore a11y_click_events_have_key_events, a11y_no_static_element_interactions -->
     <div
@@ -741,17 +923,17 @@
         <div class="leaf" class:two={shown.length > 1} class:rtl={mode === 'rtl'}>
           {#each shown as i (`${i}:${tries[i] ?? 0}`)}
             {#if broken[i]}
-              <div class="panel message">
-                <strong>Page {i + 1} did not load.</strong>
-                <button class="btn" onclick={() => retry(i)}>Try again</button>
-              </div>
-            {:else}
+              {@render failure(i)}
+            {:else if !waiting[i]}
               <img
                 src={look(i)}
                 alt="Page {i + 1} of {count}{splitting(i) ? `, ${half === 0 ? 'first' : 'second'} half` : ''}"
                 draggable="false"
-                onload={(e) => look(i) === src(i) && seen(i, e.currentTarget as HTMLImageElement)}
-                onerror={() => (broken[i] = true)}
+                onload={(e) => {
+                  if (look(i) === src(i)) seen(i, e.currentTarget as HTMLImageElement);
+                  drawn(i);
+                }}
+                onerror={() => failed(i)}
               />
             {/if}
           {/each}
@@ -774,18 +956,28 @@
         <div
           class="frame"
           data-page={i}
+          aria-busy={near[i] && !loaded[i] && !broken[i]}
           style:aspect-ratio={shapes[i] ?? '2 / 3'}
           style:max-width={sideways ? null : `${p.width * zoom}px`}
           style:margin-bottom={sideways ? null : `${p.gap}px`}
           style:margin-right={sideways ? `${p.gap}px` : null}
         >
           {#if broken[i]}
-            <div class="panel message">
-              <strong>Page {i + 1} did not load.</strong>
-              <button class="btn" onclick={() => retry(i)}>Try again</button>
-            </div>
+            {@render failure(i)}
           {:else if near[i]}
-            <img src={look(i, 'whole')} alt="Page {i + 1} of {count}" draggable="false" onload={(e) => measured(i, e.currentTarget as HTMLImageElement)} onerror={() => (broken[i] = true)} />
+            {#if !waiting[i]}
+              <img
+                src={look(i, 'whole')}
+                alt="Page {i + 1} of {count}"
+                draggable="false"
+                onload={(e) => {
+                  measured(i, e.currentTarget as HTMLImageElement);
+                  drawn(i);
+                }}
+                onerror={() => failed(i)}
+              />
+            {/if}
+            {#if !loaded[i]}{@render loading(i, false)}{/if}
           {/if}
         </div>
       {/each}
@@ -800,6 +992,10 @@
   {/if}
 
   {#if ready && !error}
+    {#if paged}
+      {@const busy = shown.filter((i) => !loaded[i] && !broken[i])}
+      {#if busy.length}{@render loading(busy[0], true)}{/if}
+    {/if}
     {#if p.tintAmount > 0}
       <div class="tint" style:background={p.tint} style:opacity={p.tintAmount / 100} style:mix-blend-mode={p.blend}></div>
     {/if}
@@ -847,6 +1043,9 @@
       {#if document.fullscreenEnabled}
         <button class="btn icon" aria-label="Full screen" aria-pressed={full} onclick={fullscreen}><Icon name="expand" /></button>
       {/if}
+      {#if thisDevice() === 'computer'}
+        <button class="btn icon" aria-label="Show the keys" onclick={() => ((help = true), (overlay = false))}><Icon name="info" /></button>
+      {/if}
       {#if p.zones !== 'off'}
         <button class="btn icon" aria-label="Show the tap zones" onclick={() => ((zones = true), (overlay = false))}><Icon name="grid" /></button>
       {/if}
@@ -893,7 +1092,7 @@
 
   {#if panel && info && ready}
     {@const entry = KINDS.find((each) => each.id === kind) ?? KINDS[0]}
-    <aside class="sheet" aria-label="Reader settings">
+    <aside class="sheet" aria-label="Reader settings" tabindex="-1" use:focusIn>
       <header>
         <strong class="display">READER</strong>
         <button class="btn icon" aria-label="Close the settings" onclick={() => (panel = false)}><Icon name="close" /></button>
@@ -920,6 +1119,34 @@
       </div>
     </aside>
   {/if}
+
+  {#if help}
+    <div class="keys" role="dialog" aria-modal="true" aria-labelledby="keys-title" tabindex="-1" use:focusIn>
+      <header>
+        <strong id="keys-title" class="display">KEYS</strong>
+        <button class="btn icon" aria-label="Close the keys" onclick={() => (help = false)}><Icon name="close" /></button>
+      </header>
+      <dl>
+        <dt><kbd>←</kbd> <kbd>→</kbd></dt>
+        <dd>Turn the page, the way the book reads</dd>
+        <dt><kbd>↑</kbd> <kbd>↓</kbd></dt>
+        <dd>Scroll</dd>
+        <dt><kbd>Space</kbd> <kbd>Shift</kbd>+<kbd>Space</kbd></dt>
+        <dd>Scroll on or back, then turn the page</dd>
+        <dt><kbd>Home</kbd> <kbd>End</kbd></dt>
+        <dd>First or last page</dd>
+        <dt><kbd>Esc</kbd></dt>
+        <dd>Close what is open, then leave the reader</dd>
+        {#each keyList as action (action.label)}
+          <dt>{#each action.keys as name, n (name)}{n ? ' ' : ''}<kbd>{name}</kbd>{/each}</dt>
+          <dd>{action.label}</dd>
+        {/each}
+      </dl>
+      <p>Change these in Settings › Reader.</p>
+    </div>
+  {/if}
+
+  <div class="sr" aria-live="polite" aria-atomic="true">{spoken}</div>
 </div>
 
 <style>
@@ -948,6 +1175,8 @@
 
   .center {
     display: flex;
+    flex-direction: column;
+    gap: 16px;
     align-items: center;
     justify-content: center;
     height: 100%;
@@ -1062,6 +1291,11 @@
     pointer-events: none;
   }
 
+  /* The spinner names the page itself. */
+  .reader:has(> .loading) .number {
+    display: none;
+  }
+
   .strip {
     height: 100%;
     overflow-y: auto;
@@ -1069,6 +1303,7 @@
   }
 
   .frame {
+    position: relative;
     display: flex;
     width: 100%;
     margin: 0 auto;
@@ -1152,6 +1387,82 @@
     display: flex;
     justify-content: center;
     padding: 48px 16px 96px;
+  }
+
+  /* ---------- a page on its way, or one that failed ---------- */
+
+  /* Over the screen in the paged modes, over its own frame in a strip. It shows only after a moment, so a quick page does not flicker. */
+  .loading {
+    position: absolute;
+    inset: 0;
+    z-index: 1;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 14px;
+    padding: 16px;
+    pointer-events: none;
+    animation: appear 0.2s 0.3s both;
+  }
+
+  .loading .btn {
+    pointer-events: auto;
+  }
+
+  .says {
+    padding: 4px 12px;
+    background: rgb(17 17 17 / 0.78);
+    color: #f1f1ec;
+    font-size: 14px;
+    font-weight: 900;
+    text-align: center;
+  }
+
+  .spinner {
+    flex: none;
+    width: 44px;
+    height: 44px;
+    border: 5px solid rgb(128 128 128 / 0.35);
+    border-top-color: var(--spot);
+    border-radius: 50%;
+    animation: spin 0.9s linear infinite;
+  }
+
+  /* Still a sign of work, without the turning. */
+  @media (prefers-reduced-motion: reduce) {
+    .spinner {
+      border-color: var(--spot);
+      animation: pulse 1.6s ease-in-out infinite alternate;
+    }
+  }
+
+  @keyframes spin {
+    to {
+      transform: rotate(360deg);
+    }
+  }
+
+  @keyframes pulse {
+    to {
+      opacity: 0.3;
+    }
+  }
+
+  @keyframes appear {
+    from {
+      opacity: 0;
+    }
+  }
+
+  .failed {
+    align-self: center;
+    margin: auto;
+  }
+
+  .failed span {
+    color: var(--muted);
+    font-size: 14px;
   }
 
   /* ---------- over the pages ---------- */
@@ -1362,6 +1673,71 @@
 
   .seg button:focus-visible {
     outline-offset: -5px;
+  }
+
+  .sheet:focus,
+  .keys:focus {
+    outline: none;
+  }
+
+  /* ---------- the list of keys ---------- */
+
+  .keys {
+    position: absolute;
+    top: 50%;
+    left: 50%;
+    z-index: 4;
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+    width: min(520px, calc(100% - 32px));
+    max-height: calc(100% - 32px);
+    padding: 12px 16px 16px;
+    overflow-y: auto;
+    border: 3px solid var(--ink);
+    background: var(--paper);
+    color: var(--ink);
+    box-shadow: var(--sh-5);
+    transform: translate(-50%, -50%);
+  }
+
+  .keys header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    font-size: 20px;
+  }
+
+  .keys dl {
+    display: grid;
+    grid-template-columns: auto 1fr;
+    gap: 8px 16px;
+    margin: 0;
+  }
+
+  .keys dt {
+    white-space: nowrap;
+  }
+
+  .keys dd {
+    margin: 0;
+  }
+
+  .keys kbd {
+    display: inline-block;
+    min-width: 26px;
+    padding: 1px 6px;
+    border: 2px solid var(--ink);
+    background: var(--surface);
+    font-family: inherit;
+    font-size: 13px;
+    font-weight: 700;
+    text-align: center;
+  }
+
+  .keys p {
+    color: var(--muted);
+    font-size: 13px;
   }
 
   @media (max-width: 700px) {
