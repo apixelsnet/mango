@@ -84,19 +84,14 @@ impl Image {
 struct Archives(Arc<StdMutex<HashMap<PathBuf, (SystemTime, Arc<Vec<String>>)>>>);
 
 impl Archives {
-    fn names(&self, path: &Path, modified: SystemTime, archive: &zip::ZipArchive<fs::File>) -> Arc<Vec<String>> {
+    fn names(&self, path: &Path, modified: SystemTime, list: impl FnOnce() -> Vec<String>) -> Arc<Vec<String>> {
         let mut held = self.0.lock().unwrap_or_else(|e| e.into_inner());
         if let Some((at, names)) = held.get(path) {
             if *at == modified {
                 return names.clone();
             }
         }
-        let mut names: Vec<String> = archive
-            .file_names()
-            .filter_map(|name| name.ok())
-            .filter(|name| !name.ends_with('/') && !name.eq_ignore_ascii_case("ComicInfo.xml"))
-            .map(Cow::into_owned)
-            .collect();
+        let mut names: Vec<String> = list().into_iter().filter(|name| !name.ends_with('/') && !name.eq_ignore_ascii_case("ComicInfo.xml")).collect();
         names.sort();
         let names = Arc::new(names);
         if held.len() >= ARCHIVES_KEPT {
@@ -109,7 +104,7 @@ impl Archives {
 
 /// Where a chapter's pages come from.
 enum Kept {
-    /// A CBZ under the downloads folder.
+    /// A CBZ, or a folder of pages, under the downloads folder.
     File(PathBuf),
     /// The local source's folder: the title's and the chapter's names in it.
     Local { title: String, chapter: String },
@@ -353,7 +348,16 @@ impl Images {
             // A downloaded chapter is read from its file. The source is never asked.
             Kept::File(saved) => {
                 let archives = self.archives.clone();
-                let bytes = tokio::task::spawn_blocking(move || read_cbz(&saved, index as usize, &archives)).await.ok().flatten();
+                let bytes = tokio::task::spawn_blocking(move || {
+                    if saved.is_dir() {
+                        read_folder(&saved, index as usize, &archives)
+                    } else {
+                        read_cbz(&saved, index as usize, &archives)
+                    }
+                })
+                .await
+                .ok()
+                .flatten();
                 return Image::checked(bytes.ok_or_else(|| AppError::not_found("No such page in the downloaded chapter"))?);
             }
             Kept::Local { title, chapter: name } => {
@@ -391,10 +395,10 @@ impl Images {
         self.locks.lock("pack".into()).await
     }
 
-    /// The downloaded chapter's file, when it has one.
+    /// The downloaded chapter's CBZ, when it has one. A chapter saved as a folder has none.
     pub async fn saved(&self, chapter: i64) -> Result<Option<PathBuf>> {
         Ok(match self.kept(chapter).await? {
-            Kept::File(file) => Some(file),
+            Kept::File(file) if file.is_file() => Some(file),
             _ => None,
         })
     }
@@ -706,10 +710,26 @@ fn read_cbz(path: &Path, index: usize, archives: &Archives) -> Option<Vec<u8>> {
     let file = fs::File::open(path).ok()?;
     let modified = file.metadata().and_then(|meta| meta.modified()).ok()?;
     let mut archive = zip::ZipArchive::new(file).ok()?;
-    let names = archives.names(path, modified, &archive);
+    let names = archives.names(path, modified, || archive.file_names().filter_map(|name| name.ok()).map(Cow::into_owned).collect());
     let mut bytes = Vec::new();
     archive.by_name(names.get(index)?).ok()?.read_to_end(&mut bytes).ok()?;
     Some(bytes)
+}
+
+/// One page out of a chapter saved as a folder. Pages are its files in name order; ComicInfo.xml is not one.
+fn read_folder(path: &Path, index: usize, archives: &Archives) -> Option<Vec<u8>> {
+    let modified = fs::metadata(path).and_then(|meta| meta.modified()).ok()?;
+    let names = archives.names(path, modified, || {
+        fs::read_dir(path)
+            .into_iter()
+            .flatten()
+            .flatten()
+            .filter(|entry| entry.file_type().is_ok_and(|kind| kind.is_file()))
+            .filter_map(|entry| entry.file_name().into_string().ok())
+            .filter(|name| !name.starts_with('.'))
+            .collect()
+    });
+    fs::read(path.join(names.get(index)?)).ok()
 }
 
 /// Reads a cached file. One not used for a while is marked as used now, which is what the sweep goes by.
@@ -921,6 +941,20 @@ mod tests {
         assert_eq!(read_cbz(&file, 2, &archives), None, "ComicInfo.xml is no page");
         assert_eq!(archives.0.lock().unwrap().len(), 1);
         fs::remove_file(&file).unwrap();
+    }
+
+    #[test]
+    fn a_folder_reads_like_a_cbz() {
+        let dir = std::env::temp_dir().join(format!("mango-folder-{:08x}", fnv(&format!("{:?}", Instant::now()))));
+        fs::create_dir_all(&dir).unwrap();
+        for (name, body) in [("002.png", "two"), ("ComicInfo.xml", "info"), ("001.png", "one"), (".DS_Store", "junk")] {
+            fs::write(dir.join(name), body).unwrap();
+        }
+        let archives = Archives::default();
+        assert_eq!(read_folder(&dir, 0, &archives).as_deref(), Some(b"one".as_slice()));
+        assert_eq!(read_folder(&dir, 1, &archives).as_deref(), Some(b"two".as_slice()));
+        assert_eq!(read_folder(&dir, 2, &archives), None, "ComicInfo.xml and hidden files are no pages");
+        fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]

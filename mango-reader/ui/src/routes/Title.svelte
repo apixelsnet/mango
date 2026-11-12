@@ -13,7 +13,8 @@
   import { left, moving, queueOf, waiting, type Waits } from '../lib/queue';
   import { back, go } from '../lib/router.svelte';
   import Tracking from '../lib/Tracking.svelte';
-  import { ago, chapterShort, every, langName, STATUS } from '../lib/util';
+  import { ago, chapterShort, copyText, every, langName, STATUS } from '../lib/util';
+  import { markdown } from '../lib/markdown';
 
   const WEEK = 7 * 86400;
 
@@ -53,7 +54,9 @@
   let refreshing = $state(false);
   let refreshError = $state<string | null>(null);
   let menu = $state(false);
-  let wholeText = $state(false);
+  // Null until More or Less is pressed: the summary then starts as Settings say, folded by default.
+  let wholeText = $state<boolean | null>(null);
+  const summaryOpen = $derived(wholeText ?? pref('title.wholeSummary', false));
   let filters = $state(false);
   // The chapter whose own menu is open.
   let opened = $state<number | null>(null);
@@ -85,6 +88,19 @@
   const saved = $derived(chapters.filter((c) => c.downloaded).length);
   const duplicates = $derived((title?.chapters ?? []).filter((c) => c.duplicate).length);
   const merged = $derived((title?.members.length ?? 0) > 1);
+  /** Who wrote and drew it, each once: a source can list several, with commas between. */
+  const makers = $derived([
+    ...new Set(
+      [title?.author, title?.artist]
+        .flatMap((names) => (names ?? '').split(','))
+        .map((name) => name.trim())
+        .filter(Boolean),
+    ),
+  ]);
+
+  async function copyTitle() {
+    if (title) tell((await copyText(title.title)) ? 'Title copied.' : 'Could not copy the title.');
+  }
   // The order is kept for every title, on the server like the library's.
   const view = $derived<View>({ ...DEFAULT, ...pref<Partial<View>>('title.view', {}) });
   const groups = $derived([...new Set(chapters.map((c) => c.scanlator ?? '').filter(Boolean))].sort((a, b) => a.localeCompare(b)));
@@ -640,10 +656,19 @@
                 <span class="tag" title="How often it gets a chapter, going by the source's dates">{pace(title.releaseDays)}</span>
               {/if}
             </div>
-            <h1 class="display">{title.title}</h1>
+            <div class="named">
+              <h1 class="display">
+                <a href="#/search?q={encodeURIComponent(title.title)}" title="Search all sources for this title">{title.title}</a>
+              </h1>
+              <button class="btn icon" aria-label="Copy the title" title="Copy the title" onclick={copyTitle}><Icon name="copy" size={16} /></button>
+            </div>
             <strong>{title.sourceName ?? 'Its extension is not installed'}</strong>
-            {#if title.author || title.artist}
-              <span>{[...new Set([title.author, title.artist].filter(Boolean))].join(' · ')}</span>
+            {#if makers.length}
+              <span class="makers">
+                {#each makers as maker, at (maker)}{#if at > 0}{' · '}{/if}<a href="#/?q={encodeURIComponent(maker)}" title="Find {maker} in your library"
+                    >{maker}</a
+                  >{/each}
+              </span>
             {/if}
           </div>
         </div>
@@ -731,14 +756,16 @@
         {/if}
 
         {#if title.description}
-          <p class="text" class:clamp={!wholeText}>{title.description}</p>
-          {#if title.description.length > 280}
-            <button class="btn more" aria-expanded={wholeText} onclick={() => (wholeText = !wholeText)}>{wholeText ? 'Less' : 'More'}</button>
+          {@const long = title.description.length > 280}
+          <!-- The description is escaped before it is read as Markdown: only the tags markdown() makes get here. -->
+          <div class="text" class:clamp={long && !summaryOpen}>{@html markdown(title.description)}</div>
+          {#if long}
+            <button class="btn more" aria-expanded={summaryOpen} onclick={() => (wholeText = !summaryOpen)}>{summaryOpen ? 'Less' : 'More'}</button>
           {/if}
         {/if}
         {#if title.genres.length}
           <div class="tools genres">
-            {#each title.genres as genre (genre)}<span class="tag">{genre}</span>{/each}
+            {#each title.genres as genre (genre)}<a class="tag" href="#/?q={encodeURIComponent(genre)}" title="Find {genre} in your library">{genre}</a>{/each}
           </div>
         {/if}
         <Tracking {id} title={title.title} />
@@ -1064,6 +1091,36 @@
     overflow-wrap: anywhere;
   }
 
+  .named {
+    display: flex;
+    align-items: flex-start;
+    gap: 8px;
+  }
+
+  .named h1 {
+    flex: 1;
+    min-width: 0;
+  }
+
+  /* The title, the makers and the genres are links that look like what they were. */
+  .named h1 a,
+  .makers a,
+  .genres a {
+    color: inherit;
+    text-decoration: none;
+  }
+
+  .named h1 a:hover,
+  .makers a:hover {
+    text-decoration: underline;
+    text-decoration-thickness: 3px;
+  }
+
+  .genres a:hover {
+    background: var(--ink);
+    color: var(--paper);
+  }
+
   .facts strong,
   .facts > span {
     font-size: 13px;
@@ -1109,16 +1166,53 @@
   .text {
     font-size: 14px;
     line-height: 1.5;
-    white-space: pre-line;
     overflow-wrap: anywhere;
   }
 
+  /* Five lines; the description is blocks now, which a line clamp does not count through. */
   .clamp {
-    display: -webkit-box;
+    max-height: 7.5em;
     overflow: hidden;
-    -webkit-box-orient: vertical;
-    -webkit-line-clamp: 5;
-    line-clamp: 5;
+    mask-image: linear-gradient(to bottom, #000 60%, transparent);
+  }
+
+  /* What markdown() makes: kept to the size of the text around it. */
+  .text :global(:is(p, ul, ol, blockquote, pre, h3, h4, h5, h6)) {
+    margin: 0 0 0.6em;
+  }
+
+  .text :global(:is(h3, h4, h5, h6)) {
+    font-size: 15px;
+    font-weight: 900;
+  }
+
+  .text :global(:is(ul, ol)) {
+    padding-left: 1.4em;
+  }
+
+  .text :global(blockquote) {
+    padding-left: 10px;
+    border-left: 3px solid var(--ink);
+  }
+
+  .text :global(pre) {
+    white-space: pre-wrap;
+  }
+
+  .text :global(code) {
+    font-family: ui-monospace, monospace;
+    font-size: 0.95em;
+  }
+
+  .text :global(a) {
+    color: inherit;
+    text-decoration: underline;
+    text-decoration-thickness: 2px;
+  }
+
+  .text :global(hr) {
+    border: 0;
+    border-top: 2px solid var(--ink);
   }
 
   .more {

@@ -123,3 +123,14 @@ Each chapter row says where its download stands, so a chapter just sent to the q
 ## Skip titles not started (2026-10-28)
 
 The option `updates.skipUnstarted` (Settings › Library, off by default) leaves out of a library update every title whose chapters were all left unopened: none is read and none has a page turned. A title with no chapters at all is still asked, since there is nothing to start on. Code: `plan` in `updates.rs`; checked by its unit test.
+
+## Saved as a folder (2026-11-12)
+
+Code: `downloads.rs` (`Sink`, `place`, `remove`, `size_of`), `images.rs` (`read_folder`), `files.rs`; UI in Settings → Downloads.
+
+- **Save chapters as** (`downloads.format`): "CBZ file" (`cbz`, the default) or "Folder of pages" (`folder`). A folder is `<data>/downloads/<source>/<title>/<chapter>/`, holding `001…` and `ComicInfo.xml`. It is written as `<chapter>.part/` and renamed when whole, as a CBZ is. Changing the setting leaves chapters saved already as they are; both kinds read the same.
+- Every saved chapter, CBZ or folder, carries its `ComicInfo.xml`: the series, chapter name and number, group, makers, genres, summary, language and page count, for other comic apps when the files are moved out of Mango. There is no setting to leave it out.
+- A folder chapter is read page by page from its files in name order; `ComicInfo.xml` and hidden files are no pages. Reading apps and "Save as a CBZ file" get it packed into a CBZ on request, as a chapter that was not downloaded is. "Export my files" puts it in as a folder, which the local sources read too.
+- Deleting a chapter removes its folder. A path from the database is only removed when it stays inside the downloads folder. Sizes for "Titles not in the library" and "Chapters already read" count a folder's files.
+
+Checked by unit tests (a folder written and removed, its size, paths kept inside the folder, pages read from a folder in order, an export holding a folder chapter), and on Linux by `smoke.py` and a script against a real source that saved one chapter as a folder and one as a CBZ, read a page from the folder, packed it as a CBZ, and deleted both. The setting was checked in a browser.

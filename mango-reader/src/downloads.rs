@@ -1,6 +1,7 @@
 //! The download queue. A chapter is fetched page by page and saved as one CBZ at
-//! `<data>/downloads/<source>/<title>/<chapter>.cbz`, with a `ComicInfo.xml` inside.
-//! The queue lives in the database, so it survives a restart.
+//! `<data>/downloads/<source>/<title>/<chapter>.cbz`, with a `ComicInfo.xml` inside,
+//! or, when the owner picked folders, as `<chapter>/` holding the pages and the
+//! `ComicInfo.xml`. The queue lives in the database, so it survives a restart.
 
 use crate::{
     db::{now, Db},
@@ -23,6 +24,8 @@ use tokio::sync::Notify;
 
 pub const PAUSED: &str = "downloads.paused";
 pub const DELETE_READ: &str = "downloads.deleteAfterReading";
+/// How a chapter is saved: `cbz` (the default), or `folder`, a folder of its pages.
+pub const FORMAT: &str = "downloads.format";
 /// Tries a chapter gets before it is parked as failed.
 const TRIES: i64 = 5;
 /// Seconds to wait before the next try, by how many have failed so far.
@@ -184,7 +187,7 @@ impl Downloads {
         tokio::task::spawn_blocking(move || {
             rows.into_iter()
                 .map(|(manga_id, title, source_name, files)| {
-                    let bytes = files.iter().filter_map(|file| fs::metadata(dir.join(file)).ok()).map(|meta| meta.len()).sum();
+                    let bytes = files.iter().filter_map(|file| size_of(&dir.join(file))).sum();
                     Orphan { manga_id, title, source_name, chapters: files.len() as i64, bytes }
                 })
                 .collect()
@@ -216,7 +219,7 @@ impl Downloads {
         let files = self.db.call(|conn| saved_read(conn)).await?;
         let dir = self.dir.clone();
         tokio::task::spawn_blocking(move || {
-            let bytes = files.iter().filter_map(|(_, file)| fs::metadata(dir.join(file)).ok()).map(|meta| meta.len()).sum();
+            let bytes = files.iter().filter_map(|(_, file)| size_of(&dir.join(file))).sum();
             ReadFiles { chapters: files.len() as i64, bytes }
         })
         .await
@@ -279,10 +282,10 @@ impl Downloads {
                 Ok(path)
             })
             .await?;
-        if let Some(relative) = path {
+        if let Some(relative) = path.filter(|relative| inside(relative)) {
             let file = self.dir.join(relative);
             let _ = tokio::task::spawn_blocking(move || {
-                let _ = fs::remove_file(&file);
+                remove(&file);
                 // The title's folder and the source's go too, when this was the last file in them.
                 for folder in file.ancestors().skip(1).take(2) {
                     let _ = fs::remove_dir(folder);
@@ -344,26 +347,41 @@ impl Downloads {
             return Err(AppError::new(507, "disk_full", why));
         }
         let total = self.images.page_count(job.chapter).await?;
-        let relative = self.place(job);
+        let folder = self.db.call(|conn| Ok(settings::get::<String>(conn, FORMAT).is_some_and(|format| format == "folder"))).await?;
+        let relative = self.place(job, folder);
         let file = self.dir.join(&relative);
-        let part = file.with_extension("cbz.part");
-        let outcome = self.write(job, total, &part).await;
+        // Not `with_extension`: a chapter folder's name can hold a dot of its own.
+        let mut part = file.clone().into_os_string();
+        part.push(".part");
+        let part = PathBuf::from(part);
+        // What a stop part way left behind.
+        remove(&part);
+        let outcome = self.write(job, total, &part, folder).await;
         if !matches!(outcome, Ok(true)) {
-            let _ = fs::remove_file(&part);
+            remove(&part);
             return outcome.map(|_| None);
+        }
+        if folder {
+            // A folder is not renamed over another. One left here can only be this chapter's.
+            remove(&file);
         }
         fs::rename(&part, &file)?;
         Ok(Some((relative.to_string_lossy().replace('\\', "/"), total)))
     }
 
-    /// Writes the pages and the ComicInfo into `part`. False when the chapter stopped being wanted.
-    async fn write(&self, job: &Job, total: i64, part: &Path) -> Result<bool> {
+    /// Writes the pages and the ComicInfo into `part`: a CBZ, or a folder when `folder`.
+    /// False when the chapter stopped being wanted.
+    async fn write(&self, job: &Job, total: i64, part: &Path, folder: bool) -> Result<bool> {
         let blocking = |e: tokio::task::JoinError| AppError::internal(e.to_string());
-        let stored = || zip::write::SimpleFileOptions::default().compression_method(zip::CompressionMethod::Stored);
-        if let Some(folder) = part.parent() {
-            fs::create_dir_all(folder)?;
+        if let Some(parent) = part.parent() {
+            fs::create_dir_all(parent)?;
         }
-        let archive = Arc::new(StdMutex::new(zip::ZipWriter::new(fs::File::create(part)?)));
+        let sink = if folder {
+            fs::create_dir_all(part)?;
+            Sink::Folder(part.to_owned())
+        } else {
+            Sink::Zip(Arc::new(StdMutex::new(zip::ZipWriter::new(fs::File::create(part)?))))
+        };
 
         // Two pages are fetched at a time and written in order, so memory holds two pages at most.
         let mut next = 0;
@@ -382,13 +400,11 @@ impl Downloads {
             if let Some(page) = other {
                 pages.push(page?);
             }
-            let (writer, from) = (archive.clone(), next);
+            let (writer, from) = (sink.clone(), next);
             next += pages.len() as i64;
             tokio::task::spawn_blocking(move || -> Result<()> {
-                let mut zip = writer.lock().unwrap_or_else(|e| e.into_inner());
                 for (offset, page) in pages.iter().enumerate() {
-                    zip.start_file(format!("{:03}.{}", from + offset as i64 + 1, extension(page.content_type)), stored())?;
-                    zip.write_all(&page.bytes)?;
+                    writer.add(&format!("{:03}.{}", from + offset as i64 + 1, extension(page.content_type)), &page.bytes)?;
                 }
                 Ok(())
             })
@@ -399,14 +415,8 @@ impl Downloads {
 
         let info = comic_info(job, total);
         tokio::task::spawn_blocking(move || -> Result<()> {
-            let mut zip = Arc::try_unwrap(archive)
-                .ok()
-                .and_then(|lock| lock.into_inner().ok())
-                .ok_or_else(|| AppError::internal("the archive is still in use"))?;
-            zip.start_file("ComicInfo.xml", stored())?;
-            zip.write_all(info.as_bytes())?;
-            zip.finish()?.sync_all()?;
-            Ok(())
+            sink.add("ComicInfo.xml", info.as_bytes())?;
+            sink.finish()
         })
         .await
         .map_err(blocking)??;
@@ -424,20 +434,84 @@ impl Downloads {
             .unwrap_or(false)
     }
 
-    /// Where a chapter's file goes, relative to the downloads folder.
-    fn place(&self, job: &Job) -> PathBuf {
+    /// Where a chapter's file, or its folder when `as_folder`, goes, relative to the downloads folder.
+    fn place(&self, job: &Job, as_folder: bool) -> PathBuf {
         let folder = Path::new(&clean(&job.source)).join(clean(&job.title));
         let name = match job.scanlator.as_deref().filter(|s| !s.is_empty()) {
             Some(scanlator) => clean(&format!("{} [{scanlator}]", job.name)),
             None => clean(&job.name),
         };
-        let path = folder.join(format!("{name}.cbz"));
+        let end = if as_folder { "" } else { ".cbz" };
+        let path = folder.join(format!("{name}{end}"));
         // Two chapters of one title can share a name; the second gets its id added.
         if self.dir.join(&path).exists() {
-            return folder.join(format!("{name} ({}).cbz", job.chapter));
+            return folder.join(format!("{name} ({}){end}", job.chapter));
         }
         path
     }
+}
+
+/// Where a chapter's pages are written while it is fetched.
+#[derive(Clone)]
+enum Sink {
+    Zip(Arc<StdMutex<zip::ZipWriter<fs::File>>>),
+    Folder(PathBuf),
+}
+
+impl Sink {
+    fn add(&self, name: &str, bytes: &[u8]) -> Result<()> {
+        match self {
+            Sink::Zip(writer) => {
+                let mut zip = writer.lock().unwrap_or_else(|e| e.into_inner());
+                zip.start_file(name, zip::write::SimpleFileOptions::default().compression_method(zip::CompressionMethod::Stored))?;
+                zip.write_all(bytes)?;
+            }
+            Sink::Folder(dir) => {
+                let mut file = fs::File::create(dir.join(name))?;
+                file.write_all(bytes)?;
+                file.sync_all()?;
+            }
+        }
+        Ok(())
+    }
+
+    fn finish(self) -> Result<()> {
+        if let Sink::Zip(writer) = self {
+            let zip = Arc::try_unwrap(writer)
+                .ok()
+                .and_then(|lock| lock.into_inner().ok())
+                .ok_or_else(|| AppError::internal("the archive is still in use"))?;
+            zip.finish()?.sync_all()?;
+        }
+        Ok(())
+    }
+}
+
+/// Removes a saved chapter, whether a file or a folder of pages. Gone already is fine.
+fn remove(path: &Path) {
+    match fs::symlink_metadata(path) {
+        Ok(meta) if meta.is_dir() => {
+            let _ = fs::remove_dir_all(path);
+        }
+        Ok(_) => {
+            let _ = fs::remove_file(path);
+        }
+        Err(_) => {}
+    }
+}
+
+/// What a saved chapter takes on the disk: its file, or the pages in its folder.
+pub(crate) fn size_of(path: &Path) -> Option<u64> {
+    let meta = fs::metadata(path).ok()?;
+    if !meta.is_dir() {
+        return Some(meta.len());
+    }
+    Some(fs::read_dir(path).ok()?.flatten().filter_map(|entry| entry.metadata().ok()).filter(|meta| meta.is_file()).map(|meta| meta.len()).sum())
+}
+
+/// A path kept in the database, held to the downloads folder: no `..`, no root.
+pub(crate) fn inside(relative: &str) -> bool {
+    !relative.is_empty() && Path::new(relative).components().all(|part| matches!(part, std::path::Component::Normal(_)))
 }
 
 fn add(conn: &mut Connection, chapters: &[i64]) -> Result<usize> {
@@ -790,5 +864,26 @@ mod tests {
         assert!(xml.contains("<Title>Ch &quot;1&quot;</Title>"));
         assert!(xml.contains("<Number>1.5</Number>") && xml.contains("<PageCount>12</PageCount>"));
         assert!(!xml.contains("Translator") && !xml.contains("LanguageISO"), "empty fields are left out");
+    }
+
+    #[test]
+    fn folder_chapters() {
+        let dir = std::env::temp_dir().join(format!("mango-folder-{}", std::process::id()));
+        let chapter = dir.join("Ch. 2.part");
+        fs::create_dir_all(&chapter).unwrap();
+        let sink = Sink::Folder(chapter.clone());
+        sink.add("001.png", b"one").unwrap();
+        sink.add("ComicInfo.xml", b"<ComicInfo/>").unwrap();
+        sink.finish().unwrap();
+        assert_eq!(fs::read(chapter.join("001.png")).unwrap(), b"one");
+        assert_eq!(size_of(&chapter), Some(3 + 12), "a folder takes what its files take");
+        assert_eq!(size_of(&chapter.join("001.png")), Some(3));
+        remove(&chapter);
+        assert!(!chapter.exists());
+        remove(&chapter);
+
+        assert!(inside("Src/Title/Ch 1") && inside("Src/Title/Ch 1.cbz"));
+        assert!(!inside("") && !inside("../x") && !inside("Src/../../x") && !inside("/etc"));
+        let _ = fs::remove_dir_all(&dir);
     }
 }
