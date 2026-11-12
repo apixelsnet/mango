@@ -1157,6 +1157,14 @@
         </section>
 
         <section class="card">
+          <h3>Title page</h3>
+          <div class="set">
+            <div class="what"><strong>Show the whole summary</strong><span>Off: a long summary shows its first lines, with More for the rest.</span></div>
+            <div class="how">{@render toggle(pref('title.wholeSummary', false), 'Show the whole summary', () => flip('title.wholeSummary'))}</div>
+          </div>
+        </section>
+
+        <section class="card">
           <h3>New chapters</h3>
           <div class="set">
             <div class="what"><strong>Check the library</strong><span>How often Mango looks for new chapters by itself.</span></div>
@@ -1244,6 +1252,15 @@
       {:else if tab.id === 'downloads'}
         <section class="card">
           <h3>Files</h3>
+          <div class="set">
+            <div class="what"><strong>Save chapters as</strong><span>A CBZ file each, or a folder of its pages. Chapters saved already stay as they are.</span></div>
+            <div class="how">
+              <select class="btn" aria-label="Save chapters as" value={pref('downloads.format', 'cbz')} onchange={(e) => setPref('downloads.format', e.currentTarget.value).catch((er) => (error = message(er)))}>
+                <option value="cbz">CBZ file</option>
+                <option value="folder">Folder of pages</option>
+              </select>
+            </div>
+          </div>
           <div class="set">
             <div class="what"><strong>Delete after reading</strong><span>A chapter's file goes once the chapter is read.</span></div>
             <div class="how">{@render toggle(pref('downloads.deleteAfterReading', false), "Delete a chapter's file once it is read", () => flip('downloads.deleteAfterReading'))}</div>

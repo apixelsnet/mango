@@ -70,3 +70,10 @@ Implementation: `lib/undoing.svelte.ts`, `lib/Undo.svelte`, `lib/named.svelte.ts
 - **Spelling.** Labels use US spelling ("Color wash", "Spot color", "Gray"). A reader background saved as "grey" is read as "gray".
 
 Checked in Chromium against a mock API: marking all chapters read and pressing Undo, or Ctrl+Z, sent nothing; taking a title out and leaving the screen sent one call; a library "Mark read" was sent after 7 s; a history entry came back on Undo; the heading took the focus on each new screen and the tab names were right; the menu's current screen kept its highlight in forced colors. Not checked: a real screen reader, Windows' own contrast themes.
+
+## Filter by source; search by maker and genre (2026-11-12)
+
+Code: `routes/Library.svelte`, `library.rs`.
+
+- The filter row has a source picker when the library's titles come from more than one source: "All sources", or one source by name. Titles whose extension is not installed are listed as "Not installed". The pick is kept with the other filters (`library.view`, as `source`); a source no longer in the library filters nothing.
+- The search finds a title by its name, its author, its artist or a genre. A title page's author, artist and genre links open the library searched for them.

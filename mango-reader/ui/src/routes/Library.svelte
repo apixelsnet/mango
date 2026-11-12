@@ -7,12 +7,13 @@
   import { keep, recall } from '../lib/keep';
   import Notice from '../lib/Notice.svelte';
   import { pref, prefs, setPref } from '../lib/prefs.svelte';
-  import { go } from '../lib/router.svelte';
+  import { go, route } from '../lib/router.svelte';
   import TitleCard from '../lib/TitleCard.svelte';
   import { startTour, tour } from '../lib/guide.svelte';
 
   type Sort = 'lastRead' | 'latest' | 'unread' | 'title' | 'added';
-  type View = { layout: 'grid' | 'list'; sort: Sort; down: boolean; unread: boolean; downloaded: boolean; completed: boolean };
+  // `source` is a source's name; '' is every source.
+  type View = { layout: 'grid' | 'list'; sort: Sort; down: boolean; unread: boolean; downloaded: boolean; completed: boolean; source: string };
 
   const SORTS: [Sort, string][] = [
     ['lastRead', 'Last read'],
@@ -28,7 +29,9 @@
     title: (item) => item.title.toLowerCase(),
     added: (item) => item.addedAt,
   };
-  const DEFAULT: View = { layout: 'grid', sort: 'lastRead', down: true, unread: false, downloaded: false, completed: false };
+  const DEFAULT: View = { layout: 'grid', sort: 'lastRead', down: true, unread: false, downloaded: false, completed: false, source: '' };
+  /** What a title is called when its extension is not installed, in the source filter. */
+  const NO_SOURCE = 'Not installed';
 
   // What was here last time shows at once; the library is then asked for again.
   const kept = recall<Library>('library');
@@ -37,7 +40,8 @@
   let error = $state<string | null>(null);
   // null is "All".
   let category = $state<number | null>(null);
-  let text = $state('');
+  // A title page's author and genre links open the library searched for them.
+  let text = $state(route.query.get('q') ?? '');
   let picking = $state(false);
   let picked = $state<Record<number, boolean>>({});
   let filters = $state(false);
@@ -85,13 +89,23 @@
     return ids;
   });
 
+  /** The sources the library's titles come from, by name, for the source filter. */
+  const sources = $derived([...new Set((data?.items ?? []).map((item) => item.sourceName ?? NO_SOURCE))].sort((a, b) => a.localeCompare(b)));
+  // A source picked once and since gone from the library filters nothing.
+  const source = $derived(sources.includes(view.source) ? view.source : '');
+
+  /** The search finds a title by its name, who made it, or a genre. */
+  const matches = (item: LibraryItem, needle: string) =>
+    [item.title, item.author, item.artist, item.genre].some((field) => field?.toLowerCase().includes(needle));
+
   const shown = $derived.by(() => {
     if (!data) return [];
     const needle = text.trim().toLowerCase();
     const list = data.items.filter(
       (item) =>
         (within === null || item.categories.some((id) => within.has(id))) &&
-        (!needle || item.title.toLowerCase().includes(needle)) &&
+        (!needle || matches(item, needle)) &&
+        (!source || (item.sourceName ?? NO_SOURCE) === source) &&
         (!view.unread || item.unread > 0) &&
         (!view.downloaded || item.downloaded > 0) &&
         (!view.completed || item.status === 2 || item.status === 4),
@@ -104,7 +118,7 @@
     });
   });
   const chosen = $derived(Object.keys(picked).filter((id) => picked[Number(id)]).map(Number));
-  const filtering = $derived(view.unread || view.downloaded || view.completed);
+  const filtering = $derived(view.unread || view.downloaded || view.completed || !!source);
   const size = $derived(display.value.pages);
   const pages = $derived(size ? Math.max(1, Math.ceil(shown.length / size)) : 1);
   const onPage = $derived(size ? shown.slice(Math.min(page, pages - 1) * size, (Math.min(page, pages - 1) + 1) * size) : shown);
@@ -287,6 +301,15 @@
             <button class="btn pill" aria-pressed={view.unread} onclick={() => setView({ unread: !view.unread })}>Unread</button>
             <button class="btn pill" aria-pressed={view.downloaded} onclick={() => setView({ downloaded: !view.downloaded })}>Downloaded</button>
             <button class="btn pill" aria-pressed={view.completed} onclick={() => setView({ completed: !view.completed })}>Completed</button>
+            {#if sources.length > 1}
+              <label>
+                <span class="sr">Source</span>
+                <select class="btn" value={source} onchange={(e) => setView({ source: e.currentTarget.value })}>
+                  <option value="">All sources</option>
+                  {#each sources as name (name)}<option value={name}>{name}</option>{/each}
+                </select>
+              </label>
+            {/if}
           </div>
         {/if}
 

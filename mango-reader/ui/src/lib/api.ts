@@ -179,6 +179,10 @@ export type LibraryItem = {
   title: string;
   cover: string | null;
   sourceName: string | null;
+  author?: string;
+  artist?: string;
+  /** Comma-separated, as the source lists them. */
+  genre?: string;
   status: number;
   addedAt: number;
   total: number;

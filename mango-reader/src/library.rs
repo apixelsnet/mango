@@ -30,6 +30,13 @@ pub struct LibraryItem {
     pub title: String,
     pub cover: Option<String>,
     pub source_name: Option<String>,
+    /// Who wrote and drew it, and its genres as the source lists them: the library's search looks at these too.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub author: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub artist: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub genre: Option<String>,
     pub status: i64,
     pub added_at: i64,
     pub total: i64,
@@ -135,7 +142,8 @@ pub fn read(conn: &Connection) -> Result<LibraryView> {
                 COALESCE(SUM(c.download_path IS NOT NULL), 0),
                 COALESCE((SELECT MAX(read_at) FROM history WHERE manga_id IN (SELECT m.id UNION ALL SELECT id FROM manga WHERE merged_into = m.id)), 0),
                 COALESCE(MAX(CASE WHEN c.date_upload > 0 THEN c.date_upload / 1000 ELSE c.fetched_at END), 0),
-                (SELECT group_concat(category_id) FROM manga_categories WHERE manga_id = m.id)
+                (SELECT group_concat(category_id) FROM manga_categories WHERE manga_id = m.id),
+                m.author, m.artist, m.genre
          FROM manga m
          {WITH_CHAPTERS}
          LEFT JOIN sources s ON s.id = m.source_id
@@ -156,6 +164,9 @@ pub fn read(conn: &Connection) -> Result<LibraryView> {
                 title: r.get(1)?,
                 cover: cover_url(id, thumbnail.as_deref()),
                 source_name: r.get(3)?,
+                author: r.get::<_, Option<String>>(12)?.filter(|v| !v.is_empty()),
+                artist: r.get::<_, Option<String>>(13)?.filter(|v| !v.is_empty()),
+                genre: r.get::<_, Option<String>>(14)?.filter(|v| !v.is_empty()),
                 status: r.get(4)?,
                 added_at: r.get(5)?,
                 total,

@@ -22,7 +22,7 @@ Find titles on installed sources and open their title page.
 Code: `mango-reader/src/titles.rs`, `images.rs`; UI in `mango-reader/ui/src/routes/` (`Browse`, `Search`, `Source`, `Title`, `Extensions`).
 
 - Every title a source shows is stored, in the library or not, so it has an id, a cached cover and a place for chapters. A title page opens from the database; details and chapters are fetched the first time and on request.
-- Global search asks each source on its own, five at a time, with a 30 s limit each. It covers pinned sources if there are any, else the sources in the languages picked on Browse, and at most 20. It starts from the field at the top of Browse, and its results carry the field for another try. Until 2026-10-13 the field was in the header of every screen, where it stood beside the library's own and was taken for it.
+- Global search asks each source on its own, five at a time, with a 30 s limit each. It covers pinned sources if there are any, else the sources in the languages picked on Browse. Until 2026-11-12 it stopped at 20 sources; see "Global search: pinned or all" below. It starts from the field at the top of Browse, and its results carry the field for another try. Until 2026-10-13 the field was in the header of every screen, where it stood beside the library's own and was taken for it.
 - The source list keeps to English until other languages are picked, or to every language when no source is English. The language pills sit behind a small button in the page head; "All" lifts the limit.
 - Covers and pages go through the host and are kept on disk. Only what is recognisably an image is passed on to the browser.
 - A JPEG cover over 256 KB is decoded at a half, quarter or eighth of its size (no smaller than 600×900) and saved again before it is kept or sent, one at a time; some sources hand out 10 to 20 MB scans. Other formats, progressive JPEGs over 16 MP and covers with an EXIF turn are left as they came.
@@ -100,3 +100,23 @@ Not verified: a library grid in a browser, and a real source's progressive JPEG.
 - A chapter's menu has "Save as a CBZ file": `GET /api/chapters/{id}/file`, the same file OPDS hands out (the downloaded CBZ when there is one, else the pages packed for that one request). KOReader's sync learns the file's marks from it, as it does from OPDS (feature 13).
 
 Checked on Linux and Windows: the file is a CBZ named after title and chapter, and saves from the menu in a browser.
+
+## Global search: pinned or all (2026-11-12)
+
+Code: `routes/Search.svelte`; the address is read in `App.svelte`.
+
+- With a source pinned, the search page has two buttons, Pinned and All. Pinned, the default, searches the pinned sources. All searches every source in the languages picked on Browse (every source when none are picked), and the address carries `&in=all`, so going back and another search keep the choice. Without a pinned source there is nothing to choose, and every source in those languages is searched.
+- The limit of 20 sources is gone. Five sources are still asked at a time with a 30 s limit each, so a long list takes longer but loads the host no harder.
+- The choice applies to moving a title and to adding a source as well, which use the same search.
+- Leaving the page stops the searches still out, and no more sources are asked; coming back asks the ones that had not answered. Until now they ran on unseen.
+
+## Title page: links, summary and Markdown (2026-11-12)
+
+Code: `routes/Title.svelte`, `lib/markdown.ts`; the library's side in `library.rs` and `routes/Library.svelte`.
+
+- **The title searches.** The title's name is a link to a global search for it, to find the same title on other sources. A button beside it copies the name.
+- **Makers and genres search the library.** Each author and artist (a source's list is split at commas) and each genre is a link to the library, searched for it (`#/?q=`). The library's search now looks at the author, the artist and the genres as well as the name; `GET /api/library` carries `author`, `artist` and `genre` for that.
+- **The summary.** A summary over 280 characters still shows its first five lines with More, by default. Settings → Library → Title page → "Show the whole summary" opens it in full on every title (`title.wholeSummary`); More and Less still work on the page.
+- **Markdown.** The description is read as Markdown: headings, bold, italics, struck text, code, links, bare web addresses, lists, quotes and rules. Text without Markdown shows as before, its paragraphs and line breaks kept. The text is escaped first, so no HTML from a source reaches the page, only the tags the renderer makes; links open in a new tab, only to `http`, `https` and `mailto` addresses, and an image becomes a link to it rather than being loaded.
+
+Checked by `svelte-check`, by the renderer run on plain text, every kind of Markdown it reads, and hostile input (script and image tags, a `javascript:` link, a quote breaking out of an address), and in a browser against a Linux build.

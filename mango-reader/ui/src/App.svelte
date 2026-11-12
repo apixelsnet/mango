@@ -261,7 +261,12 @@
         {#await later.stats() then { default: Stats }}<Stats />{/await}
       {:else if area === 'search'}
         {#key route.query.toString()}
-          <Search q={route.query.get('q') ?? ''} from={Number(route.query.get('for')) || null} merge={Number(route.query.get('merge')) || null} />
+          <Search
+            q={route.query.get('q') ?? ''}
+            from={Number(route.query.get('for')) || null}
+            merge={Number(route.query.get('merge')) || null}
+            everywhere={route.query.get('in') === 'all'}
+          />
         {/key}
       {:else if area === 'migrate' && parts[1] === 'many'}
         {#await later.migrateMany() then { default: MigrateMany }}

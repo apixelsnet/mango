@@ -10,7 +10,7 @@
 
 use crate::{
     db::Db,
-    downloads::{clean, escape, extension},
+    downloads::{clean, escape, extension, size_of},
     error::Result,
     export::date,
     images::{sniff, Images},
@@ -86,7 +86,7 @@ pub async fn plan(db: &Db, images: &Images, downloads: &Path) -> Result<Vec<Titl
             continue;
         }
         let file = downloads.join(relative);
-        let Ok(meta) = fs::metadata(&file) else { continue };
+        let Some(bytes) = size_of(&file) else { continue };
         if last != Some(id) {
             last = Some(id);
             // The source's name tells them apart; a number does where it is not known.
@@ -105,7 +105,7 @@ pub async fn plan(db: &Db, images: &Images, downloads: &Path) -> Result<Vec<Titl
             titles.push(Title { folder, info, cover, chapters: Vec::new() });
         }
         if let Some(title) = titles.last_mut() {
-            title.chapters.push((file, meta.len()));
+            title.chapters.push((file, bytes));
         }
     }
     Ok(titles)
@@ -159,10 +159,22 @@ pub fn write(titles: &[Title], out: impl Write) -> io::Result<()> {
             }
         }
         for (path, _) in &title.chapters {
-            // A chapter deleted since the plan was made is left out.
-            let Ok(mut file) = File::open(path) else { continue };
             // Cleaned again: the zip may be opened on a system stricter than this one.
             let name = clean(&path.file_name().map(|name| name.to_string_lossy().into_owned()).unwrap_or_default());
+            // A chapter saved as a folder goes in as one, which the local sources read too.
+            if path.is_dir() {
+                let mut pages: Vec<PathBuf> =
+                    fs::read_dir(path).into_iter().flatten().flatten().map(|entry| entry.path()).filter(|page| page.is_file()).collect();
+                pages.sort();
+                for page in pages {
+                    let Ok(mut file) = File::open(&page) else { continue };
+                    let leaf = clean(&page.file_name().map(|name| name.to_string_lossy().into_owned()).unwrap_or_default());
+                    zip.add_file(&format!("{}/{name}/{leaf}", title.folder), &mut file)?;
+                }
+                continue;
+            }
+            // A chapter deleted since the plan was made is left out.
+            let Ok(mut file) = File::open(path) else { continue };
             zip.add_file(&format!("{}/{name}", title.folder), &mut file)?;
         }
     }
@@ -386,7 +398,13 @@ mod tests {
         fs::write(&cover, [0x89, b'P', b'N', b'G', 1, 2, 3]).unwrap();
         let mut first = title(&dir, "Salt Wind", &[("Chapter 1.cbz", b"one"), ("Chapter 2.cbz", &[7; 300_000])]);
         first.cover = Some(cover);
-        let second = title(&dir, "Ünïcode ✓", &[("Ch 1.cbz", b"")]);
+        let mut second = title(&dir, "Ünïcode ✓", &[("Ch 1.cbz", b"")]);
+        // A chapter saved as a folder of pages.
+        let pages = dir.join("Ch. 2");
+        fs::create_dir_all(&pages).unwrap();
+        fs::write(pages.join("002.png"), b"p2").unwrap();
+        fs::write(pages.join("001.png"), b"p1").unwrap();
+        second.chapters.push((pages, 4));
         let mut out = Vec::new();
         write(&[first, second], &mut out).unwrap();
 
@@ -394,7 +412,7 @@ mod tests {
         let names: Vec<String> = (0..zip.len()).map(|i| zip.by_index(i).unwrap().name().unwrap().into_owned()).collect();
         assert_eq!(
             names,
-            ["Salt Wind/ComicInfo.xml", "Salt Wind/cover.png", "Salt Wind/Chapter 1.cbz", "Salt Wind/Chapter 2.cbz", "Ünïcode ✓/ComicInfo.xml", "Ünïcode ✓/Ch 1.cbz"]
+            ["Salt Wind/ComicInfo.xml", "Salt Wind/cover.png", "Salt Wind/Chapter 1.cbz", "Salt Wind/Chapter 2.cbz", "Ünïcode ✓/ComicInfo.xml", "Ünïcode ✓/Ch 1.cbz", "Ünïcode ✓/Ch. 2/001.png", "Ünïcode ✓/Ch. 2/002.png"]
         );
         let mut read = |name: &str| {
             let mut bytes = Vec::new();
