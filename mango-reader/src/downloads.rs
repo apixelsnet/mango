@@ -316,6 +316,14 @@ impl Downloads {
                 Ok(())
             })
             .await;
+        // Files that got their chapter's id only because something else sat at the plain name
+        // take the plain name back, so nothing has to be fetched again.
+        let dir = self.dir.clone();
+        match self.db.call(move |conn| tidy_names(conn, &dir)).await {
+            Ok(0) => {}
+            Ok(renamed) => tracing::info!("saved chapter files given their plain names back: {renamed}"),
+            Err(e) => tracing::warn!("could not tidy the names of saved chapters: {e}"),
+        }
         loop {
             // Held: nothing is handed out, and the queue stays as it is until the hold goes.
             if held(self.hold.as_deref()) {
@@ -348,7 +356,7 @@ impl Downloads {
         }
         let total = self.images.page_count(job.chapter).await?;
         let folder = self.db.call(|conn| Ok(settings::get::<String>(conn, FORMAT).is_some_and(|format| format == "folder"))).await?;
-        let relative = self.place(job, folder);
+        let relative = self.place(job, folder).await?;
         let file = self.dir.join(&relative);
         // Not `with_extension`: a chapter folder's name can hold a dot of its own.
         let mut part = file.clone().into_os_string();
@@ -361,10 +369,9 @@ impl Downloads {
             remove(&part);
             return outcome.map(|_| None);
         }
-        if folder {
-            // A folder is not renamed over another. One left here can only be this chapter's.
-            remove(&file);
-        }
+        // Whatever is left at this name belongs to no other chapter (see `place`), so it goes.
+        // A folder is not renamed over another, nor a file over a folder.
+        remove(&file);
         fs::rename(&part, &file)?;
         Ok(Some((relative.to_string_lossy().replace('\\', "/"), total)))
     }
@@ -435,7 +442,7 @@ impl Downloads {
     }
 
     /// Where a chapter's file, or its folder when `as_folder`, goes, relative to the downloads folder.
-    fn place(&self, job: &Job, as_folder: bool) -> PathBuf {
+    async fn place(&self, job: &Job, as_folder: bool) -> Result<PathBuf> {
         let folder = Path::new(&clean(&job.source)).join(clean(&job.title));
         let name = match job.scanlator.as_deref().filter(|s| !s.is_empty()) {
             Some(scanlator) => clean(&format!("{} [{scanlator}]", job.name)),
@@ -443,11 +450,14 @@ impl Downloads {
         };
         let end = if as_folder { "" } else { ".cbz" };
         let path = folder.join(format!("{name}{end}"));
-        // Two chapters of one title can share a name; the second gets its id added.
-        if self.dir.join(&path).exists() {
-            return folder.join(format!("{name} ({}){end}", job.chapter));
+        // Two chapters of one title can share a name; the second gets its id added. A file
+        // that only sits there, left by an earlier database or copied back in by a sync, does
+        // not count: the chapter takes the plain name and replaces it.
+        let (key, chapter) = (path.to_string_lossy().replace('\\', "/"), job.chapter);
+        if self.db.call(move |conn| owned_elsewhere(conn, &key, chapter)).await? {
+            return Ok(folder.join(format!("{name} ({chapter}){end}")));
         }
-        path
+        Ok(path)
     }
 }
 
@@ -640,6 +650,49 @@ fn next_job(conn: &Connection) -> Result<Option<Job>> {
     Ok(job)
 }
 
+/// Is `path` some other chapter's saved file? Case is ignored, as Windows and macOS ignore it.
+fn owned_elsewhere(conn: &Connection, path: &str, chapter: i64) -> Result<bool> {
+    let found = conn
+        .query_row("SELECT 1 FROM chapters WHERE download_path = ?1 COLLATE NOCASE AND id != ?2 LIMIT 1", params![path, chapter], |_| Ok(()))
+        .optional()?;
+    Ok(found.is_some())
+}
+
+/// Renames each saved file named `<chapter> (<its id>)` to `<chapter>`, where no other chapter
+/// owns that name. What sits there unowned is replaced. How many were renamed.
+fn tidy_names(conn: &Connection, dir: &Path) -> Result<usize> {
+    let mut stmt = conn.prepare("SELECT id, download_path FROM chapters WHERE download_path LIKE '% (' || id || ')%'")?;
+    let saved = stmt.query_map([], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?)))?.collect::<rusqlite::Result<Vec<_>>>()?;
+    let mut renamed = 0;
+    for (chapter, path) in saved {
+        let (stem, end) = match path.strip_suffix(".cbz") {
+            Some(stem) => (stem, ".cbz"),
+            None => (path.as_str(), ""),
+        };
+        let Some(plain) = stem.strip_suffix(&format!(" ({chapter})")).map(|stem| format!("{stem}{end}")) else {
+            continue;
+        };
+        if !inside(&path) || !inside(&plain) || owned_elsewhere(conn, &plain, chapter)? {
+            continue;
+        }
+        let (from, to) = (dir.join(&path), dir.join(&plain));
+        if fs::symlink_metadata(&from).is_err() {
+            continue;
+        }
+        remove(&to);
+        if let Err(e) = fs::rename(&from, &to) {
+            tracing::warn!("could not rename {path}: {e}");
+            continue;
+        }
+        if let Err(e) = conn.execute("UPDATE chapters SET download_path = ?2 WHERE id = ?1", params![chapter, plain]) {
+            let _ = fs::rename(&to, &from);
+            return Err(e.into());
+        }
+        renamed += 1;
+    }
+    Ok(renamed)
+}
+
 /// Writes down how a fetch ended: saved, put back, or failed with a later try or none.
 fn record(conn: &Connection, chapter: i64, attempts: i64, outcome: Result<Option<(String, i64)>>) -> Result<()> {
     match outcome {
@@ -824,6 +877,46 @@ mod tests {
         assert_eq!(saved_read(&conn).unwrap(), []);
         conn.execute_batch("UPDATE chapters SET download_path = 'S/Alpha/' || id || '.cbz' WHERE id IN (10, 11)").unwrap();
         assert_eq!(saved_read(&conn).unwrap(), [(11, "S/Alpha/11.cbz".to_owned())], "only the read one, not the unread or the unsaved");
+    }
+
+    #[test]
+    fn a_name_is_taken_only_by_another_chapter() {
+        let conn = database();
+        assert!(!owned_elsewhere(&conn, "S/Alpha/Ch 1.cbz", 10).unwrap(), "a file no chapter owns leaves the name plain");
+        conn.execute("UPDATE chapters SET download_path = 'S/Alpha/Ch 1.cbz' WHERE id = 11", []).unwrap();
+        assert!(owned_elsewhere(&conn, "S/Alpha/Ch 1.cbz", 10).unwrap());
+        assert!(owned_elsewhere(&conn, "s/alpha/ch 1.CBZ", 10).unwrap(), "case is ignored");
+        assert!(!owned_elsewhere(&conn, "S/Alpha/Ch 1.cbz", 11).unwrap(), "a chapter does not crowd itself out");
+    }
+
+    #[test]
+    fn names_with_an_id_are_tidied() {
+        let conn = database();
+        let dir = std::env::temp_dir().join(format!("mango-tidy-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(dir.join("S/Alpha/Ch 3 (12)")).unwrap();
+        fs::write(dir.join("S/Alpha/Ch 1 (10).cbz"), b"mine").unwrap();
+        fs::write(dir.join("S/Alpha/Ch 1.cbz"), b"stale").unwrap();
+        fs::write(dir.join("S/Alpha/Ch 2 (11).cbz"), b"second").unwrap();
+        conn.execute_batch(
+            "UPDATE chapters SET download_path = 'S/Alpha/Ch 1 (10).cbz' WHERE id = 10;
+             UPDATE chapters SET download_path = 'S/Alpha/Ch 2 (11).cbz' WHERE id = 11;
+             UPDATE chapters SET download_path = 'S/Alpha/Ch 3 (12)' WHERE id = 12;",
+        )
+        .unwrap();
+        assert_eq!(tidy_names(&conn, &dir).unwrap(), 3);
+        let path = |id: i64| conn.query_row("SELECT download_path FROM chapters WHERE id = ?1", [id], |r| r.get::<_, String>(0)).unwrap();
+        assert_eq!(path(10), "S/Alpha/Ch 1.cbz");
+        assert_eq!(fs::read(dir.join("S/Alpha/Ch 1.cbz")).unwrap(), b"mine", "an unowned file at the plain name is replaced");
+        assert_eq!(path(12), "S/Alpha/Ch 3", "a folder too");
+        assert!(dir.join("S/Alpha/Ch 3").is_dir());
+
+        // A name another chapter owns stays taken.
+        fs::write(dir.join("S/Alpha/Ch 1 (11).cbz"), b"other").unwrap();
+        conn.execute("UPDATE chapters SET download_path = 'S/Alpha/Ch 1 (11).cbz' WHERE id = 11", []).unwrap();
+        assert_eq!(tidy_names(&conn, &dir).unwrap(), 0);
+        assert_eq!(path(11), "S/Alpha/Ch 1 (11).cbz");
+        let _ = fs::remove_dir_all(&dir);
     }
 
     #[test]
