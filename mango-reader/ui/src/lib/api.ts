@@ -146,6 +146,8 @@ export type Title = {
   /** Scanlation groups in the order wanted; with `dedupe` only the preferred upload of a chapter shows. */
   scanlators: string[];
   dedupe: boolean;
+  /** Reading stays with one group, passing over the chapters it has not uploaded. */
+  groupOnly: boolean;
   /** The title this one was merged into, when it was. */
   mergedInto: number | null;
   /** This title and the titles merged into it, in their order. */
@@ -263,6 +265,8 @@ export type ReaderInfo = {
   inLibrary: boolean;
   prev: number | null;
   next: number | null;
+  /** The scanlation group reading follows, empty when uploads name none: handed on to the next chapter opened. */
+  group: string;
   chapters: { id: number; name: string }[];
   /** The pages of this chapter kept with a note. */
   marks: PageMark[];

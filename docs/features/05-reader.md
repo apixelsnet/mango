@@ -42,6 +42,7 @@ Code: `ui/src/lib/reader.ts` (every setting, its limits, the layers), `ui/src/li
 - The reader has a settings sheet, beside the page or under it on a phone. A change goes to this title or to every title of its kind, as chosen there. Each group resets on its own.
 - Layout: a fourth fit (the whole page on screen); two pages side by side, always or on a wide screen, with the cover alone if wanted, and a page wider than tall never paired; strip width and the space between pages.
 - Auto-scroll: pixels a second down a strip, seconds a page otherwise; it pauses under a finger and while the controls are up, and can carry on into the next chapter.
+- A strip scrolls by whole pixels, so on a fast screen auto-scroll would stand still a frame and then jump. The fraction the scroll could not take is made up by shifting the pages with a transform; measured in Chromium, the strip then moves the same amount every frame, within 0.02 px of a steady line. Strip images decode off the main thread.
 - Tap zones: sides, Kindle, L shape or off, and swapped if wanted. How far a tap or Space scrolls. How many pages load ahead.
 - Picture: background, brightness, contrast, saturation, hue, warmth, black and white, invert, and a color wash with a blend mode.
 - On screen: page number, progress bar, the screen kept on, full screen.

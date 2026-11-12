@@ -355,7 +355,7 @@ async fn file(Me(app): Me, Path(id): Path<i64>) -> Result<Response> {
 /// A chapter as a CBZ: the downloaded file when there is one, else its pages fetched
 /// now and packed for this one request. KOReader's sync learns the file by its marks.
 pub(crate) async fn chapter_file(app: &AppState, id: i64) -> Result<Response> {
-    let view = app.titles.reader(id).await?;
+    let view = app.titles.reader(id, None).await?;
     let bytes = match app.images.saved(id).await? {
         Some(saved) => tokio::task::spawn_blocking(move || std::fs::read(saved)).await.map_err(|e| AppError::internal(e.to_string()))??,
         None => {
