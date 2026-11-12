@@ -35,7 +35,7 @@ Updates
 Downloads
 - The queue is a table, so it survives a restart; a chapter that was half fetched starts over. One chapter at a time, two pages at a time, written straight into the CBZ so memory holds two pages at most.
 - A failed chapter waits 30 s, 2 min, 10 min, then 30 min; after five tries it is parked until the owner asks again.
-- Files: `<data>/downloads/<source>/<title>/<chapter>.cbz`, pages `001…` in order plus `ComicInfo.xml`. Names are made safe for Linux, macOS and Windows.
+- Files: `<data>/downloads/<source>/<title>/<chapter>.cbz`, pages `001…` in order plus `ComicInfo.xml`. Names are made safe for Linux, macOS and Windows. A chapter with a scanlator is named `<chapter> [<scanlator>]`. Only when another saved chapter of the title already has that name does the chapter id go on the end (`<chapter> (<id>).cbz`); a file left there that no chapter owns (from an earlier database, or copied back by a sync) is replaced, and the name stays plain. At start, saved files that got their id only because of such a leftover are renamed back to the plain name (and the database with them), so they need not be downloaded again.
 - A downloaded chapter is read from its file and the source is never asked.
 - Per title: download new chapters as updates find them. In Settings: delete a chapter's file once it is read.
 
