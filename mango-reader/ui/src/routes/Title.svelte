@@ -357,6 +357,7 @@
 
   let order = $state<string[]>([]);
   let dedupe = $state(false);
+  let groupOnly = $state(false);
 
   function startGroups() {
     if (!title) return;
@@ -364,6 +365,7 @@
     const named = title.scanlators.filter((g) => groups.includes(g));
     order = [...named, ...groups.filter((g) => !named.includes(g))];
     dedupe = title.dedupe;
+    groupOnly = title.groupOnly;
     panel = 'groups';
   }
 
@@ -376,7 +378,7 @@
 
   function saveGroups() {
     panel = null;
-    change(async () => (title = await send<Title>('PUT', `/manga/${id}/scanlators`, { order, dedupe })));
+    change(async () => (title = await send<Title>('PUT', `/manga/${id}/scanlators`, { order, dedupe, groupOnly })));
   }
 
   // ---------- kept pages and this device ----------
@@ -682,7 +684,8 @@
         {:else if panel === 'groups'}
           <div class="panel editor">
             <strong class="display caps">Scanlation groups</strong>
-            <p class="muted">The groups whose uploads you want first. With one upload per chapter, the others are hidden and reading passes over them.</p>
+            <p class="muted">The groups whose uploads you want first. With one upload per chapter, the others are hidden from the list.</p>
+            <p class="muted">The next chapter comes from the group you are reading. When it has not uploaded one, the group that goes on longest fills in, and reading goes back once yours has the next. Stay with one group to pass over those chapters instead.</p>
             {#if merged}
               <p class="muted">Sources come before groups: {title.members.map((m) => m.sourceName ?? m.title).join(', ')}.</p>
             {/if}
@@ -699,6 +702,9 @@
             </ul>
             <button class="btn" aria-pressed={dedupe} onclick={() => (dedupe = !dedupe)}>
               {#if dedupe}<Icon name="check" size={18} stroke={3} />{/if}One upload per chapter
+            </button>
+            <button class="btn" aria-pressed={groupOnly} onclick={() => (groupOnly = !groupOnly)}>
+              {#if groupOnly}<Icon name="check" size={18} stroke={3} />{/if}Stay with one group
             </button>
             <div class="tools">
               <button class="btn ink" onclick={saveGroups}>Save</button>

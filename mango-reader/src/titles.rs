@@ -15,7 +15,7 @@ use reqwest::Method;
 use rusqlite::{params, types::Value as Sql, Connection, OptionalExtension, Row};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
-use std::{collections::HashMap, sync::Arc};
+use std::{cmp::Reverse, collections::HashMap, sync::Arc};
 
 pub const READER_MODES: [&str; 5] = ["ltr", "rtl", "vertical", "webtoon", "sideways"];
 /// The detail fields that can be edited by hand. An edited one is locked: a refresh from
@@ -226,6 +226,8 @@ pub struct TitleView {
     pub scanlators: Vec<String>,
     /// Only the preferred upload of each chapter shows; the others are marked `duplicate`.
     pub dedupe: bool,
+    /// Reading stays with one group, passing over the chapters it has not uploaded.
+    pub group_only: bool,
     /// The title this one was merged into, when it was.
     pub merged_into: Option<i64>,
     /// This title and the titles merged into it, in their order.
@@ -257,6 +259,9 @@ pub struct ReaderView {
     /// The chapter read before this one, and the one read after it.
     pub prev: Option<i64>,
     pub next: Option<i64>,
+    /// The scanlation group reading follows, empty for uploads that name none. The reader hands
+    /// it on to the chapter it opens next, so reading goes back to it after another group filled in.
+    pub group: String,
     /// The chapters reading goes through, newest first: the uploads the title prefers.
     pub chapters: Vec<ChapterName>,
     /// The pages of this chapter kept with a note.
@@ -464,9 +469,9 @@ impl Titles {
         .await
     }
 
-    /// The order a title's scanlation groups are wanted in, and whether only the preferred
-    /// upload of each chapter shows.
-    pub async fn set_scanlators(&self, id: i64, order: Vec<String>, dedupe: bool) -> Result<()> {
+    /// The order a title's scanlation groups are wanted in, whether only the preferred upload
+    /// of each chapter shows, and whether reading stays with one group (`only`).
+    pub async fn set_scanlators(&self, id: i64, order: Vec<String>, dedupe: bool, only: bool) -> Result<()> {
         let mut groups: Vec<String> = Vec::new();
         for group in order.iter().map(|group| group.trim()).filter(|group| !group.is_empty()) {
             if group.chars().count() > 200 {
@@ -480,7 +485,9 @@ impl Titles {
             return Err(AppError::bad_request(format!("A title keeps an order for {MAX_GROUPS} groups at most")));
         }
         let kept = (!groups.is_empty()).then(|| json!(groups).to_string());
-        self.change(move |conn| Ok(conn.execute("UPDATE manga SET scanlators = ?2, dedupe = ?3 WHERE id = ?1", params![id, kept, dedupe])?))
+        self.change(move |conn| {
+            Ok(conn.execute("UPDATE manga SET scanlators = ?2, dedupe = ?3, group_only = ?4 WHERE id = ?1", params![id, kept, dedupe, only])?)
+        })
             .await
     }
 
@@ -541,8 +548,9 @@ impl Titles {
             .await
     }
 
-    pub async fn reader(&self, chapter: i64) -> Result<ReaderView> {
-        self.db.call(move |conn| read_reader(conn, chapter)).await
+    /// `group` is the scanlation group reading followed from the chapter before, if any.
+    pub async fn reader(&self, chapter: i64, group: Option<String>) -> Result<ReaderView> {
+        self.db.call(move |conn| read_reader(conn, chapter, group)).await
     }
 
     /// Saves where the reader is. `read` set marks the chapter finished or not; left out, it keeps its state.
@@ -1036,7 +1044,7 @@ pub(crate) fn read_title(conn: &Connection, id: i64) -> Result<TitleView> {
         .query_row(
             "SELECT m.id, m.source_id, s.name, s.lang, s.base_url, m.url, m.title, m.artist, m.author, m.description, m.genre,
                     m.status, m.thumbnail_url, m.in_library, m.added_at, m.initialized, m.reader_mode, m.reader_fit,
-                    m.auto_download, m.chapters_at, m.locked, m.scanlators, m.dedupe, m.merged_into, m.web_url
+                    m.auto_download, m.chapters_at, m.locked, m.scanlators, m.dedupe, m.merged_into, m.web_url, m.group_only
              FROM manga m LEFT JOIN sources s ON s.id = m.source_id WHERE m.id = ?1",
             [id],
             |r| {
@@ -1068,6 +1076,7 @@ pub(crate) fn read_title(conn: &Connection, id: i64) -> Result<TitleView> {
                     locked: names(r.get(20)?),
                     scanlators: names(r.get(21)?),
                     dedupe: r.get(22)?,
+                    group_only: r.get(25)?,
                     merged_into: r.get(23)?,
                     members: Vec::new(),
                     chapters: Vec::new(),
@@ -1152,7 +1161,8 @@ fn stored_prefs(prefs: Option<Value>) -> Result<Option<String>> {
 
 /// A chapter as the reader opens it. Everything about how it is read comes from the title
 /// it shows under, which for a chapter of a merged title is the one it was merged into.
-fn read_reader(conn: &Connection, chapter: i64) -> Result<ReaderView> {
+/// `group` is the scanlation group reading followed into it, when the reader hands one on.
+fn read_reader(conn: &Connection, chapter: i64, group: Option<String>) -> Result<ReaderView> {
     let unknown = || AppError::new(404, "unknown_chapter", "No such chapter");
     let owner: i64 = conn.query_row("SELECT manga_id FROM chapters WHERE id = ?1", [chapter], |r| r.get(0)).optional()?.ok_or_else(unknown)?;
     let manga_id = head_of(conn, owner)?;
@@ -1168,17 +1178,76 @@ fn read_reader(conn: &Connection, chapter: i64) -> Result<ReaderView> {
     )?;
     let reader_prefs = prefs.and_then(|text| serde_json::from_str(&text).ok());
 
+    let (order, only): (Option<String>, bool) =
+        conn.query_row("SELECT scanlators, group_only FROM manga WHERE id = ?1", [manga_id], |r| Ok((r.get(0)?, r.get(1)?)))?;
+    let order = names(order);
+
     let listed = listed_chapters(conn, manga_id)?;
     let view = listed.iter().find(|c| c.id == chapter).cloned().ok_or_else(unknown)?;
-    // Reading passes over the uploads the title does not prefer, unless one of them is open.
+    // The group reading follows: the one handed on from the chapter read before, which may have
+    // filled in for it, else the open chapter's own.
+    let group = group.filter(|wanted| listed.iter().any(|c| group_of(c) == wanted)).unwrap_or_else(|| group_of(&view).to_owned());
+    let (next, prev) = (follow(&listed, &view, &group, only, &order, true), follow(&listed, &view, &group, only, &order, false));
+    // The list shows the uploads the title prefers, and the one open.
     let chapters: Vec<ChapterName> =
         listed.into_iter().filter(|c| !c.duplicate || c.id == chapter).map(|c| ChapterName { id: c.id, name: c.name }).collect();
-    // Sources list the newest first, so the next chapter to read is the one listed just above.
-    let at = chapters.iter().position(|c| c.id == chapter).unwrap_or(0);
-    let next = at.checked_sub(1).map(|i| chapters[i].id);
-    let prev = chapters.get(at + 1).map(|c| c.id);
     let marks = page_marks(conn, &format!("p.chapter_id = {chapter}"))?;
-    Ok(ReaderView { chapter: view, manga_id, title, kind, reader_mode, reader_fit, reader_prefs, in_library, prev, next, chapters, marks })
+    Ok(ReaderView { chapter: view, manga_id, title, kind, reader_mode, reader_fit, reader_prefs, in_library, prev, next, group, chapters, marks })
+}
+
+/// The scanlation group of an upload, empty when the source names none.
+fn group_of(chapter: &ChapterView) -> &str {
+    chapter.scanlator.as_deref().map_or("", str::trim)
+}
+
+/// The chapter read after the open one, or before it with `ahead` false, when reading follows
+/// `group`. Which chapter comes next is the list's order, past the open chapter's other uploads.
+/// Of its uploads, `group`'s is read, from the open chapter's source first.
+///
+/// With `only`, a chapter `group` has not uploaded is passed over. Otherwise another group fills
+/// it in: the one that goes on longest through the chapters `group` lacks before it is back, then
+/// the one already being read, the one with most of those chapters, the title's order of groups,
+/// the open chapter's source, the upload the title shows, and the list's order.
+fn follow(listed: &[ChapterView], open: &ChapterView, group: &str, only: bool, order: &[String], ahead: bool) -> Option<i64> {
+    let at = listed.iter().position(|c| c.id == open.id)?;
+    let here = key(open.number, &open.name);
+    // Sources list the newest first, so reading goes up the list.
+    let way: Vec<&ChapterView> = if ahead { listed[..at].iter().rev().collect() } else { listed[at + 1..].iter().collect() };
+    // Each chapter that way, once, in reading order, with every upload of it.
+    let mut chapters: Vec<Vec<&ChapterView>> = Vec::new();
+    let mut seen: HashMap<Key, usize> = HashMap::new();
+    for chapter in way {
+        let one = key(chapter.number, &chapter.name);
+        if one == here {
+            continue;
+        }
+        match seen.get(&one) {
+            Some(&n) => chapters[n].push(chapter),
+            None => {
+                seen.insert(one, chapters.len());
+                chapters.push(vec![chapter]);
+            }
+        }
+    }
+    let ours = |uploads: &[&ChapterView]| uploads.iter().filter(|c| group_of(c) == group).min_by_key(|c| c.manga_id != open.manga_id).map(|c| c.id);
+    if only {
+        return chapters.iter().find_map(|uploads| ours(uploads));
+    }
+    let uploads = chapters.first()?;
+    if let Some(id) = ours(uploads) {
+        return Some(id);
+    }
+    let gap: Vec<&Vec<&ChapterView>> = chapters.iter().take_while(|uploads| ours(uploads).is_none()).collect();
+    let has = |uploads: &[&ChapterView], name: &str| uploads.iter().any(|c| group_of(c) == name);
+    let rank = |c: &&&ChapterView| {
+        let name = group_of(c);
+        let run = gap.iter().take_while(|uploads| has(uploads, name)).count();
+        let across = gap.iter().filter(|uploads| has(uploads, name)).count();
+        let wanted = order.iter().position(|w| w == name).unwrap_or(order.len());
+        let listed_at = listed.iter().position(|other| other.id == c.id);
+        (Reverse(run), name != group_of(open), Reverse(across), wanted, c.manga_id != open.manga_id, c.duplicate, listed_at)
+    };
+    uploads.iter().min_by_key(rank).map(|c| c.id)
 }
 
 /// Stores what a source answered about a title. Returns the ids of chapters that are new,
@@ -1345,18 +1414,90 @@ mod tests {
     }
 
     #[test]
-    fn reader_neighbours() {
+    fn reader_stays_with_the_group() {
+        let mut conn = database();
+        let id = save_listing(&mut conn, 7, &[manga("/a", "Alpha")]).unwrap()[0].id;
+        let up = |url: &str, number: f64, group: &str| -> WireChapter {
+            serde_json::from_value(json!({ "url": url, "name": format!("Chapter {number}"), "scanlator": group })).unwrap()
+        };
+        // Newest first, two groups taking turns, and B without chapter 3.
+        let list = [up("/4a", 4.0, "A"), up("/4b", 4.0, "B"), up("/3a", 3.0, "A"), up("/2a", 2.0, "A"), up("/2b", 2.0, "B"), up("/1b", 1.0, "B"), up("/1a", 1.0, "A")];
+        apply_update(&mut conn, id, &manga("/a", "Alpha"), &list, true, true).unwrap();
+        let by_url = |url: &str| -> i64 { conn.query_row("SELECT id FROM chapters WHERE url = ?1", [url], |r| r.get(0)).unwrap() };
+        let ends = |url: &str, group: Option<&str>| {
+            let reader = read_reader(&conn, by_url(url), group.map(str::to_owned)).unwrap();
+            (reader.prev, reader.next)
+        };
+
+        assert_eq!(ends("/1b", None), (None, Some(by_url("/2b"))), "the next chapter is B's, not A's upload of the same one");
+        assert_eq!(ends("/1a", None), (None, Some(by_url("/2a"))));
+        assert_eq!(ends("/2b", None), (Some(by_url("/1b")), Some(by_url("/3a"))), "B has no chapter 3: A's fills in");
+        assert_eq!(ends("/3a", None), (Some(by_url("/2a")), Some(by_url("/4a"))));
+        assert_eq!(ends("/3a", Some("B")), (Some(by_url("/2b")), Some(by_url("/4b"))), "after filling in, back to the group read before");
+        assert_eq!(ends("/3a", Some("Nobody")).1, Some(by_url("/4a")), "a group the title does not have is not followed");
+        assert_eq!(ends("/4b", None), (Some(by_url("/3a")), None));
+
+        // With one upload per chapter, an upload the title hides is still followed by its own group.
+        conn.execute("UPDATE manga SET dedupe = 1, scanlators = '[\"A\"]' WHERE id = ?1", [id]).unwrap();
+        assert_eq!(ends("/1b", None).1, Some(by_url("/2b")));
+        assert_eq!(ends("/1a", None).1, Some(by_url("/2a")));
+    }
+
+    #[test]
+    fn reader_fills_a_gap_with_the_best_group() {
+        let mut conn = database();
+        let id = save_listing(&mut conn, 7, &[manga("/a", "Alpha")]).unwrap()[0].id;
+        let up = |url: &str, number: f64, group: &str| -> WireChapter {
+            serde_json::from_value(json!({ "url": url, "name": format!("Chapter {number}"), "scanlator": group })).unwrap()
+        };
+        // A has 1-3, then 6 and 7. B has 4 and 5, C only 4 (listed first), D only 5.
+        let list = [
+            up("/7a", 7.0, "A"),
+            up("/6a", 6.0, "A"),
+            up("/5b", 5.0, "B"),
+            up("/5d", 5.0, "D"),
+            up("/4c", 4.0, "C"),
+            up("/4b", 4.0, "B"),
+            up("/3a", 3.0, "A"),
+            up("/2a", 2.0, "A"),
+            up("/1a", 1.0, "A"),
+        ];
+        apply_update(&mut conn, id, &manga("/a", "Alpha"), &list, true, true).unwrap();
+        let by_url = |url: &str| -> i64 { conn.query_row("SELECT id FROM chapters WHERE url = ?1", [url], |r| r.get(0)).unwrap() };
+        let ends = |url: &str, group: Option<&str>| {
+            let reader = read_reader(&conn, by_url(url), group.map(str::to_owned)).unwrap();
+            (reader.prev, reader.next, reader.group)
+        };
+
+        assert_eq!(ends("/3a", None).1, Some(by_url("/4b")), "B goes on through 4 and 5; C stops after 4");
+        assert_eq!(ends("/4b", Some("A")), (Some(by_url("/3a")), Some(by_url("/5b")), "A".into()), "B fills in again, A is still followed");
+        assert_eq!(ends("/5b", Some("A")).1, Some(by_url("/6a")), "and A is back for 6");
+        assert_eq!(ends("/4b", None).1, Some(by_url("/5b")), "opened by itself, B's chapter is followed by B's");
+        assert_eq!(ends("/4c", Some("A")).1, Some(by_url("/5b")), "a tie goes to the list's order");
+        conn.execute("UPDATE manga SET scanlators = '[\"D\"]' WHERE id = ?1", [id]).unwrap();
+        assert_eq!(ends("/4c", Some("A")).1, Some(by_url("/5d")), "then to the title's order of groups");
+
+        // Only the group's own chapters: from 3 straight on to 6, and back.
+        conn.execute("UPDATE manga SET group_only = 1 WHERE id = ?1", [id]).unwrap();
+        assert_eq!(ends("/3a", None), (Some(by_url("/2a")), Some(by_url("/6a")), "A".into()));
+        assert_eq!(ends("/6a", None).0, Some(by_url("/3a")));
+        assert_eq!(ends("/4c", None), (None, None, "C".into()), "C has no other chapter");
+        assert!(read_title(&conn, id).unwrap().group_only);
+    }
+
+    #[test]
+    fn reader_neighbors() {
         let mut conn = database();
         let id = save_listing(&mut conn, 7, &[manga("/a", "Alpha")]).unwrap()[0].id;
         let list = [chapter("/3", "Three", 0), chapter("/2", "Two", 0), chapter("/1", "One", 0)];
         apply_update(&mut conn, id, &manga("/a", "Alpha"), &list, true, true).unwrap();
         let ids: Vec<i64> = read_title(&conn, id).unwrap().chapters.iter().map(|c| c.id).collect();
 
-        let middle = read_reader(&conn, ids[1]).unwrap();
+        let middle = read_reader(&conn, ids[1], None).unwrap();
         assert_eq!((middle.prev, middle.next), (Some(ids[2]), Some(ids[0])), "reading goes from the bottom of the list up");
-        assert_eq!(read_reader(&conn, ids[0]).unwrap().next, None);
-        assert_eq!(read_reader(&conn, ids[2]).unwrap().prev, None);
-        assert!(read_reader(&conn, 999).is_err());
+        assert_eq!(read_reader(&conn, ids[0], None).unwrap().next, None);
+        assert_eq!(read_reader(&conn, ids[2], None).unwrap().prev, None);
+        assert!(read_reader(&conn, 999, None).is_err());
     }
 
     #[test]
@@ -1383,12 +1524,12 @@ mod tests {
         let id = save_listing(&mut conn, 7, &[manga("/a", "Alpha")]).unwrap()[0].id;
         apply_update(&mut conn, id, &manga("/a", "Alpha"), &[chapter("/1", "One", 0)], true, true).unwrap();
         let chapter = read_title(&conn, id).unwrap().chapters[0].id;
-        let plain = read_reader(&conn, chapter).unwrap();
+        let plain = read_reader(&conn, chapter, None).unwrap();
         assert_eq!((plain.kind, plain.reader_prefs), ("manga", None));
 
         let kept = stored_prefs(Some(json!({ "contrast": 120 }))).unwrap();
         conn.execute("UPDATE manga SET genre = 'Action, Webtoon', reader_prefs = ?2 WHERE id = ?1", params![id, kept]).unwrap();
-        let view = read_reader(&conn, chapter).unwrap();
+        let view = read_reader(&conn, chapter, None).unwrap();
         assert_eq!((view.kind, view.reader_prefs), ("manhwa", Some(json!({ "contrast": 120 }))));
 
         assert_eq!(stored_prefs(Some(json!({}))).unwrap(), None, "nothing kept is stored as nothing");
@@ -1407,7 +1548,7 @@ mod tests {
         let title = read_title(&conn, id).unwrap();
         assert_eq!(title.release_days, Some(7));
         assert_eq!(title.chapters.iter().map(|c| c.bookmark).collect::<Vec<_>>(), [false, true, false]);
-        assert!(read_reader(&conn, title.chapters[1].id).unwrap().chapter.bookmark);
+        assert!(read_reader(&conn, title.chapters[1].id, None).unwrap().chapter.bookmark);
         assert_eq!(among(&Some(Vec::new())), None, "no chapter named is no chapter changed");
         assert_eq!(among(&None).as_deref(), Some(""));
     }
@@ -1519,10 +1660,10 @@ mod tests {
         conn.execute("UPDATE manga SET dedupe = 1 WHERE id = ?1", [head]).unwrap();
         assert_eq!(listed(&conn), [(3.0, other, false), (2.0, head, false), (2.0, other, true), (1.0, head, false)]);
         let duplicate = read_title(&conn, head).unwrap().chapters[2].id;
-        let reader = read_reader(&conn, duplicate).unwrap();
+        let reader = read_reader(&conn, duplicate, None).unwrap();
         assert_eq!((reader.manga_id, reader.chapters.len()), (head, 4), "an open duplicate stays in reach");
         let first = read_title(&conn, head).unwrap().chapters[3].id;
-        let reader = read_reader(&conn, first).unwrap();
+        let reader = read_reader(&conn, first, None).unwrap();
         assert_eq!(reader.chapters.len(), 3, "otherwise reading passes over it");
         assert_eq!(reader.next, Some(read_title(&conn, head).unwrap().chapters[1].id));
 
@@ -1572,7 +1713,7 @@ mod tests {
         apply_update(&mut conn, id, &manga("/a", "Alpha"), &[chapter("/1", "One", 0)], true, true).unwrap();
         let chapter = read_title(&conn, id).unwrap().chapters[0].id;
         conn.execute("INSERT INTO page_marks (chapter_id, page, note, created_at) VALUES (?1, 4, 'the map', 10)", [chapter]).unwrap();
-        let marks = read_reader(&conn, chapter).unwrap().marks;
+        let marks = read_reader(&conn, chapter, None).unwrap().marks;
         assert_eq!(marks, [PageMark { chapter_id: chapter, chapter_name: "One".into(), page: 4, note: "the map".into(), created_at: 10 }]);
         assert_eq!(plain_name("Solo Leveling!"), plain_name("solo  leveling"));
     }

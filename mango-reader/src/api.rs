@@ -685,10 +685,13 @@ struct Groups {
     order: Vec<String>,
     #[serde(default)]
     dedupe: bool,
+    /// Reading stays with one group, passing over the chapters it has not uploaded.
+    #[serde(default, rename = "groupOnly")]
+    group_only: bool,
 }
 
 async fn set_scanlators(Me(app): Me, Path(id): Path<i64>, Json(body): Json<Groups>) -> Result<Json<TitleView>> {
-    app.titles.set_scanlators(id, body.order, body.dedupe).await?;
+    app.titles.set_scanlators(id, body.order, body.dedupe, body.group_only).await?;
     Ok(Json(app.titles.get(id).await?))
 }
 
@@ -784,8 +787,14 @@ async fn mark_chapters(Me(app): Me, Path(id): Path<i64>, Json(body): Json<MarkCh
 
 // ---------- reader ----------
 
-async fn reader(Me(app): Me, Path(id): Path<i64>) -> Result<Json<ReaderView>> {
-    Ok(Json(app.titles.reader(id).await?))
+#[derive(Deserialize)]
+struct Along {
+    /// The scanlation group reading followed from the chapter before.
+    group: Option<String>,
+}
+
+async fn reader(Me(app): Me, Path(id): Path<i64>, Query(along): Query<Along>) -> Result<Json<ReaderView>> {
+    Ok(Json(app.titles.reader(id, along.group).await?))
 }
 
 async fn pages(Me(app): Me, Path(id): Path<i64>) -> Result<Json<Value>> {

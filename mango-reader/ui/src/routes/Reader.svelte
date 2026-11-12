@@ -75,6 +75,8 @@
   let wide = $state<Record<number, boolean>>({});
   let stage = $state<HTMLElement>();
   let strip = $state<HTMLElement>();
+  // The pages of a strip, inside it: what auto-scroll shifts by the fraction of a pixel.
+  let run = $state<HTMLElement>();
   let vw = $state(0);
   let vh = $state(0);
   // A wide page split in two: which half is up, the first in reading order or the second.
@@ -236,7 +238,9 @@
     const counting = get<{ count: number }>(`/chapters/${id}/pages`);
     counting.catch(() => {});
     try {
-      info = await get<ReaderInfo>(`/chapters/${id}`);
+      // The scanlation group reading followed into this chapter, handed on by the one before.
+      const along = route.query.has('group') ? `?${new URLSearchParams({ group: route.query.get('group') ?? '' })}` : '';
+      info = await get<ReaderInfo>(`/chapters/${id}${along}`);
       own = owned(info);
       marks = info.marks;
       fetchAhead(info);
@@ -260,6 +264,19 @@
 
   // ---------- moving ----------
 
+  /**
+   * Opens the chapter before or after this one, on its last page with `end`. The scanlation group
+   * reading follows goes with it, so reading goes back to that group after another filled in for it.
+   * A chapter picked from the list is opened without it, and its own group is followed from there.
+   */
+  function turnTo(chapter: number | null | undefined, end = false) {
+    if (!chapter) return;
+    const query = new URLSearchParams(end ? { at: 'end' } : {});
+    if (typeof info?.group === 'string') query.set('group', info.group);
+    const asked = String(query);
+    go(`/read/${chapter}${asked ? `?${asked}` : ''}`, true);
+  }
+
   /** Opens a page, on its first half when it is split, or on its second with `last`. */
   function show(i: number, last = false) {
     index = Math.max(0, Math.min(count - 1, i));
@@ -275,7 +292,7 @@
       half = 1;
       stage?.scrollTo({ top: 0, left: 0 });
     } else if (reached < count - 1) show(reached + 1);
-    else if (info?.next) go(`/read/${info.next}`, true);
+    else if (info?.next) turnTo(info.next);
     else {
       note = 'That was the last chapter.';
       overlay = true;
@@ -287,7 +304,7 @@
       half = 0;
       stage?.scrollTo({ top: 0, left: 0 });
     } else if (shown[0] > 0) show(shown[0] - 1, true);
-    else if (info?.prev) go(`/read/${info.prev}?at=end`, true);
+    else if (info?.prev) turnTo(info.prev, true);
     else note = 'This is the first chapter.';
   }
 
@@ -577,7 +594,7 @@
   function autoEnd() {
     if (p.autoNext && info?.next) {
       carry = true;
-      go(`/read/${info.next}`, true);
+      turnTo(info.next);
     } else {
       auto = false;
       note = info?.next ? '' : 'That was the last chapter.';
@@ -598,26 +615,39 @@
       return () => clearInterval(timer);
     }
     const box = strip;
-    if (!box) return;
+    const layer = run;
+    if (!box || !layer) return;
     const pace = speed;
     // A sideways strip runs across, the long strip down.
     const across = sideways;
     const position = () => (across ? box.scrollLeft : box.scrollTop);
     const move = (to: number) => (across ? (box.scrollLeft = to) : (box.scrollTop = to));
     const atEnd = () => (across ? box.scrollLeft + box.clientWidth >= box.scrollWidth - 2 : box.scrollTop + box.clientHeight >= box.scrollHeight - 2);
+    // A browser scrolls by whole pixels, of the page or of the screen, while a frame on a fast
+    // screen moves the strip by less than one: it would stand still a frame, then jump. What
+    // the scroll could not take is made up by shifting the pages, which moves by any fraction.
+    const shift = (by: number) => (layer.style.transform = across ? `translate3d(${-by}px, 0, 0)` : `translate3d(0, ${-by}px, 0)`);
+    layer.style.willChange = 'transform';
+    shift(0);
     let at = position();
-    let last = performance.now();
+    let last = -1;
     let rested = 0;
     let frame = 0;
     const tick = (now: number) => {
-      const passed = Math.min(now - last, 100) / 1000;
+      const passed = last < 0 ? 0 : Math.min(Math.max(now - last, 0), 100) / 1000;
       last = now;
       frame = requestAnimationFrame(tick);
-      if (held) return;
+      if (held) {
+        shift(0);
+        return;
+      }
       // Scrolled by hand meanwhile: carry on from there.
       if (Math.abs(position() - at) > 2) at = position();
       at += pace * passed;
       move(at);
+      // Short of where it should be, or past it: a browser may round either way.
+      const short = at - position();
+      shift(Math.abs(short) < 1 ? short : 0);
       if (!atEnd()) rested = 0;
       else if ((rested += passed) > 1.5) {
         rested = -Infinity;
@@ -625,7 +655,10 @@
       }
     };
     frame = requestAnimationFrame(tick);
-    return () => cancelAnimationFrame(frame);
+    return () => {
+      cancelAnimationFrame(frame);
+      layer.style.transform = layer.style.willChange = '';
+    };
   });
 
   function toggleAuto() {
@@ -840,10 +873,10 @@
         advance(-1);
         break;
       case 'nextChapter':
-        if (info?.next) go(`/read/${info.next}`, true);
+        turnTo(info?.next);
         break;
       case 'prevChapter':
-        if (info?.prev) go(`/read/${info.prev}`, true);
+        turnTo(info?.prev);
         break;
       case 'menu':
         overlay = !overlay;
@@ -1066,42 +1099,46 @@
       ontouchend={(e) => ((held = e.touches.length > 0), pinchEnd(e))}
       ontouchcancel={(e) => ((held = false), pinchEnd(e))}
     >
-      {#each pages as i (i)}
-        <div
-          class="frame"
-          data-page={i}
-          aria-busy={near[i] && !loaded[i] && !broken[i]}
-          style:aspect-ratio={shapes[i] ?? '2 / 3'}
-          style:width={sideways ? null : `${100 * zoom}%`}
-          style:max-width={sideways ? null : `${p.width * zoom}px`}
-          style:margin-bottom={sideways ? null : `${p.gap}px`}
-          style:margin-right={sideways ? `${p.gap}px` : null}
-        >
-          {#if broken[i]}
-            {@render failure(i)}
-          {:else if near[i]}
-            {#if !waiting[i]}
-              <img
-                src={look(i, 'whole')}
-                alt="Page {i + 1} of {count}"
-                draggable="false"
-                onload={(e) => {
-                  measured(i, e.currentTarget as HTMLImageElement);
-                  drawn(i);
-                }}
-                onerror={() => failed(i)}
-              />
+      <div class="run" bind:this={run}>
+        {#each pages as i (i)}
+          <div
+            class="frame"
+            data-page={i}
+            aria-busy={near[i] && !loaded[i] && !broken[i]}
+            style:aspect-ratio={shapes[i] ?? '2 / 3'}
+            style:width={sideways ? null : `${100 * zoom}%`}
+            style:max-width={sideways ? null : `${p.width * zoom}px`}
+            style:margin-bottom={sideways ? null : `${p.gap}px`}
+            style:margin-right={sideways ? `${p.gap}px` : null}
+          >
+            {#if broken[i]}
+              {@render failure(i)}
+            {:else if near[i]}
+              {#if !waiting[i]}
+                <!-- Decoded off the main thread: a tall page arriving mid-scroll does not stall it. -->
+                <img
+                  src={look(i, 'whole')}
+                  alt="Page {i + 1} of {count}"
+                  draggable="false"
+                  decoding="async"
+                  onload={(e) => {
+                    measured(i, e.currentTarget as HTMLImageElement);
+                    drawn(i);
+                  }}
+                  onerror={() => failed(i)}
+                />
+              {/if}
+              {#if !loaded[i]}{@render loading(i, false)}{/if}
             {/if}
-            {#if !loaded[i]}{@render loading(i, false)}{/if}
+          </div>
+        {/each}
+        <div class="tail">
+          {#if info?.next}
+            <button class="btn big spot" onclick={next}>Next chapter<Icon name="arrow" size={18} stroke={3} /></button>
+          {:else}
+            <strong>That was the last chapter.</strong>
           {/if}
         </div>
-      {/each}
-      <div class="tail">
-        {#if info?.next}
-          <button class="btn big spot" onclick={next}>Next chapter<Icon name="arrow" size={18} stroke={3} /></button>
-        {:else}
-          <strong>That was the last chapter.</strong>
-        {/if}
       </div>
     </div>
   {/if}
@@ -1169,7 +1206,7 @@
     <div class="bar bottom">
       {#if note}<p role="status">{note}</p>{/if}
       <div class="line">
-        <button class="btn icon" aria-label="Previous chapter" disabled={!info.prev} onclick={() => go(`/read/${info?.prev}`, true)}>
+        <button class="btn icon" aria-label="Previous chapter" disabled={!info.prev} onclick={() => turnTo(info?.prev)}>
           <Icon name="first" />
         </button>
         <div class="scrub">
@@ -1202,7 +1239,7 @@
           />
         </div>
         <strong class="count">{reached + 1} / {count}</strong>
-        <button class="btn icon" aria-label="Next chapter" disabled={!info.next} onclick={() => go(`/read/${info?.next}`, true)}>
+        <button class="btn icon" aria-label="Next chapter" disabled={!info.next} onclick={() => turnTo(info?.next)}>
           <Icon name="last" />
         </button>
       </div>
@@ -1460,10 +1497,14 @@
 
   /* The sideways strip: pages side by side at the screen's height, scrolled across. */
   .strip.sideways {
-    display: flex;
-    align-items: stretch;
     overflow-x: auto;
     overflow-y: hidden;
+  }
+
+  .sideways .run {
+    display: flex;
+    align-items: stretch;
+    height: 100%;
   }
 
   .sideways .frame {
