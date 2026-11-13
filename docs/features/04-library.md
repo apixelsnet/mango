@@ -80,10 +80,11 @@ Code: `routes/Library.svelte`, `library.rs`.
 
 ## The library keeps its place (2026-11-13)
 
-Code: `routes/Library.svelte`. Asked for in #47.
+Code: `routes/Library.svelte`, `lib/router.svelte.ts`. Asked for in #47.
 
-- Coming back to the library from a title, with its Back button or the browser's, finds the same category, search and page, and the scroll where it was left. Opening the library from the menu keeps the category, search and page but starts at the top.
+- Coming back to the library from a title, with its Back button or the browser's, finds the same category, search and page, with the title that was opened where it was on screen. Opening the library from the menu keeps the category, search and page but starts at the top.
 - They are held in memory for as long as the page is open, like the library itself; a reload starts again from All. A title page's author, artist and genre links open the library searched for them, in All, on the first page.
-- Before, the category belonged to the screen and went back to All each time it opened, so the scroll the router puts back landed on the whole library instead of the category.
+- The scroll is put back by the card, not in pixels. Cards off screen are not laid out until they come near (`content-visibility` in `lib/TitleCard.svelte`), so on a fresh shelf the rows above are only guessed at and a kept pixel offset landed rows away, further the deeper the scroll: 1,017 px off on a 400-title desktop shelf. The library notes the opened title's place in the list and its card's distance from the top of the screen, and on the way back scrolls until the card is there again, for up to 1.5 s as cards are laid out, ending it on a touch, the wheel or a key. A title that has moved in the list meanwhile (read, under "Last read") gets the router's pixel scroll instead.
+- Before, the category belonged to the screen and went back to All each time it opened.
 
-Checked in Chromium against the mock API, at both viewport sizes: a category picked and a search typed are there again after opening a title and going back.
+Checked with the Playwright MCP against the mock API with a 600-title library in nested categories, scrolled through with the wheel: phone grid, three trips in a row by both Back buttons; desktop grid twice; list layout; 24 a page on page 3. The opened card came back within 1 px each time, with the category and page kept. A reload starts from All; an author link opens All with the search. The e2e suite has a 400-title case that fails without the fix.

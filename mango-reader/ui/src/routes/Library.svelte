@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { untrack } from 'svelte';
   import { offer, tell } from '../lib/undoing.svelte';
   import { get, message, send, type Category, type Library, type LibraryItem } from '../lib/api';
   import Cover from '../lib/Cover.svelte';
@@ -7,7 +8,7 @@
   import { keep, recall } from '../lib/keep';
   import Notice from '../lib/Notice.svelte';
   import { pref, prefs, setPref } from '../lib/prefs.svelte';
-  import { go, route } from '../lib/router.svelte';
+  import { go, ownScroll, route } from '../lib/router.svelte';
   import TitleCard from '../lib/TitleCard.svelte';
   import { startTour, tour } from '../lib/guide.svelte';
 
@@ -55,6 +56,15 @@
   let page = $state(left?.page ?? 0);
 
   $effect(() => keep('library.place', { category, text, page } satisfies Place));
+
+  // The title opened from the shelf: its place in the list and how far down the screen its card
+  // was. Cards off screen are not laid out until they come near (lib/TitleCard.svelte), so on the
+  // way back the rows above are only guessed at and the scroll the router keeps lands rows away.
+  // The card is put back where it was instead, once, and only on the way back.
+  type Spot = { id: number; at: number; top: number };
+  const spot = route.returned ? recall<Spot>('library.spot') : null;
+  keep('library.spot', null);
+  let shelf = $state<HTMLElement>();
 
   // A new account lands here with an empty library: the tour starts by itself, once.
   // An account that has titles already found its way, and is not shown it unasked.
@@ -137,6 +147,47 @@
     if (opened) page = 0;
     opened = true;
   });
+
+  // A title read meanwhile may have moved in the list ("Last read"): then the router's scroll stays.
+  $effect(() => {
+    if (!spot || !shelf || untrack(() => onPage.findIndex((item) => item.id === spot.id)) !== spot.at) return;
+    ownScroll();
+    return putBack(shelf, spot);
+  });
+
+  /** Scrolls until the card is where it was, as the cards around it are laid out; a touch, the wheel or a key stops it. */
+  function putBack(shelf: HTMLElement, spot: Spot) {
+    let frame = 0;
+    let still = 0;
+    const until = performance.now() + 1500;
+    const stop = () => cancelAnimationFrame(frame);
+    const step = () => {
+      const card = shelf.querySelector(`a[href="#/title/${spot.id}"]`);
+      if (!card) return;
+      const off = card.getBoundingClientRect().top - spot.top;
+      if (Math.abs(off) > 1) {
+        scrollBy(0, off);
+        still = 0;
+      } else still++;
+      if (still < 3 && performance.now() < until) frame = requestAnimationFrame(step);
+    };
+    step();
+    const kinds = ['touchstart', 'wheel', 'keydown'];
+    for (const kind of kinds) addEventListener(kind, stop, { passive: true });
+    return () => {
+      stop();
+      for (const kind of kinds) removeEventListener(kind, stop);
+    };
+  }
+
+  /** Notes the title opened from the shelf, for the way back. */
+  function leaving(event: MouseEvent) {
+    if (picking || event.defaultPrevented || event.button !== 0 || event.ctrlKey || event.metaKey || event.shiftKey || event.altKey) return;
+    const link = (event.target as Element).closest('a[href^="#/title/"]');
+    const id = Number(link?.getAttribute('href')?.slice('#/title/'.length));
+    const at = onPage.findIndex((item) => item.id === id);
+    if (link && at >= 0) keep('library.spot', { id, at, top: link.getBoundingClientRect().top } satisfies Spot);
+  }
 
   function turn(to: number) {
     page = Math.max(0, Math.min(pages - 1, to));
@@ -275,7 +326,9 @@
         <a class="btn spot" href="#/browse">Browse</a>
       </Notice>
     {:else}
-      <section class="shelf">
+      <!-- Only notes which title a link opened; the links do the opening. -->
+      <!-- svelte-ignore a11y_click_events_have_key_events, a11y_no_static_element_interactions -->
+      <section class="shelf" bind:this={shelf} onclick={leaving}>
         <div class="section-head">
           <h2 class="display" class:caps={category === null}>{category === null ? 'All titles' : data.categories.find((c) => c.id === category)?.name}</h2>
           <div class="tools">
