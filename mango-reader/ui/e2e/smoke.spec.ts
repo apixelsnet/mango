@@ -30,6 +30,24 @@ test('each screen is named and takes the focus to its heading', async ({ page })
   await expect(page.getByRole('heading', { level: 1, name: 'Test title 1' })).toBeFocused();
 });
 
+test('coming back from a title finds the library as it was left', async ({ page }) => {
+  await page.goto('/#/');
+  const started = page.getByRole('group', { name: 'Category' }).getByRole('button', { name: 'Started' });
+  const search = page.getByRole('searchbox', { name: 'Search the library' });
+  await started.click();
+  await search.fill('title');
+  await expect(page.getByRole('link', { name: 'Test title 1' })).toHaveCount(0);
+
+  await page.getByRole('link', { name: 'Test title 2' }).first().click();
+  await expect(page.getByRole('heading', { level: 1, name: 'Test title 2' })).toBeVisible();
+  await page.goBack();
+
+  await expect(started).toHaveAttribute('aria-pressed', 'true');
+  await expect(search).toHaveValue('title');
+  await expect(page.getByRole('link', { name: 'Test title 3' }).first()).toBeVisible();
+  await expect(page.getByRole('link', { name: 'Test title 1' })).toHaveCount(0);
+});
+
 test('the first Tab reaches Skip to content', async ({ page }) => {
   await page.goto('/#/');
   await expect(page.getByRole('heading', { level: 1, name: 'Library' })).toBeVisible();

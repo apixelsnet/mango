@@ -38,16 +38,23 @@
   let data = $state<Library | null>(kept);
   let loading = $state(!kept);
   let error = $state<string | null>(null);
+  // Where the shelf was left, held for as long as the page lives: coming back from a title
+  // finds the same category, search and page, and the router then puts the scroll back.
+  // A title page's author and genre links open the library searched for them, from the top.
+  type Place = { category: number | null; text: string; page: number };
+  const asked = route.query.get('q');
+  const left = asked === null ? recall<Place>('library.place') : null;
   // null is "All".
-  let category = $state<number | null>(null);
-  // A title page's author and genre links open the library searched for them.
-  let text = $state(route.query.get('q') ?? '');
+  let category = $state<number | null>(left?.category ?? null);
+  let text = $state(asked ?? left?.text ?? '');
   let picking = $state(false);
   let picked = $state<Record<number, boolean>>({});
   let filters = $state(false);
   let sure = $state(false);
   // With the library a page at a time, the page on show, from 0.
-  let page = $state(0);
+  let page = $state(left?.page ?? 0);
+
+  $effect(() => keep('library.place', { category, text, page } satisfies Place));
 
   // A new account lands here with an empty library: the tour starts by itself, once.
   // An account that has titles already found its way, and is not shown it unasked.
@@ -123,10 +130,12 @@
   const pages = $derived(size ? Math.max(1, Math.ceil(shown.length / size)) : 1);
   const onPage = $derived(size ? shown.slice(Math.min(page, pages - 1) * size, (Math.min(page, pages - 1) + 1) * size) : shown);
 
-  // Narrowing the list starts it from its first page.
+  // Narrowing the list starts it from its first page; opening the screen keeps the page it was left on.
+  let opened = false;
   $effect(() => {
     void [category, text, view];
-    page = 0;
+    if (opened) page = 0;
+    opened = true;
   });
 
   function turn(to: number) {

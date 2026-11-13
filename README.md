@@ -441,6 +441,15 @@ hand does the same.
   <img src="https://contrib.rocks/image?repo=apixelsnet/mango" alt="contrib.rocks image" />
 </a>
 
+### Feature requests
+
+People whose requests shaped Mango:
+
+- [folfoa](https://github.com/folfoa): download options, summary expansion,
+  Markdown descriptions and search from a title's page
+  ([#24](https://github.com/apixelsnet/mango/issues/24)); the library keeping its
+  category and place ([#47](https://github.com/apixelsnet/mango/issues/47))
+
 <p align="right">(<a href="#readme-top">back to top</a>)</p>
 
 <!-- SUPPORT -->

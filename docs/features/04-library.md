@@ -77,3 +77,13 @@ Code: `routes/Library.svelte`, `library.rs`.
 
 - The filter row has a source picker when the library's titles come from more than one source: "All sources", or one source by name. Titles whose extension is not installed are listed as "Not installed". The pick is kept with the other filters (`library.view`, as `source`); a source no longer in the library filters nothing.
 - The search finds a title by its name, its author, its artist or a genre. A title page's author, artist and genre links open the library searched for them.
+
+## The library keeps its place (2026-11-13)
+
+Code: `routes/Library.svelte`. Asked for in #47.
+
+- Coming back to the library from a title, with its Back button or the browser's, finds the same category, search and page, and the scroll where it was left. Opening the library from the menu keeps the category, search and page but starts at the top.
+- They are held in memory for as long as the page is open, like the library itself; a reload starts again from All. A title page's author, artist and genre links open the library searched for them, in All, on the first page.
+- Before, the category belonged to the screen and went back to All each time it opened, so the scroll the router puts back landed on the whole library instead of the category.
+
+Checked in Chromium against the mock API, at both viewport sizes: a category picked and a search typed are there again after opening a title and going back.
