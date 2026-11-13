@@ -112,3 +112,33 @@ Implementation: `routes/Reader.svelte`, `lib/Icon.svelte`.
 - **High contrast.** In Windows' contrast themes the spinner's turning part and the progress bar take the system's highlight color.
 
 Checked in Chromium against a mock API: a synthetic two-finger pinch from 90 to 290 px apart zoomed to 322% without turning the page, and the live region said so; dragging the slider showed page 7 above the thumb while page 1 stayed up; the download was named "Test title - Chapter 1 - page 1.svg"; Tab from the sheet's last control came back to its first. Not checked: a real phone's pinch and share sheet, iOS Safari.
+
+## Continuous chapters (2026-11-13)
+
+Implementation: `routes/Reader.svelte` (the run of chapters), `lib/reader.ts` (`chain`, `breaks`), `lib/router.svelte.ts` (`rename`).
+
+- **One reader, many chapters.** Near the end of the last chapter in the reader, the next one is added after it: in a strip its pages follow on below (or across), and in the paged modes turning past the last page shows the next chapter's first page. The reader is not opened again, so nothing reloads and auto-scroll carries straight on.
+- Pages are numbered across the whole run, and chapters are only ever added at the end, so nothing above the page being read moves when one arrives. The page number, slider, progress bar, saved pages and sharing all go by the chapter being read.
+- **The chapter being read** is the one whose page crosses the middle of the screen. The address bar and history follow it without reopening the screen, so a reload or a way back opens that chapter.
+- **Scrollbar safety.** Only one unread chapter is ever waiting ahead. While the mouse holds the strip's scrollbar, and for a moment after a jump of more than a screen and a half, no chapter is added, so the thumb does not change meaning under the pointer. A press counts as on the scrollbar outside the pages or, where the scrollbar is drawn over them and takes no room (Firefox, Safari), within 18 px of the edge it scrolls by. A pointer moving with no button down counts as let go, in case the release was not heard.
+- **Finished chapters.** A chapter is kept as read when its last page is up, as before, or when reading goes on from it into the next chapter, however fast (a throw on a phone may never stop on a short last page). Got to by a jump (the scrollbar held, a single scroll of more than a screen and a half, N, P, the chapter buttons or the chapter list), it keeps only the page it was on.
+- **Settings › Reader › Turning:** *Continuous chapters* (on by default) and *Mark where a chapter ends* (a line naming the chapter finished and the one starting). With continuous chapters off, the reader stops at the end of a chapter as before. With *Carry on into the next chapter* off, auto-scroll stops when the next chapter comes up.
+- Going back past the first chapter in the reader opens the previous one as before. If the next chapter does not load, the strip's end says why and offers Try again and the Next chapter button; if it is still on its way after four seconds in sight, it offers to open it on its own. A chapter reached by reading on starts at its first page, even if it was begun before.
+
+Checked with Playwright on a desktop window and an emulated phone, three runs in a row, against the mock API (`e2e/chapters.spec.ts`, `e2e/scrollbar.spec.ts`, `e2e/smoke.spec.ts`; the mock has a twelve-chapter manhwa run, one chapter of five pages):
+- a strip read through all twelve chapters in one reader: eleven chapter lines, every chapter written as read once and in order, fewer than 20 pictures in the document, no long task over 250 ms;
+- a throw across the end of a chapter still finishes it; a strip dragged through a last page to the middle of the next chapter keeps the page and not the finish, and reading on from it later finishes it;
+- the real scrollbar pressed (Chromium with scrollbars shown) holds the next chapter back while the strip is scrolled to its end, and one comes on letting go;
+- auto-scroll runs on into the next chapter, and stops as it comes up with *Carry on* off; paged auto-turning carries on in place;
+- right to left, left to right, vertical and the sideways strip all cross chapters in place and back; two pages side by side leave a chapter's odd last page alone;
+- a next chapter that fails to load says why, and comes on Try again;
+- in a later chapter the slider, page count and saved pages go by that chapter; N, P and the chapter list move in place; a reload and Back open the chapter reached; with the setting off, the strip ends on the Next chapter button.
+
+Checked against a real build of this branch (Linux, local source, a three-chapter manhwa of PNG pages): the strip read through all three with each chapter kept as read on the server, and a reload opened the chapter reached; pages turned across chapters in place with two side by side kept apart; N did not finish the chapter left and a saved page landed on its own chapter; the scrollbar press held the next chapter back. The server logged no warning.
+
+In visible browser windows (2026-11-13):
+- Chrome 157, the real build: the scrollbar thumb dragged top to bottom by the system's own mouse scrolled the strip to the end of chapter 1 with no chapter added while held; chapter 2 came 0.46 s after letting go and the place did not move. The real mouse wheel then scrolled on into chapter 2: the address and title changed in place and chapter 1 was kept as read.
+- Firefox (Playwright's build), the mock: its overlay scrollbar dragged by the system's mouse first showed chapter 2 added in the middle of the drag (the press lands inside the pages there); the edge rule above was added, and the same drag then added nothing until let go, and chapter 2 came 0.41 s after.
+- Firefox and WebKit ran `chapters.spec.ts` headed: all pass. WebKit's Windows build draws no scrollbar, so a real drag there does not scroll.
+
+Not checked: a real phone; Safari itself (macOS); an online source. One Firefox run of the auto-scroll test stalled while its window was covered (animation frames are slowed in a hidden window); it passed three times alone.

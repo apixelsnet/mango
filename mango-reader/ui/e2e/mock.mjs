@@ -5,11 +5,18 @@
 // Pages of a chapter: page 3 (index 2) always fails with the source's message, page 7
 // (index 6) fails twice and then loads, the rest are pictures drawn here.
 // Every change the UI sends is kept: GET /__writes lists them, POST /__reset forgets them.
+//
+// Chapters 21 to 32 are a manhwa read one after another (continuous chapters): six pages each,
+// but chapter 22 has five, so two pages side by side meet a chapter's end alone. Every page loads.
+// POST /__fail with {chapter} makes that chapter's page count fail until the next reset.
 
 import http from 'node:http';
 
 const PORT = 8787;
 const PAGES = 10;
+const inRun = (id) => id >= 21 && id <= 32;
+const runPages = (id) => (id === 22 ? 5 : 6);
+let failing = new Set();
 let writes = [];
 let hits = {};
 
@@ -82,6 +89,23 @@ const svg = (i) =>
   `<rect x="20" y="20" width="760" height="1160" fill="none" stroke="#111" stroke-width="8"/>` +
   `<text x="400" y="640" font-size="160" text-anchor="middle" font-family="sans-serif">${i + 1}</text></svg>`;
 
+/** A chapter of the manhwa run, as the reader is told of it. */
+const runInfo = (id) => ({
+  chapter: { ...chapter(id, id - 20), mangaId: 9 },
+  mangaId: 9,
+  title: 'Test manhwa',
+  kind: 'manhwa',
+  readerMode: null,
+  readerFit: null,
+  readerPrefs: null,
+  inLibrary: true,
+  prev: id > 21 ? id - 1 : null,
+  next: id < 32 ? id + 1 : null,
+  group: '',
+  chapters: Array.from({ length: 12 }, (_, k) => 32 - k).map((n) => ({ id: n, name: `Chapter ${n - 20}` })),
+  marks: [],
+});
+
 const json = (res, status, body) => {
   res.writeHead(status, { 'Content-Type': 'application/json' });
   res.end(JSON.stringify(body));
@@ -106,7 +130,7 @@ const GETS = [
   [/^\/api\/manga\/\d+\/(marks|namesakes)$/, () => []],
   [
     /^\/api\/chapters\/(\d+)$/,
-    (m) => ({
+    (m) => (inRun(Number(m[1])) ? runInfo(Number(m[1])) : {
       chapter: chapter(Number(m[1])),
       mangaId: 1,
       title: 'Test title 1',
@@ -122,7 +146,7 @@ const GETS = [
       marks: [],
     }),
   ],
-  [/^\/api\/chapters\/\d+\/pages$/, () => ({ count: PAGES })],
+  [/^\/api\/chapters\/(\d+)\/pages$/, (m) => ({ count: inRun(Number(m[1])) ? runPages(Number(m[1])) : PAGES })],
 ];
 
 http
@@ -134,6 +158,7 @@ http
     if (path === '/__reset') {
       writes = [];
       hits = {};
+      failing = new Set();
       return json(res, 200, { ok: true });
     }
 
@@ -141,6 +166,10 @@ http
       let body = '';
       req.on('data', (part) => (body += part));
       req.on('end', () => {
+        if (path === '/__fail') {
+          failing.add(JSON.parse(body).chapter);
+          return json(res, 200, { ok: true });
+        }
         writes.push({ method: req.method, path, body: body ? JSON.parse(body) : null });
         json(res, 200, { ok: true });
       });
@@ -152,11 +181,18 @@ http
       const i = Number(page[2]);
       const key = `${page[1]}:${i}`;
       hits[key] = (hits[key] ?? 0) + 1;
+      if (inRun(Number(page[1]))) {
+        res.writeHead(200, { 'Content-Type': 'image/svg+xml', 'Cache-Control': 'no-store' });
+        return res.end(svg(i));
+      }
       if (i === 2) return json(res, 502, { error: { code: 'source', message: 'The source answered 503 Service Unavailable.' } });
       if (i === 6 && hits[key] <= 2) return json(res, 500, { error: { code: 'source', message: 'Flaky.' } });
       res.writeHead(200, { 'Content-Type': 'image/svg+xml', 'Cache-Control': 'no-store' });
       return res.end(svg(i));
     }
+
+    const counting = path.match(/^\/api\/chapters\/(\d+)\/pages$/);
+    if (counting && failing.has(Number(counting[1]))) return json(res, 502, { error: { code: 'source', message: 'The source answered 503 Service Unavailable.' } });
 
     for (const [pattern, answer] of GETS) {
       const m = path.match(pattern);

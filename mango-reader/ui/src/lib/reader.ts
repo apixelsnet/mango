@@ -39,6 +39,10 @@ export type Prefs = {
   autoSpeed: number;
   autoSeconds: number;
   autoNext: boolean;
+  /** The next chapter follows on in the same reader, with no stop at the end of this one. */
+  chain: boolean;
+  /** Where one chapter ends and the next begins is marked between them. */
+  breaks: boolean;
   ground: 'black' | 'gray' | 'white' | 'theme';
   brightness: number;
   contrast: number;
@@ -86,6 +90,8 @@ const BASE: Prefs = {
   autoSpeed: 80,
   autoSeconds: 8,
   autoNext: true,
+  chain: true,
+  breaks: true,
   ground: 'black',
   brightness: 100,
   contrast: 100,
@@ -197,6 +203,13 @@ export const GROUPS: { title: string; fields: Field[] }[] = [
       { key: 'flip', label: 'Swap forward and back', type: 'switch', when: (p) => p.zones !== 'off' },
       { key: 'step', label: 'A tap or Space scrolls', hint: 'How much of the screen, where a page is taller than it.', type: 'range', min: 25, max: 100, step: 5, unit: '%' },
       { key: 'ahead', label: 'Pages loaded ahead', type: 'range', min: 1, max: 10, step: 1, unit: '', when: paged },
+      {
+        key: 'chain',
+        label: 'Continuous chapters',
+        hint: 'The next chapter follows on in the same strip or page turn, with no stop and no button at the end of this one.',
+        type: 'switch',
+      },
+      { key: 'breaks', label: 'Mark where a chapter ends', hint: 'A line between two chapters names the one finished and the one starting.', type: 'switch', when: (p) => p.chain },
     ],
   },
   {
