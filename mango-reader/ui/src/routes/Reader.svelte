@@ -33,15 +33,35 @@
     type Prefs,
   } from '../lib/reader';
   import { pref, prefs, setPref } from '../lib/prefs.svelte';
-  import { go, route, up } from '../lib/router.svelte';
+  import { go, rename, route, up } from '../lib/router.svelte';
   import Zones from '../lib/Zones.svelte';
 
-  let { id }: { id: number } = $props();
+  // The chapter the reader was opened on. The one being read is `id`, below.
+  let { id: first }: { id: number } = $props();
 
-  let info = $state<ReaderInfo | null>(null);
-  $effect(() => name(info && `${info.chapter.name} · ${info.title}`));
-  let count = $state(0);
+  /**
+   * The chapters in this reader, one after another: the one it was opened on, then each next
+   * one as reading nears the end of the last. Pages are known by their place in the whole run,
+   * so a page keeps its number, and everything kept by it, when a chapter is added after it.
+   * Chapters are only ever added at the end: nothing above the page being read moves.
+   * `along` is the scanlation group the chapter was asked for with.
+   */
+  type Link = { id: number; info: ReaderInfo; count: number; start: number; along: string | null };
+  let chain = $state<Link[]>([]);
+  // The chapter's details before its pages are counted, and so before it is in the chain.
+  let opened = $state<ReaderInfo | null>(null);
+  // Every page of the run, and the page being read in it.
+  const total = $derived(chain.length ? chain[chain.length - 1].start + chain[chain.length - 1].count : 0);
   let index = $state(0);
+  /** The chapter a page of the run belongs to. */
+  function linkOf(i: number): Link | undefined {
+    for (let k = chain.length - 1; k >= 0; k--) if (i >= chain[k].start) return chain[k];
+    return chain[0];
+  }
+  /** A page's number in its own chapter, from 1. */
+  const num = (i: number) => i - (linkOf(i)?.start ?? 0) + 1;
+  /** How a page is named to a screen reader: by its chapter's pages. */
+  const pageName = (i: number) => `Page ${num(i)} of ${linkOf(i)?.count ?? 0}`;
   let ready = $state(false);
   let zoom = $state(1);
   let overlay = $state(false);
@@ -93,7 +113,8 @@
 
   let own = $state<Own>({});
   let scope = $state<'title' | 'kind'>('title');
-  const kind = $derived<Kind>(own.kind ?? info?.kind ?? 'manga');
+  // Every chapter of the run is of the same title, so the one opened on tells its kind.
+  const kind = $derived<Kind>(own.kind ?? opened?.kind ?? 'manga');
   const p = $derived<Prefs>(resolve(kind, own));
   // Page size and turning are kept by kind of device, unless Settings keeps one for all.
   const device = $derived(byDevice() ? DEVICES.find(([each]) => each === thisDevice())?.[1] : undefined);
@@ -115,24 +136,37 @@
   const paged = $derived(mode !== 'webtoon' && mode !== 'sideways');
   const sideways = $derived(mode === 'sideways');
   const keys = $derived(keymap());
-  const pages = $derived(Array.from({ length: count }, (_, i) => i));
+  const pages = $derived(Array.from({ length: total }, (_, i) => i));
+  /** The pages of one chapter of the run. */
+  const pagesOf = (link: Link) => Array.from({ length: link.count }, (_, k) => link.start + k);
   const two = $derived((mode === 'rtl' || mode === 'ltr') && (p.spread === 'on' || (p.spread === 'auto' && vw > vh * 1.2)));
-  /** With two pages up: which pages share the screen, in reading order. */
+  /** With two pages up: which pages share the screen, in reading order. Two chapters never share it. */
   const leaves = $derived.by(() => {
     if (!two) return null;
     const out: number[][] = [];
-    let i = 0;
-    if (p.offset && count) out.push([i++]);
-    while (i < count) {
-      if (wide[i] || wide[i + 1] || i + 1 >= count) out.push([i++]);
-      else out.push([i++, i++]);
+    for (const link of chain) {
+      const end = link.start + link.count;
+      let i = link.start;
+      if (p.offset && link.count) out.push([i++]);
+      while (i < end) {
+        if (wide[i] || wide[i + 1] || i + 1 >= end) out.push([i++]);
+        else out.push([i++, i++]);
+      }
     }
     return out;
   });
   const shown = $derived(leaves?.find((leaf) => leaf.includes(index)) ?? [index]);
   /** The last page on screen: how far the reading got. */
   const reached = $derived(shown[shown.length - 1]);
-  const marked = $derived(marks.find((mark) => mark.page === reached) ?? null);
+  // The chapter being read, and what is known of it: the bar, the title, the slider all go by it.
+  const link = $derived(chain.length ? linkOf(reached) : undefined);
+  const info = $derived(link?.info ?? opened);
+  const id = $derived(link?.id ?? first);
+  $effect(() => name(info && `${info.chapter.name} · ${info.title}`));
+  /** The pages of the chapter being read, and where they start in the run. */
+  const count = $derived(link?.count ?? 0);
+  const start = $derived(link?.start ?? 0);
+  const marked = $derived(marks.find((mark) => mark.chapterId === id && mark.page === reached - start) ?? null);
 
   /** Whether a page is read as its two halves. Only one page at a time is split, and only a wide one. */
   const splitting = (i: number) => paged && p.split && !two && !!wide[i];
@@ -151,7 +185,7 @@
     if (!ready || !(p.crop || p.split)) return;
     const wanted: [number, Part][] = [];
     if (paged) {
-      for (const i of [...shown, reached + 1]) if (i >= 0 && i < count) wanted.push([i, partOf(i)]);
+      for (const i of [...shown, reached + 1]) if (i >= 0 && i < total) wanted.push([i, partOf(i)]);
       // The other half too, so turning to it is quick.
       if (splitting(index)) wanted.push([index, half === 0 ? 'second' : 'first']);
     } else {
@@ -160,7 +194,8 @@
     untrack(() => wanted.forEach(([i, part]) => prepare(i, part)));
   });
 
-  const src = (i: number, chapter = id) => `api/chapters/${chapter}/pages/${i}${tries[i] ? `?try=${tries[i]}` : ''}`;
+  /** Where a page of the run is fetched from: its own chapter, by its number there. */
+  const src = (i: number) => `api/chapters/${linkOf(i)?.id ?? first}/pages/${num(i) - 1}${tries[i] ? `?try=${tries[i]}` : ''}`;
   const clamp = (z: number) => Math.min(4, Math.max(0.5, z));
   const between = (value: number, low: number, high: number) => Math.min(high, Math.max(low, value));
 
@@ -215,49 +250,201 @@
   // ---------- opening ----------
 
   /** Called when the page count is known. The first call picks the page to open on. */
-  function open(total: number) {
-    count = total;
-    if (ready || !info) return;
-    const chapter = info.chapter;
+  function open(pages: number) {
+    if (!opened) return;
+    // Counted again by the source: only the chapter opened on is in the chain then.
+    if (chain.length) {
+      if (chain.length === 1) chain[0].count = pages;
+      return;
+    }
+    const along = route.query.has('group') ? (route.query.get('group') ?? '') : null;
+    chain.push({ id: first, info: opened, count: pages, start: 0, along });
+    const chapter = opened.chapter;
     // A kept page is opened by its number; otherwise where the reading got to.
     const asked = Number(route.query.get('page'));
     index = route.query.get('at') === 'end'
-      ? total - 1
+      ? pages - 1
       : route.query.has('page') && Number.isInteger(asked)
-        ? between(asked, 0, total - 1)
+        ? between(asked, 0, pages - 1)
         : chapter.read
           ? 0
-          : Math.min(Math.max(chapter.lastPageRead, 0), total - 1);
-    saved = index;
+          : Math.min(Math.max(chapter.lastPageRead, 0), pages - 1);
+    saved.set(first, `${index}:${index >= pages - 1}`);
     ready = true;
   }
+
+  // Whether the chapter opened on has its pages counted by the source too: until then no next one is added.
+  let counted = $state(false);
 
   async function load() {
     // Both at once. A chapter opened before already knows its page count, and then
     // the first page shows without waiting for the source.
-    const counting = get<{ count: number }>(`/chapters/${id}/pages`);
+    const counting = get<{ count: number }>(`/chapters/${first}/pages`);
     counting.catch(() => {});
     try {
       // The scanlation group reading followed into this chapter, handed on by the one before.
       const along = route.query.has('group') ? `?${new URLSearchParams({ group: route.query.get('group') ?? '' })}` : '';
-      info = await get<ReaderInfo>(`/chapters/${id}${along}`);
-      own = owned(info);
-      marks = info.marks;
-      fetchAhead(info);
-      if (info.chapter.pageCount) open(info.chapter.pageCount);
+      const got = await get<ReaderInfo>(`/chapters/${first}${along}`);
+      opened = got;
+      own = owned(got);
+      marks = got.marks;
+      fetchAhead(got);
+      if (got.chapter.pageCount) open(got.chapter.pageCount);
       open((await counting).count);
+      counted = true;
     } catch (e) {
       if (!ready) error = message(e);
+      // Open on the count kept from before: the next chapter can still be added after it.
+      else counted = true;
     }
   }
   load();
+
+  // ---------- the next chapter, in the same reader ----------
+
+  // The next chapter being fetched, and why the last try did not bring it.
+  let extending: Promise<boolean> | null = null;
+  let stalled = $state('');
+  // The chapter after the last one of the run.
+  const beyond = $derived(chain[chain.length - 1]?.info.next ?? null);
+  // The end of the strip has been in sight a while with the next chapter still on its way.
+  let waited = $state(false);
+  $effect(() => {
+    waited = false;
+    const last = chain[chain.length - 1];
+    if (!ready || !last || !beyond || !near[last.start + last.count - 1]) return;
+    const timer = setTimeout(() => (waited = true), 4000);
+    return () => clearTimeout(timer);
+  });
+  // A scrollbar held by the mouse, or a strip just thrown far by one: a chapter added then would
+  // change what the thumb stands for under the pointer, so it waits until the strip is let go.
+  let gripping = $state(false);
+  let jumpedAt = 0;
+  /** How long after a jump the strip counts as still moving by it. */
+  const JUMP_MS = 400;
+  let settling = $state(0);
+
+  /** Adds the chapter after the last one to the run. Gives whether it is there. */
+  function extend(): Promise<boolean> {
+    const last = chain[chain.length - 1];
+    const next = last?.info.next;
+    if (!last || !next) return Promise.resolve(false);
+    if (chain.some((each) => each.id === next)) return Promise.resolve(true);
+    if (extending) return extending;
+    const group = last.info.group;
+    extending = (async () => {
+      try {
+        const query = typeof group === 'string' ? `?${new URLSearchParams({ group })}` : '';
+        const [got, pages] = await Promise.all([get<ReaderInfo>(`/chapters/${next}${query}`), get<{ count: number }>(`/chapters/${next}/pages`)]);
+        if (pages.count < 1) throw new Error('The next chapter has no pages.');
+        const end = chain[chain.length - 1];
+        if (end.info.next !== next) return false;
+        chain.push({ id: next, info: got, count: pages.count, start: end.start + end.count, along: typeof group === 'string' ? group : null });
+        marks = [...marks, ...got.marks];
+        fetchAhead(got);
+        stalled = '';
+        return true;
+      } catch (e) {
+        stalled = message(e);
+        return false;
+      } finally {
+        extending = null;
+      }
+    })();
+    return extending;
+  }
+
+  // Near the end of the last chapter of the run, the next one is added: only while reading the last
+  // one, so never more than one chapter waits unread ahead, and a strip dragged to its end adds one
+  // chapter, not one after another.
+  $effect(() => {
+    if (!ready || !counted || !p.chain || stalled || gripping) return;
+    void settling;
+    const last = chain[chain.length - 1];
+    if (!last?.info.next || link?.id !== last.id) return;
+    const end = last.start + last.count;
+    if (reached < end - Math.max(4, p.ahead + 1) && !near[end - 1]) return;
+    const wait = jumpedAt + JUMP_MS - Date.now();
+    if (wait > 0) {
+      const timer = setTimeout(() => settling++, wait);
+      return () => clearTimeout(timer);
+    }
+    untrack(() => extend());
+  });
+
+  /** Watches the strip being scrolled: a single step longer than a screen and a half is a jump, by a scrollbar or a key. */
+  let lastTop = 0;
+  function scrolled() {
+    const box = strip;
+    if (!box) return;
+    const at = sideways ? box.scrollLeft : box.scrollTop;
+    const view = sideways ? box.clientWidth : box.clientHeight;
+    if (Math.abs(at - lastTop) > view * 1.5) {
+      jumpedAt = Date.now();
+      settling++;
+    }
+    lastTop = at;
+  }
+
+  /** How near the scrolling edge a press counts as on the scrollbar, where it is drawn over the pages. */
+  const BAR_EDGE = 18;
+
+  /**
+   * A mouse pressed on the strip's scrollbar: outside its client box, or, where the scrollbar is
+   * drawn over the pages and takes no room (Firefox and Safari), along the edge it scrolls by.
+   */
+  function grip(event: PointerEvent) {
+    const box = strip;
+    if (event.pointerType !== 'mouse' || !box) return;
+    const rect = box.getBoundingClientRect();
+    const [x, y] = [event.clientX - rect.left, event.clientY - rect.top];
+    const edge = sideways ? y >= box.clientHeight - BAR_EDGE : x >= box.clientWidth - BAR_EDGE;
+    if (x >= box.clientWidth || y >= box.clientHeight || edge) gripping = true;
+  }
+
+  /** A pointer moving with no button down: whatever held the strip has let go, even if its release was never seen. */
+  function moved(event: PointerEvent) {
+    if (gripping && event.buttons === 0) letGo();
+  }
+
+  function letGo() {
+    if (!gripping) return;
+    gripping = false;
+    jumpedAt = Date.now();
+    settling++;
+  }
+
+  // The chapter being read is the one in the address bar and the history, so a reload or a way
+  // back comes here. A chapter left for the next is kept as finished only when its last page was
+  // the one up, see `save`.
+  let entered = new Set<number>();
+  // The chapter last put in the address bar; none yet means the one opened on.
+  let named: number | null = null;
+  $effect(() => {
+    if (!ready || !link || link.id === (named ?? first)) return;
+    const now = link;
+    named = now.id;
+    untrack(() => {
+      const query = now.along === null ? '' : `?${new URLSearchParams({ group: now.along })}`;
+      rename(`/read/${now.id}${query}`);
+      if (now.id !== first && !entered.has(now.id)) {
+        entered.add(now.id);
+        say(now.info.chapter.name);
+        // Auto-scroll told not to carry on stops as the next chapter comes up.
+        if (auto && !p.autoNext) {
+          auto = false;
+          note = '';
+        }
+      }
+    });
+  });
 
   /** Queues the next few chapters for download, as many as Settings asks, for a title in the library. */
   function fetchAhead(info: ReaderInfo) {
     const ahead = pref<number>('reader.downloadAhead', 0);
     if (!ahead || !info.inLibrary || incognito) return;
     // Newest first, so the chapters after this one are those listed above it.
-    const at = info.chapters.findIndex((chapter) => chapter.id === id);
+    const at = info.chapters.findIndex((chapter) => chapter.id === info.chapter.id);
     const next = info.chapters.slice(Math.max(0, at - ahead), Math.max(0, at)).map((chapter) => chapter.id);
     if (next.length) send('POST', '/downloads', { chapters: next }).catch(() => {});
   }
@@ -279,7 +466,7 @@
 
   /** Opens a page, on its first half when it is split, or on its second with `last`. */
   function show(i: number, last = false) {
-    index = Math.max(0, Math.min(count - 1, i));
+    index = Math.max(0, Math.min(total - 1, i));
     half = last && splitting(index) ? 1 : 0;
     zoom = 1;
     note = '';
@@ -287,12 +474,43 @@
     else strip?.querySelector(`[data-page="${index}"]`)?.scrollIntoView({ block: 'start', inline: 'start' });
   }
 
+  /**
+   * Opens a chapter by its id: in place when it is in the run already, or when it is the next one
+   * and continuous chapters are on; otherwise as before, by opening the reader on it.
+   */
+  function reach(chapter: number | null | undefined, end = false) {
+    if (!chapter) return;
+    const there = chain.find((each) => each.id === chapter);
+    if (there) show(end ? there.start + there.count - 1 : there.start, end);
+    else if (p.chain && chapter === chain[chain.length - 1]?.info.next) {
+      const from = reached;
+      extend().then((ok) => {
+        if (!ok) turnTo(chapter, end);
+        else if (reached === from) reach(chapter, end);
+      });
+    } else turnTo(chapter, end);
+  }
+
+  /** A chapter asked for by a key or a button: a jump, so the chapter left is not kept as finished. */
+  function jump(chapter: number | null | undefined, end = false) {
+    jumpedAt = Date.now();
+    reach(chapter, end);
+  }
+
+  /** A chapter picked from the list: shown in place when it is in the run, else opened on its own, without the group followed. */
+  function pick(chapter: number) {
+    const there = chain.find((each) => each.id === chapter);
+    jumpedAt = Date.now();
+    if (there) show(there.start);
+    else go(`/read/${chapter}`, true);
+  }
+
   function next() {
     if (splitting(index) && half === 0) {
       half = 1;
       stage?.scrollTo({ top: 0, left: 0 });
-    } else if (reached < count - 1) show(reached + 1);
-    else if (info?.next) turnTo(info.next);
+    } else if (reached < total - 1) show(reached + 1);
+    else if (info?.next) reach(info.next);
     else {
       note = 'That was the last chapter.';
       overlay = true;
@@ -329,17 +547,19 @@
 
   /** Keeps the page that is up with the note written, or lets it go with null. */
   async function keepPage(text: string | null) {
-    const page = reached;
+    // A page by its number in its own chapter.
+    const [chapter, page, name] = [id, reached - start, info?.chapter.name ?? ''];
+    const other = (mark: PageMark) => mark.chapterId !== chapter || mark.page !== page;
     noting = null;
     try {
       if (text === null) {
-        await send('DELETE', `/chapters/${id}/marks/${page}`);
-        marks = marks.filter((mark) => mark.page !== page);
+        await send('DELETE', `/chapters/${chapter}/marks/${page}`);
+        marks = marks.filter(other);
         say('Page removed');
       } else {
-        await send('PUT', `/chapters/${id}/marks/${page}`, { note: text });
-        const kept = { chapterId: id, chapterName: info?.chapter.name ?? '', page, note: text.trim(), createdAt: Date.now() / 1000 };
-        marks = [...marks.filter((mark) => mark.page !== page), kept];
+        await send('PUT', `/chapters/${chapter}/marks/${page}`, { note: text });
+        const kept = { chapterId: chapter, chapterName: name, page, note: text.trim(), createdAt: Date.now() / 1000 };
+        marks = [...marks.filter(other), kept];
         say('Page saved');
       }
     } catch (e) {
@@ -349,21 +569,54 @@
 
   // ---------- remembering ----------
 
-  let saved = -1;
+  // What was last written for each chapter of the run, as `page:finished`, and the write waiting to go.
+  const saved = new Map<number, string>();
+  let pending: { chapter: number; page: number; read: boolean } | null = null;
+  // The chapter of the page last kept.
+  let was: number | null = null;
   let saving: ReturnType<typeof setTimeout> | undefined;
 
-  function save(now: boolean) {
+  function flush() {
     clearTimeout(saving);
-    const page = reached;
-    if (!ready || page === saved || incognito) return;
-    const write = () => {
-      saved = page;
-      const body = page >= count - 1 ? { page, read: true } : { page };
-      // keepalive lets the request finish while the page is closing.
-      fetch(`api/chapters/${id}/progress`, { method: 'PUT', keepalive: true, headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) }).catch(() => {});
-    };
-    if (now) write();
-    else saving = setTimeout(write, 400);
+    const due = pending;
+    pending = null;
+    if (!due) return;
+    saved.set(due.chapter, `${due.page}:${due.read}`);
+    const body = due.read ? { page: due.page, read: true } : { page: due.page };
+    // keepalive lets the request finish while the page is closing.
+    fetch(`api/chapters/${due.chapter}/progress`, { method: 'PUT', keepalive: true, headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) }).catch(() => {});
+  }
+
+  /**
+   * Keeps where the reading got to, a moment after it settles. A chapter is finished when its last
+   * page is the one up. Left for another chapter of the run, what was waiting for the one left goes
+   * at once: so reading on from the last page into the next chapter keeps the first finished, and a
+   * jump from the middle of it keeps only the page it was on.
+   */
+  function save(now: boolean) {
+    const at = link;
+    if (!ready || !at || incognito) return;
+    const page = reached - at.start;
+    if (was !== null && was !== at.id) {
+      // Left for another chapter of the run. Read on into the next one, however fast, it is
+      // finished; got to by a jump (a scrollbar held, a throw of more than a screen and a half, a
+      // chapter picked), it keeps the page it was on and not the finish.
+      const left = chain.find((each) => each.id === was);
+      const onward = !!left && chain.findIndex((each) => each.id === left.id) + 1 === chain.findIndex((each) => each.id === at.id) && !gripping && Date.now() - jumpedAt >= JUMP_MS;
+      if (pending?.chapter === was && !onward) pending.read = false;
+      if (onward && left && saved.get(left.id) !== `${left.count - 1}:true`) pending = { chapter: left.id, page: left.count - 1, read: true };
+      if (pending?.chapter === was) flush();
+    }
+    was = at.id;
+    clearTimeout(saving);
+    const read = page >= at.count - 1;
+    if (saved.get(at.id) === `${page}:${read}`) {
+      pending = null;
+      return;
+    }
+    pending = { chapter: at.id, page, read };
+    if (now) flush();
+    else saving = setTimeout(flush, 400);
   }
 
   $effect(() => {
@@ -388,7 +641,7 @@
     if (paged) {
       const ahead = Array.from({ length: p.ahead }, (_, k) => reached + 1 + k);
       for (const i of [...ahead, shown[0] - 1]) {
-        if (i < 0 || i >= count) continue;
+        if (i < 0 || i >= total) continue;
         const image = new Image();
         image.onload = () => {
           seen(i, image);
@@ -397,8 +650,9 @@
         image.src = src(i);
       }
     }
+    // Continuous chapters add the next one to the run instead, and its pages load as any other.
     const after = info?.next;
-    if (after && !warmed && reached >= count - 3) {
+    if (after && !p.chain && !warmed && reached >= start + count - 3) {
       warmed = true;
       get(`/chapters/${after}/pages`)
         .then(() => [0, 1].forEach((i) => (new Image().src = `api/chapters/${after}/pages/${i}`)))
@@ -408,8 +662,12 @@
 
   // ---------- webtoon: only nearby images exist ----------
 
+  // The strip and mode the reader last put in place: it goes to the page being read only when
+  // the strip is new, never when a chapter is added to it, which would pull the page away.
+  let placed = '';
   $effect(() => {
-    if (!ready || paged || !strip || !count) return;
+    if (paged) placed = '';
+    if (!ready || paged || !strip || !total) return;
     const box = strip;
     const across = sideways;
     const page = (entry: IntersectionObserverEntry) => Number((entry.target as HTMLElement).dataset.page);
@@ -435,7 +693,13 @@
       loader.observe(frame);
       tracker.observe(frame);
     }
-    untrack(() => box.querySelector(`[data-page="${index}"]`)?.scrollIntoView({ block: 'start', inline: 'start' }));
+    if (placed !== mode) {
+      placed = mode;
+      untrack(() => {
+        box.querySelector(`[data-page="${index}"]`)?.scrollIntoView({ block: 'start', inline: 'start' });
+        lastTop = across ? box.scrollLeft : box.scrollTop;
+      });
+    }
     return () => {
       loader.disconnect();
       tracker.disconnect();
@@ -474,7 +738,7 @@
     }
     broken[i] = true;
     slow[i] = false;
-    speak(`Page ${i + 1} did not load.`);
+    speak(`Page ${num(i)} did not load.`);
     if (!navigator.onLine) {
       why[i] = 'This device is offline. The page loads again when it is back online.';
       return;
@@ -535,7 +799,9 @@
 
   $effect(() => {
     if (!ready || !count) return;
-    speak(shown.length > 1 ? `Pages ${shown[0] + 1} and ${reached + 1} of ${count}` : `Page ${reached + 1} of ${count}`, 700);
+    // A chapter of the run other than the one opened on is named with its page.
+    const chapter = id === first ? '' : `${info?.chapter.name ?? ''}, `;
+    speak(`${chapter}${shown.length > 1 ? `Pages ${num(shown[0])} and ${num(reached)} of ${count}` : `Page ${num(reached)} of ${count}`}`, 700);
   });
 
   /** Scrolls glide unless the device asks for stillness. */
@@ -590,16 +856,26 @@
   // A finger resting on the page holds it still.
   let held = false;
 
-  /** The chapter ran out under auto-scroll. */
-  function autoEnd() {
-    if (p.autoNext && info?.next) {
-      carry = true;
-      turnTo(info.next);
+  /**
+   * The chapter ran out under auto-scroll. With continuous chapters it carries on into the next
+   * in place, and a strip waits for it to come; gives true while it is waiting.
+   */
+  function autoEnd(): boolean {
+    if (p.autoNext && info?.next && !(p.chain && stalled)) {
+      if (!p.chain) {
+        carry = true;
+        turnTo(info.next);
+      } else if (paged) next();
+      else {
+        extend();
+        return true;
+      }
     } else {
       auto = false;
-      note = info?.next ? '' : 'That was the last chapter.';
+      note = info?.next ? stalled : 'That was the last chapter.';
       overlay = true;
     }
+    return false;
   }
 
   $effect(() => {
@@ -608,7 +884,7 @@
     if (paged) {
       const turn = () => {
         if (document.hidden || held) return;
-        if (reached < count - 1 || room('y', 1)) advance(1);
+        if (reached < start + count - 1 || room('y', 1)) advance(1);
         else autoEnd();
       };
       const timer = setInterval(turn, seconds * 1000);
@@ -649,10 +925,7 @@
       const short = at - position();
       shift(Math.abs(short) < 1 ? short : 0);
       if (!atEnd()) rested = 0;
-      else if ((rested += passed) > 1.5) {
-        rested = -Infinity;
-        autoEnd();
-      }
+      else if ((rested += passed) > 1.5) rested = autoEnd() ? 0 : -Infinity;
     };
     frame = requestAnimationFrame(tick);
     return () => {
@@ -718,10 +991,10 @@
     handing = true;
     try {
       const answer = await fetch(src(i));
-      if (!answer.ok) throw new Error(`Page ${i + 1} did not load.`);
+      if (!answer.ok) throw new Error(`Page ${num(i)} did not load.`);
       const blob = await answer.blob();
       const extension = (blob.type.split('/')[1] ?? 'jpg').replace('jpeg', 'jpg').replace(/\+.*/, '');
-      const named = `${info.title} - ${info.chapter.name} - page ${i + 1}`.replace(/[\\/:*?"<>|]+/g, ' ').trim();
+      const named = `${info.title} - ${info.chapter.name} - page ${num(i)}`.replace(/[\\/:*?"<>|]+/g, ' ').trim();
       const file = new File([blob], `${named}.${extension}`, { type: blob.type });
       if (canShare && navigator.canShare({ files: [file] })) {
         await navigator.share({ files: [file], title: named });
@@ -730,7 +1003,7 @@
         const link = Object.assign(document.createElement('a'), { href: url, download: file.name });
         link.click();
         setTimeout(() => URL.revokeObjectURL(url), 10_000);
-        say(`Page ${i + 1} downloaded`);
+        say(`Page ${num(i)} downloaded`);
       }
     } catch (e) {
       // Closing the share sheet is not a failure.
@@ -873,10 +1146,10 @@
         advance(-1);
         break;
       case 'nextChapter':
-        turnTo(info?.next);
+        jump(info?.next);
         break;
       case 'prevChapter':
-        turnTo(info?.prev);
+        jump(info?.prev);
         break;
       case 'menu':
         overlay = !overlay;
@@ -984,10 +1257,10 @@
         advance(event.shiftKey ? -1 : 1);
         break;
       case 'Home':
-        show(0);
+        show(start);
         break;
       case 'End':
-        show(count - 1);
+        show(start + count - 1);
         break;
       default:
         if (!act(keys.get(keyName(event.key)))) return;
@@ -999,6 +1272,9 @@
 <svelte:window
   onkeydown={key}
   onpagehide={() => save(true)}
+  onpointerup={letGo}
+  onpointermove={moved}
+  onpointercancel={letGo}
   ononline={() => pages.filter((i) => broken[i]).forEach(retry)}
   bind:innerWidth={vw}
   bind:innerHeight={vh}
@@ -1008,7 +1284,7 @@
   <div class="loading" class:late={slow[i]} role={live ? 'status' : undefined}>
     <span class="spinner" aria-hidden="true"></span>
     <span class="says">
-      {waiting[i] ? `Trying page ${i + 1} again…` : slow[i] ? `Page ${i + 1} is slow to load` : `Loading page ${i + 1}…`}
+      {waiting[i] ? `Trying page ${num(i)} again…` : slow[i] ? `Page ${num(i)} is slow to load` : `Loading page ${num(i)}…`}
     </span>
     {#if slow[i]}
       <button class="btn" onclick={() => retry(i)}><Icon name="refresh" size={16} />Try again</button>
@@ -1018,7 +1294,7 @@
 
 {#snippet failure(i: number)}
   <div class="panel message failed">
-    <strong>Page {i + 1} did not load.</strong>
+    <strong>Page {num(i)} did not load.</strong>
     {#if why[i]}<span>{why[i]}</span>{/if}
     <div class="tools">
       <button class="btn ink" onclick={() => retry(i)}><Icon name="refresh" size={16} />Try again</button>
@@ -1065,7 +1341,7 @@
       onwheel={wheel}
     >
       {#key shown.join()}
-        <span class="number display" aria-hidden="true">{shown[0] + 1}</span>
+        <span class="number display" aria-hidden="true">{num(shown[0])}</span>
         <div class="leaf" class:two={shown.length > 1} class:rtl={mode === 'rtl'}>
           {#each shown as i (`${i}:${tries[i] ?? 0}`)}
             {#if broken[i]}
@@ -1073,7 +1349,7 @@
             {:else if !waiting[i]}
               <img
                 src={look(i)}
-                alt="Page {i + 1} of {count}{splitting(i) ? `, ${half === 0 ? 'first' : 'second'} half` : ''}"
+                alt="{pageName(i)}{splitting(i) ? `, ${half === 0 ? 'first' : 'second'} half` : ''}"
                 draggable="false"
                 onload={(e) => {
                   if (look(i) === src(i)) seen(i, e.currentTarget as HTMLImageElement);
@@ -1098,9 +1374,18 @@
       ontouchmove={pinchMove}
       ontouchend={(e) => ((held = e.touches.length > 0), pinchEnd(e))}
       ontouchcancel={(e) => ((held = false), pinchEnd(e))}
+      onscroll={scrolled}
+      onpointerdown={grip}
     >
       <div class="run" bind:this={run}>
-        {#each pages as i (i)}
+        {#each chain as each, k (each.id)}
+        {#if k > 0 && p.breaks}
+          <div class="break" role="separator" aria-label="{chain[k - 1].info.chapter.name} ends, {each.info.chapter.name} begins">
+            <span>Finished <strong>{chain[k - 1].info.chapter.name}</strong></span>
+            <span>Next <strong>{each.info.chapter.name}</strong></span>
+          </div>
+        {/if}
+        {#each pagesOf(each) as i (i)}
           <div
             class="frame"
             data-page={i}
@@ -1118,7 +1403,7 @@
                 <!-- Decoded off the main thread: a tall page arriving mid-scroll does not stall it. -->
                 <img
                   src={look(i, 'whole')}
-                  alt="Page {i + 1} of {count}"
+                  alt={pageName(i)}
                   draggable="false"
                   decoding="async"
                   onload={(e) => {
@@ -1132,11 +1417,28 @@
             {/if}
           </div>
         {/each}
+        {/each}
         <div class="tail">
-          {#if info?.next}
-            <button class="btn big spot" onclick={next}>Next chapter<Icon name="arrow" size={18} stroke={3} /></button>
-          {:else}
+          {#if !beyond}
             <strong>That was the last chapter.</strong>
+          {:else if p.chain && !stalled}
+            <!-- Continuous chapters: the next one is on its way, and its pages come in here. -->
+            <span class="coming" role="status">
+              <span class="spinner" aria-hidden="true"></span>
+              Loading {info?.chapters.find((chapter) => chapter.id === beyond)?.name ?? 'the next chapter'}…
+            </span>
+            {#if waited}
+              <!-- Still not here after a while: it can be opened the old way. -->
+              <button class="btn" onclick={() => turnTo(beyond)}>Open it on its own<Icon name="arrow" size={16} stroke={3} /></button>
+            {/if}
+          {:else}
+            {#if stalled}<span class="why">The next chapter did not load: {stalled}</span>{/if}
+            <div class="tools">
+              {#if stalled}
+                <button class="btn" onclick={() => ((stalled = ''), extend())}><Icon name="refresh" size={16} />Try again</button>
+              {/if}
+              <button class="btn big spot" onclick={() => turnTo(beyond)}>Next chapter<Icon name="arrow" size={18} stroke={3} /></button>
+            </div>
           {/if}
         </div>
       </div>
@@ -1152,15 +1454,15 @@
       <div class="tint" style:background={p.tint} style:opacity={p.tintAmount / 100} style:mix-blend-mode={p.blend}></div>
     {/if}
     {#if p.bar}
-      <div class="progress" class:rtl={mode === 'rtl'} aria-hidden="true"><span style:width="{((reached + 1) / count) * 100}%"></span></div>
+      <div class="progress" class:rtl={mode === 'rtl'} aria-hidden="true"><span style:width="{(num(reached) / count) * 100}%"></span></div>
     {/if}
     {#if p.number && !overlay && !panel}
-      <span class="hud" aria-hidden="true">{shown.length > 1 ? `${shown[0] + 1}–${reached + 1}` : reached + 1} / {count}{marked ? ' · saved' : ''}</span>
+      <span class="hud" aria-hidden="true">{shown.length > 1 ? `${num(shown[0])}–${num(reached)}` : num(reached)} / {count}{marked ? ' · saved' : ''}</span>
     {/if}
     {#if noting !== null}
       <form class="note" onsubmit={(e) => (e.preventDefault(), keepPage(noting ?? ''))}>
         <label>
-          <span>A note for page {reached + 1}</span>
+          <span>A note for page {num(reached)}</span>
           <!-- svelte-ignore a11y_autofocus -->
           <input bind:value={noting} maxlength="2000" placeholder="What is on this page" autofocus />
         </label>
@@ -1186,7 +1488,7 @@
       </div>
       <button
         class="btn icon"
-        aria-label={marked ? `Page ${reached + 1} is saved: change its note` : `Save page ${reached + 1} with a note`}
+        aria-label={marked ? `Page ${num(reached)} is saved: change its note` : `Save page ${num(reached)} with a note`}
         aria-pressed={!!marked}
         onclick={() => ((noting = marked?.note ?? ''), (overlay = false))}
       >
@@ -1206,14 +1508,14 @@
     <div class="bar bottom">
       {#if note}<p role="status">{note}</p>{/if}
       <div class="line">
-        <button class="btn icon" aria-label="Previous chapter" disabled={!info.prev} onclick={() => turnTo(info?.prev)}>
+        <button class="btn icon" aria-label="Previous chapter" disabled={!info.prev} onclick={() => jump(info?.prev)}>
           <Icon name="first" />
         </button>
         <div class="scrub">
           {#if peek !== null}
             <!-- While the slider is dragged, the page under it is shown small; the reader turns to it on letting go. -->
             <div class="peek" aria-hidden="true" style:--at={count > 1 ? peek / (count - 1) : 0} class:rtl={mode === 'rtl'}>
-              <img src={src(peek)} alt="" draggable="false" />
+              <img src={src(start + peek)} alt="" draggable="false" />
               <strong>{peek + 1}</strong>
             </div>
           {/if}
@@ -1221,30 +1523,30 @@
             type="range"
             min="0"
             max={count - 1}
-            value={index}
+            value={index - start}
             dir={mode === 'rtl' ? 'rtl' : 'ltr'}
             aria-label="Page"
-            aria-valuetext="Page {index + 1} of {count}"
+            aria-valuetext="Page {index - start + 1} of {count}"
             onpointerdown={(e) => (peek = Number(e.currentTarget.value))}
             oninput={(e) => {
               const to = Number(e.currentTarget.value);
-              if (peek === null) show(to);
+              if (peek === null) show(start + to);
               else peek = to;
             }}
             onpointerup={(e) => {
-              if (peek !== null) show(Number(e.currentTarget.value));
+              if (peek !== null) show(start + Number(e.currentTarget.value));
               peek = null;
             }}
             onpointercancel={() => (peek = null)}
           />
         </div>
-        <strong class="count">{reached + 1} / {count}</strong>
-        <button class="btn icon" aria-label="Next chapter" disabled={!info.next} onclick={() => turnTo(info?.next)}>
+        <strong class="count">{num(reached)} / {count}</strong>
+        <button class="btn icon" aria-label="Next chapter" disabled={!info.next} onclick={() => jump(info?.next)}>
           <Icon name="last" />
         </button>
       </div>
       <div class="line">
-        <select class="btn" aria-label="Chapter" value={id} onchange={(e) => go(`/read/${e.currentTarget.value}`, true)}>
+        <select class="btn" aria-label="Chapter" value={id} onchange={(e) => pick(Number(e.currentTarget.value))}>
           {#each info.chapters as chapter (chapter.id)}
             <option value={chapter.id}>{chapter.name}</option>
           {/each}
@@ -1254,7 +1556,7 @@
         </select>
         <button class="btn" aria-pressed={auto} onclick={toggleAuto}><Icon name={auto ? 'pause' : 'play'} size={16} fill />Auto</button>
         <button class="btn icon" aria-label="Reader settings" onclick={() => ((panel = true), (overlay = false))}><Icon name="sliders" /></button>
-        <button class="btn icon" aria-label={canShare ? `Share page ${reached + 1}` : `Download page ${reached + 1}`} disabled={handing} onclick={handPage}>
+        <button class="btn icon" aria-label={canShare ? `Share page ${num(reached)}` : `Download page ${num(reached)}`} disabled={handing} onclick={handPage}>
           <Icon name={canShare ? 'share' : 'download'} />
         </button>
       </div>
@@ -1567,8 +1869,52 @@
 
   .tail {
     display: flex;
-    justify-content: center;
+    flex-direction: column;
+    align-items: center;
+    gap: 12px;
     padding: 48px 16px 96px;
+    text-align: center;
+  }
+
+  .tail .tools {
+    display: flex;
+    flex-wrap: wrap;
+    justify-content: center;
+    gap: 8px;
+  }
+
+  .tail .why {
+    max-width: 40ch;
+  }
+
+  .coming {
+    display: inline-flex;
+    align-items: center;
+    gap: 10px;
+  }
+
+  /* Between two chapters of a continuous run: the one finished, and the one starting. */
+  .break {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 4px;
+    max-width: 900px;
+    margin: 0 auto;
+    padding: 40px 16px;
+    text-align: center;
+    opacity: 0.8;
+    font-size: 0.9rem;
+  }
+
+  .break strong {
+    font-size: 1.05rem;
+  }
+
+  .sideways .break {
+    flex: none;
+    justify-content: center;
+    padding: 16px 40px;
   }
 
   /* ---------- a page on its way, or one that failed ---------- */

@@ -77,6 +77,18 @@ export function go(to: string, replace = false) {
   } else location.hash = to;
 }
 
+/**
+ * Puts another address in the bar for the screen that is up, without opening it again: the
+ * reader that carried on into the next chapter. `route` keeps the address the screen was
+ * opened at, so nothing that hangs on it is made anew; a reload or a way back opens this one.
+ */
+export function rename(to: string) {
+  if (location.hash === '#' + to) return;
+  history.replaceState(history.state, '', '#' + to);
+  const here = trail.get(at);
+  if (here) here.path = to.split('?')[0];
+}
+
 /** Leaves for the screen before this one. Opened straight from outside there is none of Mango's, and `fallback` takes its place. */
 export function back(fallback = '/') {
   if (trail.has(at - 1)) history.back();
