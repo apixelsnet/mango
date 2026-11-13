@@ -66,6 +66,11 @@ addEventListener(
   { passive: true },
 );
 for (const kind of ['touchstart', 'wheel', 'keydown']) addEventListener(kind, () => turn++, { passive: true });
+
+/** A screen that puts its own scroll back ends the wait above, so the two do not pull against each other. */
+export function ownScroll() {
+  turn++;
+}
 arrive();
 
 /** Opens a route. With `replace` the current one is not kept in the history. */

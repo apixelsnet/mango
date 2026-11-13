@@ -49,7 +49,8 @@ const item = (id) => ({
   downloaded: 1,
   lastReadAt: 0,
   latestAt: 0,
-  categories: [],
+  // Titles 2 and 3 sit in the one category.
+  categories: id === 1 ? [] : [1],
 });
 
 const title = (id) => ({
@@ -111,12 +112,14 @@ const json = (res, status, body) => {
   res.end(JSON.stringify(body));
 };
 
+const CATEGORIES = [{ id: 1, name: 'Started', parent: null }];
+
 const GETS = [
   [/^\/api\/auth$/, () => ({ login: true, setup: false, setupCode: false, signup: false, signedIn: true, named: false, name: 'me', admin: true })],
   // The tour and the tap zones' first showing are taken as seen.
   [/^\/api\/settings$/, () => ({ 'tour.zones': true, 'tour.done': true })],
-  [/^\/api\/library$/, () => ({ items: [item(1), item(2), item(3)], categories: [], resume: null })],
-  [/^\/api\/categories$/, () => ({ categories: [] })],
+  [/^\/api\/library$/, () => ({ items: [item(1), item(2), item(3)], categories: CATEGORIES, resume: null })],
+  [/^\/api\/categories$/, () => ({ categories: CATEGORIES })],
   [/^\/api\/updates\/fresh$/, () => ({ fresh: 0 })],
   [/^\/api\/downloads$/, () => ({ queue: [], paused: false, held: false })],
   [

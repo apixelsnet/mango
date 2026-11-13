@@ -30,6 +30,63 @@ test('each screen is named and takes the focus to its heading', async ({ page })
   await expect(page.getByRole('heading', { level: 1, name: 'Test title 1' })).toBeFocused();
 });
 
+test('coming back from a title finds the library as it was left', async ({ page }) => {
+  await page.goto('/#/');
+  const started = page.getByRole('group', { name: 'Category' }).getByRole('button', { name: 'Started' });
+  const search = page.getByRole('searchbox', { name: 'Search the library' });
+  await started.click();
+  await search.fill('title');
+  await expect(page.getByRole('link', { name: 'Test title 1' })).toHaveCount(0);
+
+  await page.getByRole('link', { name: 'Test title 2' }).first().click();
+  await expect(page.getByRole('heading', { level: 1, name: 'Test title 2' })).toBeVisible();
+  await page.goBack();
+
+  await expect(started).toHaveAttribute('aria-pressed', 'true');
+  await expect(search).toHaveValue('title');
+  await expect(page.getByRole('link', { name: 'Test title 3' }).first()).toBeVisible();
+  await expect(page.getByRole('link', { name: 'Test title 1' })).toHaveCount(0);
+});
+
+test('a long library comes back to the card that was opened', async ({ page }) => {
+  // Cards off screen are only guessed at in size, so a scroll kept in pixels lands rows away.
+  const items = Array.from({ length: 400 }, (_, k) => ({
+    id: k + 1,
+    title: `Long title ${k + 1}`,
+    cover: null,
+    sourceName: 'Mock',
+    status: 1,
+    addedAt: k,
+    total: 5,
+    unread: 1,
+    downloaded: 0,
+    lastReadAt: 0,
+    latestAt: 0,
+    categories: k % 2 ? [1] : [],
+  }));
+  await page.route('**/api/library', (route) => route.fulfill({ json: { items, categories: [{ id: 1, name: 'Started', parent: null }], resume: null } }));
+  await page.goto('/#/');
+  await page.getByRole('group', { name: 'Category' }).getByRole('button', { name: 'Started' }).click();
+  // Scrolled through as a reader would, so the cards on the way are laid out.
+  for (let i = 0; i < 40; i++) {
+    await page.evaluate(() => scrollBy(0, 400));
+    await page.waitForTimeout(16);
+  }
+  const card = await page.evaluate(() =>
+    [...document.querySelectorAll('.shelf a[href^="#/title/"]')].find((a) => a.getBoundingClientRect().top >= innerHeight / 3)!.getAttribute('href')!,
+  );
+  const top = () => page.evaluate((href) => Math.round(document.querySelector(`.shelf a[href="${href}"]`)?.getBoundingClientRect().top ?? NaN), card);
+  const before = await top();
+
+  for (let trip = 0; trip < 2; trip++) {
+    await page.evaluate((href) => (document.querySelector(`.shelf a[href="${href}"]`) as HTMLElement).click(), card);
+    await expect(page).toHaveURL(new RegExp(`${card}$`));
+    await page.goBack();
+    await expect(page.getByRole('group', { name: 'Category' }).getByRole('button', { name: 'Started' })).toHaveAttribute('aria-pressed', 'true');
+    await expect.poll(async () => Math.abs((await top()) - before)).toBeLessThanOrEqual(2);
+  }
+});
+
 test('the first Tab reaches Skip to content', async ({ page }) => {
   await page.goto('/#/');
   await expect(page.getByRole('heading', { level: 1, name: 'Library' })).toBeVisible();
