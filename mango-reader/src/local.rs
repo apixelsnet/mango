@@ -17,15 +17,17 @@ use serde_json::json;
 use std::{
     borrow::Cow,
     cmp::Ordering,
+    collections::{HashMap, VecDeque},
     fs,
     io::Read,
     iter::Peekable,
     path::{Component, Path, PathBuf},
     str::Chars,
-    time::UNIX_EPOCH,
+    sync::{Arc, Mutex},
+    time::{SystemTime, UNIX_EPOCH},
 };
 
-/// The local source's id, the same one Mihon uses.
+/// The local source's id, the same one Mihon-compatible apps use, which backups carry.
 pub const SOURCE: i64 = 0;
 /// The stand-in for an extension that the source hangs under.
 pub const PKG: &str = "mango.local";
@@ -37,9 +39,33 @@ const WHOLE: &str = ".";
 const MAX_IMAGE: u64 = 64 << 20;
 const IMAGES: [&str; 8] = ["jpg", "jpeg", "png", "webp", "gif", "avif", "jxl", "bmp"];
 
+/// How many archives stay open at once.
+const OPEN_ARCHIVES: usize = 8;
+
 #[derive(Clone)]
 pub struct Local {
     root: PathBuf,
+    /// Archives read lately, the latest first; see `Opened`.
+    open: Arc<Mutex<VecDeque<Arc<Mutex<Opened>>>>>,
+    /// Each archive's ComicInfo.xml, or that it has none, with the size and time of change
+    /// of the file it was read from.
+    infos: Arc<Mutex<HashMap<PathBuf, (Stamp, Option<String>)>>>,
+}
+
+/// A file's size and time of change: when either differs, it is read again.
+type Stamp = (u64, Option<SystemTime>);
+/// How many archives' ComicInfo.xml are remembered before the list starts over.
+const KNOWN_INFOS: usize = 20_000;
+
+/// An archive kept open, so that a chapter read page by page is opened and its names sorted
+/// once.
+/// It is opened again when its file changed since: another size or time of change.
+struct Opened {
+    path: PathBuf,
+    stamp: Stamp,
+    archive: zip::ZipArchive<fs::File>,
+    /// Its pages' names, in reading order.
+    names: Vec<String>,
 }
 
 /// A chapter's pages: where they are and their names, in reading order.
@@ -55,7 +81,69 @@ pub async fn blocking<T: Send + 'static>(work: impl FnOnce() -> Result<T> + Send
 
 impl Local {
     pub fn new(root: PathBuf) -> Self {
-        Self { root }
+        Self { root, open: Arc::default(), infos: Arc::default() }
+    }
+
+    /// Runs `work` on the archive at `path`, opening it unless it is open already as it is now.
+    fn archive<T>(&self, path: &Path, work: impl FnOnce(&mut Opened) -> Result<T>) -> Result<T> {
+        let meta = fs::metadata(path).map_err(|_| AppError::not_found("This chapter is no longer in the local folder"))?;
+        let stamp = (meta.len(), meta.modified().ok());
+        let held = {
+            let mut open = self.open.lock().unwrap_or_else(|e| e.into_inner());
+            let at = open.iter().position(|one| {
+                let one = one.lock().unwrap_or_else(|e| e.into_inner());
+                one.path == path && one.stamp == stamp
+            });
+            match at.and_then(|at| open.remove(at)) {
+                Some(found) => {
+                    open.push_front(found.clone());
+                    found
+                }
+                None => {
+                    let archive = zip::ZipArchive::new(fs::File::open(path)?)?;
+                    let mut names: Vec<String> = archive
+                        .file_names()
+                        // A name that does not decode cannot be asked for by name, so it is no page.
+                        .filter_map(|name| name.ok())
+                        .filter(|name| is_image(name) && !name.starts_with("__MACOSX/") && !name.rsplit('/').next().is_some_and(|file| file.starts_with('.')))
+                        .map(Cow::into_owned)
+                        .collect();
+                    names.sort_by(|a, b| natural_cmp(a, b));
+                    let fresh = Arc::new(Mutex::new(Opened { path: path.to_path_buf(), stamp, archive, names }));
+                    open.retain(|one| one.lock().unwrap_or_else(|e| e.into_inner()).path != path);
+                    open.push_front(fresh.clone());
+                    open.truncate(OPEN_ARCHIVES);
+                    fresh
+                }
+            }
+        };
+        let mut held = held.lock().unwrap_or_else(|e| e.into_inner());
+        work(&mut held)
+    }
+
+    /// A chapter's ComicInfo.xml: a file in its folder, or an entry in its archive.
+    fn comic_info(&self, chapter: &Path) -> Option<String> {
+        if chapter.is_dir() {
+            return fs::read_to_string(chapter.join("ComicInfo.xml")).ok();
+        }
+        // Every refresh asks again about every chapter: what an archive held is remembered
+        // until its file changes, without keeping the archive open.
+        let meta = fs::metadata(chapter).ok()?;
+        let stamp = (meta.len(), meta.modified().ok());
+        if let Some((seen, info)) = self.infos.lock().unwrap_or_else(|e| e.into_inner()).get(chapter) {
+            if *seen == stamp {
+                return info.clone();
+            }
+        }
+        let mut archive = zip::ZipArchive::new(fs::File::open(chapter).ok()?).ok()?;
+        let mut xml = String::new();
+        let info = archive.by_name("ComicInfo.xml").ok().and_then(|entry| entry.take(1 << 20).read_to_string(&mut xml).ok()).map(|_| xml);
+        let mut infos = self.infos.lock().unwrap_or_else(|e| e.into_inner());
+        if infos.len() >= KNOWN_INFOS {
+            infos.clear();
+        }
+        infos.insert(chapter.to_path_buf(), (stamp, info.clone()));
+        info
     }
 
     pub fn root(&self) -> &Path {
@@ -108,7 +196,7 @@ impl Local {
         // Details come from a ComicInfo.xml in the title's folder, or else in its first chapter.
         let info = fs::read_to_string(path.join("ComicInfo.xml")).ok().or_else(|| {
             let (first, _, _) = chapters.last()?;
-            comic_info(&within(&path, first))
+            self.comic_info(&within(&path, first))
         });
         if let Some(xml) = info {
             manga.description = tag(&xml, "Summary");
@@ -120,7 +208,7 @@ impl Local {
         let chapters = chapters
             .into_iter()
             .map(|(url, shown, changed)| {
-                let own = if url == WHOLE { None } else { comic_info(&path.join(&url)) };
+                let own = if url == WHOLE { None } else { self.comic_info(&path.join(&url)) };
                 let info = |name: &str| own.as_deref().and_then(|xml| tag(xml, name));
                 let number = info("Number").and_then(|number| number.parse::<f64>().ok()).filter(|number| number.is_finite() && *number >= 0.0);
                 WireChapter {
@@ -160,15 +248,14 @@ impl Local {
         let missing = || AppError::not_found("No such page");
         match self.pages(title, chapter)? {
             Pages::Folder(dir, names) => read_image(&dir.join(names.get(index).ok_or_else(missing)?)),
-            Pages::Archive(file, names) => {
-                let mut archive = zip::ZipArchive::new(fs::File::open(file)?)?;
+            Pages::Archive(file, names) => self.archive(&file, |opened| {
                 let mut bytes = Vec::new();
-                archive.by_name(names.get(index).ok_or_else(missing)?)?.take(MAX_IMAGE + 1).read_to_end(&mut bytes)?;
+                opened.archive.by_name(names.get(index).ok_or_else(missing)?)?.take(MAX_IMAGE + 1).read_to_end(&mut bytes)?;
                 if bytes.len() as u64 > MAX_IMAGE {
                     return Err(AppError::new(422, "too_large", "This page is larger than Mango reads"));
                 }
                 Ok(bytes)
-            }
+            }),
         }
     }
 
@@ -188,15 +275,7 @@ impl Local {
         }
         // Pages are read out of the archive by name. Nothing is ever unpacked to disk,
         // so an entry's path cannot reach outside it.
-        let archive = zip::ZipArchive::new(fs::File::open(&path)?)?;
-        let mut names: Vec<String> = archive
-            .file_names()
-            // A name that does not decode cannot be asked for by name, so it is no page.
-            .filter_map(|name| name.ok())
-            .filter(|name| is_image(name) && !name.starts_with("__MACOSX/") && !name.rsplit('/').next().is_some_and(|file| file.starts_with('.')))
-            .map(Cow::into_owned)
-            .collect();
-        names.sort_by(|a, b| natural_cmp(a, b));
+        let names = self.archive(&path, |opened| Ok(opened.names.clone()))?;
         Ok(Pages::Archive(path, names))
     }
 }
@@ -301,17 +380,6 @@ fn read_image(path: &Path) -> Result<Vec<u8>> {
         return Err(AppError::new(422, "too_large", "This image is larger than Mango reads"));
     }
     Ok(fs::read(path)?)
-}
-
-/// The ComicInfo.xml of a chapter, whether it is an archive or a folder.
-fn comic_info(chapter: &Path) -> Option<String> {
-    if chapter.is_dir() {
-        return fs::read_to_string(chapter.join("ComicInfo.xml")).ok();
-    }
-    let mut archive = zip::ZipArchive::new(fs::File::open(chapter).ok()?).ok()?;
-    let mut xml = String::new();
-    archive.by_name("ComicInfo.xml").ok()?.take(1 << 20).read_to_string(&mut xml).ok()?;
-    Some(xml)
 }
 
 /// The text of one element of a ComicInfo.xml. Enough for a flat file of plain elements.

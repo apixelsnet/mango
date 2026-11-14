@@ -8,7 +8,7 @@ then loads more extensions and reports the host's memory.
 
 The store and the extension are not named here. They come from the environment:
 
-    MANGO_SMOKE_STORE  the address of a Mihon extension store's repo.json
+    MANGO_SMOKE_STORE  the address of a Mihon-compatible extension store's repo.json
     MANGO_SMOKE_PKG    the package of an extension in that store
 
 With a solver address, which must be the one the host was started with

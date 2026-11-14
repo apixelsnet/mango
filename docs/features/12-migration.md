@@ -11,7 +11,7 @@ Move a title to the same title on another source, and keep what was read. For wh
 
 ## How progress is carried
 
-As Mihon does it. Chapters are matched by number, to the hundredth; a chapter with no number, such as a one-shot, by its name.
+As other readers do it. Chapters are matched by number, to the hundredth; a chapter with no number, such as a one-shot, by its name.
 
 - Every numbered chapter of the new title up to the highest one read on the old title is marked read. So a source that splits or skips chapters still lands in the right place.
 - A matching chapter also takes the bookmark, the page reached and its history entry.
@@ -46,3 +46,14 @@ Not checked: a title with hundreds of chapters on both sides, and a move between
 ## Bulk migration (2026-10-25)
 
 Several titles can be migrated at once from the library's selection bar; see feature 04. Each title is migrated as described above, one after another.
+
+## What else goes along (2026-11-14)
+
+Moving a title used to leave some things behind. Now these go along too:
+- **Pages kept with a note**, to the same chapter on the new side (matched by number, as reading progress is), with "Reading progress".
+- **Details edited by hand**: the name, makers, description, genres and status, where the new title has none of its own edited. A cover set by hand is copied to the new title (`Images::copy_cover`).
+- **Scanlation groups**: the order of groups wanted, one upload per chapter, and staying with one group, where the new title has none of its own.
+
+Checked by the unit test `notes_edits_and_groups_come_along`.
+
+**Moving many titles** keeps its matches while "Pick by hand" leaves the screen: they are held while the page lives (`lib/keep.ts`), and moving the title picked by hand comes back to the list, where it shows as moved by hand.

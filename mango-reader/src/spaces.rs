@@ -73,10 +73,11 @@ impl Spaces {
         for id in &ids {
             spaces.open(*id)?;
         }
-        for entry in std::fs::read_dir(spaces.shared.data_dir.join("users")).into_iter().flatten().flatten() {
-            let left = entry.file_name().to_str().and_then(|name| name.parse::<i64>().ok()).is_some_and(|id| !ids.contains(&id));
-            if left {
-                let _ = std::fs::remove_dir_all(entry.path());
+        let users = spaces.shared.data_dir.join("users");
+        for entry in std::fs::read_dir(&users).into_iter().flatten().flatten() {
+            let Some(id) = entry.file_name().to_str().and_then(|name| name.parse::<i64>().ok()) else { continue };
+            if !ids.contains(&id) {
+                leftover(&users, id, &entry.path());
             }
         }
         Ok(spaces)
@@ -175,6 +176,11 @@ impl Spaces {
         space.app.stores.remove_all().await;
         self.fleet.leave(id);
         let dir = self.dir(id);
+        // Marks the folder as one to delete, so that a start before it is gone finishes the job.
+        // A folder without the mark is never deleted at start: see `leftover`.
+        if let Err(e) = std::fs::write(dir.join(REMOVED), b"") {
+            tracing::warn!("could not mark {} as removed: {e}", dir.display());
+        }
         drop(space);
         // The database stays open until the stopped work lets go of it. What is still
         // there after a few tries goes at the next start.
@@ -191,5 +197,51 @@ impl Spaces {
             }
             tracing::warn!("could not delete {} yet; it goes at the next start", dir.display());
         });
+    }
+}
+
+/// The file that marks an account's folder as removed: `close` writes it before deleting.
+const REMOVED: &str = "removed";
+
+/// Deals with a folder under `users/` whose account is not in the database. One marked
+/// as removed is deleted. Any other is moved aside and kept: the database may be an
+/// older copy put back, or a new one beside an old `users/`, and that folder holds
+/// someone's library. Moving it away keeps its number free for `create`.
+fn leftover(users: &std::path::Path, id: i64, path: &std::path::Path) {
+    if path.join(REMOVED).exists() {
+        if let Err(e) = std::fs::remove_dir_all(path) {
+            tracing::warn!("could not delete {}: {e}", path.display());
+        }
+        return;
+    }
+    let aside = users.join(format!("{id}.unknown-{}", crate::db::now()));
+    match std::fs::rename(path, &aside) {
+        Ok(()) => tracing::warn!("{} belongs to no account; moved to {} and kept", path.display(), aside.display()),
+        Err(e) => tracing::warn!("{} belongs to no account and could not be moved aside: {e}", path.display()),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn only_removed_folders_are_deleted() {
+        let users = std::env::temp_dir().join(format!("mango-users-{}", crate::db::now() ^ i64::from(std::process::id())));
+        for (id, marked) in [(2, true), (3, false)] {
+            let dir = users.join(id.to_string());
+            std::fs::create_dir_all(&dir).unwrap();
+            std::fs::write(dir.join("mango.db"), b"library").unwrap();
+            if marked {
+                std::fs::write(dir.join(REMOVED), b"").unwrap();
+            }
+            leftover(&users, id, &dir);
+        }
+        let names: Vec<String> = std::fs::read_dir(&users).unwrap().flatten().map(|e| e.file_name().into_string().unwrap()).collect();
+        assert_eq!(names.len(), 1, "{names:?}");
+        assert!(names[0].starts_with("3.unknown-"), "{names:?}");
+        assert!(users.join(&names[0]).join("mango.db").is_file(), "the library is kept");
+        assert!(names[0].parse::<i64>().is_err(), "a folder moved aside is not taken for an account");
+        let _ = std::fs::remove_dir_all(&users);
     }
 }

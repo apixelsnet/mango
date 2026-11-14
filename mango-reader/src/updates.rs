@@ -39,6 +39,10 @@ pub const SMART: &str = "updates.smart";
 const LAST_RUN: &str = "updates.lastRun";
 
 const DEFAULT_HOURS: i64 = 12;
+/// How the error of a title left for the next run begins.
+const NOT_CHECKED: &str = "Not checked";
+/// Failures in a row after which a source's other titles wait for the next run.
+const FAILURES_BEFORE_SKIP: usize = 3;
 const SOURCES_AT_ONCE: usize = 4;
 const BETWEEN_TITLES: Duration = Duration::from_secs(1);
 /// How far back the "new chapters" count for the menu looks.
@@ -53,6 +57,8 @@ const PATIENCE: i64 = 10;
 #[serde(rename_all = "camelCase")]
 pub struct Status {
     pub running: bool,
+    /// The run was stopped before it got through every title.
+    pub stopped: bool,
     pub done: usize,
     pub total: usize,
     /// Titles this run left out because no chapter is expected of them yet.
@@ -106,11 +112,13 @@ pub struct Updates {
     status: Arc<StdMutex<Status>>,
     /// The chapters the run going on has found so far.
     found: Arc<StdMutex<Vec<i64>>>,
+    /// Set to stop the run going on: no title is asked about after it.
+    stopping: Arc<std::sync::atomic::AtomicBool>,
 }
 
 impl Updates {
     pub fn new(db: Db, titles: Titles, downloads: Downloads, notifier: Notifier, trackers: Trackers) -> Self {
-        Self { db, titles, downloads, notifier, trackers, status: Arc::default(), found: Arc::default() }
+        Self { db, titles, downloads, notifier, trackers, status: Arc::default(), found: Arc::default(), stopping: Arc::default() }
     }
 
     pub fn status(&self) -> Status {
@@ -136,8 +144,19 @@ impl Updates {
             }
             *status = Status { running: true, started_at: Some(now()), ..Status::default() };
         }
+        self.stopping.store(false, std::sync::atomic::Ordering::Relaxed);
         let this = self.clone();
         tokio::spawn(async move { this.run().await });
+        self.status()
+    }
+
+    /// Stops the run going on: the titles being asked about finish, no other is asked. What
+    /// was found so far is kept and sent word of, as at the end of any run.
+    pub fn stop(&self) -> Status {
+        if self.status().running {
+            self.stopping.store(true, std::sync::atomic::Ordering::Relaxed);
+            self.note(|status| status.stopped = true);
+        }
         self.status()
     }
 
@@ -168,7 +187,14 @@ impl Updates {
     }
 
     async fn run(&self) {
-        let plan = self.db.call(|conn| plan(conn, now() / DAY)).await.unwrap_or_default();
+        let plan = match self.db.call(|conn| plan(conn, now() / DAY)).await {
+            Ok(plan) => plan,
+            Err(e) => {
+                // The run then has nothing to do; say why rather than report 0 titles without a word.
+                tracing::warn!("library update: could not list the titles to update: {e}");
+                Default::default()
+            }
+        };
         self.note(|status| {
             status.total = plan.sources.iter().map(|(_, titles)| titles.len()).sum();
             status.waiting = plan.waiting;
@@ -180,11 +206,21 @@ impl Updates {
             let (this, gate) = (self.clone(), gate.clone());
             sources.spawn(async move {
                 let _slot = gate.acquire_owned().await;
+                // A source that is down would cost its whole wait for every title: after a few
+                // failures in a row, the rest of its titles are left for the next run.
+                let mut failing = 0;
                 for (place, (manga, auto_download)) in titles.into_iter().enumerate() {
+                    if this.stopping.load(std::sync::atomic::Ordering::Relaxed) {
+                        break;
+                    }
+                    if failing >= FAILURES_BEFORE_SKIP {
+                        this.skip(manga).await;
+                        continue;
+                    }
                     if place > 0 {
                         tokio::time::sleep(BETWEEN_TITLES).await;
                     }
-                    this.one(manga, auto_download).await;
+                    failing = if this.one(manga, auto_download).await { failing + 1 } else { 0 };
                 }
             });
         }
@@ -197,6 +233,11 @@ impl Updates {
             self.trackers.pull_all().await;
         }
         let _ = self.db.call(|conn| settings::set(conn, LAST_RUN, &now().into())).await;
+        match self.titles.prune().await {
+            Ok(0) => {}
+            Ok(gone) => tracing::info!("library update: let go of {gone} titles only ever shown while browsing"),
+            Err(e) => tracing::warn!("library update: could not let go of old titles: {e}"),
+        }
         self.note(|status| {
             status.running = false;
             status.finished_at = Some(now());
@@ -211,7 +252,33 @@ impl Updates {
         );
     }
 
-    async fn one(&self, manga: i64, auto_download: bool) {
+    /// Notes a title not asked about this run, because its source failed for the ones before.
+    async fn skip(&self, manga: i64) {
+        let error = format!("{NOT_CHECKED}: the source failed for {FAILURES_BEFORE_SKIP} titles in a row in this update");
+        // The error of a title that failed before stays: it keeps the title last in the next
+        // run's order (see `plan`), so the titles that work are asked first.
+        let _ = self
+            .db
+            .call(move |conn| {
+                conn.execute(
+                    &format!(
+                        "INSERT INTO update_errors (manga_id, error, at) VALUES (?1, ?2, ?3)
+                         ON CONFLICT(manga_id) DO UPDATE SET error = excluded.error, at = excluded.at
+                         WHERE update_errors.error LIKE '{NOT_CHECKED}%'"
+                    ),
+                    params![manga, error, now()],
+                )?;
+                Ok(())
+            })
+            .await;
+        self.note(|status| {
+            status.done += 1;
+            status.failed += 1;
+        });
+    }
+
+    /// Asks the source about one title. Answers whether that failed.
+    async fn one(&self, manga: i64, auto_download: bool) -> bool {
         let outcome = self.titles.fetch(manga, false, true).await;
         let error = outcome.as_ref().err().map(|e| e.message.clone());
         let failed = error.is_some();
@@ -241,6 +308,7 @@ impl Updates {
                 tracing::warn!("could not queue new chapters: {e}");
             }
         }
+        failed
     }
 }
 
@@ -281,7 +349,10 @@ fn plan(conn: &Connection, today: i64) -> Result<Plan> {
     if !never.is_empty() {
         sql += &format!(" AND NOT EXISTS (SELECT 1 FROM manga_categories WHERE manga_id = COALESCE(m.merged_into, m.id) AND category_id IN ({never}))");
     }
-    sql += " ORDER BY m.source_id, m.id";
+    // Within a source, titles that failed last time go last: a few that the source removed
+    // must not use up the failures in a row that leave the rest for the next run.
+    // A title only left unchecked last time is not one that failed.
+    sql += &format!(" ORDER BY m.source_id, EXISTS (SELECT 1 FROM update_errors e WHERE e.manga_id = m.id AND e.error NOT LIKE '{NOT_CHECKED}%'), m.id");
 
     let mut stmt = conn.prepare(&sql)?;
     let rows = stmt
@@ -443,6 +514,12 @@ mod tests {
         let conn = database();
         assert_eq!(planned(&conn), [(7, vec![1, 2]), (8, vec![6])], "library titles with a source, grouped by it");
         assert!(plan(&conn, TODAY).unwrap().sources[0].1[0].1, "auto-download travels with the title");
+        // A title that failed last time is asked last, so failing ones cannot crowd out the rest.
+        conn.execute("INSERT INTO update_errors (manga_id, error, at) VALUES (1, 'gone', 1)", []).unwrap();
+        assert_eq!(planned(&conn), [(7, vec![2, 1]), (8, vec![6])]);
+        conn.execute("UPDATE update_errors SET error = 'Not checked: the source failed'", []).unwrap();
+        assert_eq!(planned(&conn), [(7, vec![1, 2]), (8, vec![6])], "one left unchecked did not fail");
+        conn.execute("DELETE FROM update_errors", []).unwrap();
 
         set(&conn, SKIP_COMPLETED, json!(true));
         assert_eq!(planned(&conn), [(7, vec![1]), (8, vec![6])]);

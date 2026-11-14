@@ -1,5 +1,5 @@
 //! "Export my files": every chapter the account downloaded, as one zip laid out as the
-//! local source of Mihon, Suwayomi and Mango reads it: `<title>/<chapter>.cbz`, with
+//! local source of Mango and other Mihon-compatible apps reads it: `<title>/<chapter>.cbz`, with
 //! the title's `ComicInfo.xml` and cover beside them. Unzipped into their local folder,
 //! the titles are there to read.
 //!
@@ -32,7 +32,7 @@ const CHUNK: usize = 256 << 10;
 /// Names are UTF-8: bit 11 of the flags.
 const UTF8: u16 = 1 << 11;
 const MAX32: u64 = u32::MAX as u64;
-/// Mihon's words for a title's status, by Mango's number for it.
+/// The local source's words for a title's status, by Mango's number for it.
 const STATUS: [&str; 7] = ["Unknown", "Ongoing", "Completed", "Licensed", "Publishing finished", "Cancelled", "On hiatus"];
 
 /// One title's folder in the zip.
@@ -111,7 +111,7 @@ pub async fn plan(db: &Db, images: &Images, downloads: &Path) -> Result<Vec<Titl
     Ok(titles)
 }
 
-/// The title's own `ComicInfo.xml`, as Mihon's local source writes and reads it.
+/// The title's own `ComicInfo.xml`, as the local source of Mihon-compatible apps writes and reads it.
 fn comic_info(title: &str, [author, artist, summary, genre]: [Option<&str>; 4], status: i64) -> String {
     let mut xml = String::from("<?xml version=\"1.0\" encoding=\"utf-8\"?>\n<ComicInfo xmlns:ty=\"http://www.w3.org/2001/XMLSchema\">\n");
     let mut field = |tag: &str, value: Option<&str>| {
@@ -204,8 +204,8 @@ impl<W: Write> Zip<W> {
         Self {
             out,
             at: 0,
-            time: ((seconds / 3600) << 11 | (seconds / 60 % 60) << 5 | (seconds % 60) / 2) as u16,
-            day: ((year - 1980).max(0) << 9 | month << 5 | day) as u16,
+            time: (((seconds / 3600) << 11) | ((seconds / 60 % 60) << 5) | ((seconds % 60) / 2)) as u16,
+            day: (((year - 1980).max(0) << 9) | (month << 5) | day) as u16,
             entries: Vec::new(),
         }
     }

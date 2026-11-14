@@ -18,7 +18,7 @@ so the sleep check is quick.
 The store and the extension it tries are not named here. They come from the
 environment:
 
-    MANGO_SMOKE_STORE       the address of a Mihon extension store's repo.json
+    MANGO_SMOKE_STORE       the address of a Mihon-compatible extension store's repo.json
     MANGO_SMOKE_STORE_LINK  the same store, by the link to its index.pb
     MANGO_SMOKE_PKG         the package of an extension in that store whose sources
                             come in several languages, English among them
@@ -811,7 +811,7 @@ def backup_chapter(url, read):
     return text(1, url) + text(2, "Chapter " + url[-1]) + number(4, int(read)) + number(6, 0 if read else 4)
 
 
-# A small backup in Mihon's format, written out by hand: one title from a source that
+# A small backup in the .tachibk format, written out by hand: one title from a source that
 # is not installed, with two chapters, a category and a history entry.
 entry = (
     number(1, 4242)

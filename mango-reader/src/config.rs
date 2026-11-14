@@ -37,6 +37,13 @@ pub struct Config {
     /// A proxy stands in front of Mango and writes each caller's address into
     /// `X-Forwarded-For`. Wrong passwords are then counted by that address. `MANGO_PROXIED`
     pub proxied: bool,
+    /// How many proxies in a row stand in front, each adding to `X-Forwarded-For`: a CDN
+    /// and a proxy of the owner's own are two. The caller is the address the first of them
+    /// wrote down. Counted only with `proxied` on. `MANGO_PROXY_HOPS`, 1 unless set
+    pub proxy_hops: u64,
+    /// What an uploaded backup may unpack to, in MB. It is held in memory whole while it
+    /// is read, one backup at a time. `MANGO_IMPORT_MAX_MB`, 768 unless set
+    pub import_max_mb: u64,
     /// Let whoever holds an admin's invitation make an account, and show the main page
     /// to a browser that is not signed in. `MANGO_SIGNUP`
     pub signup: bool,
@@ -136,6 +143,8 @@ impl Default for Config {
             first_password: None,
             hosts: Vec::new(),
             proxied: false,
+            proxy_hops: 1,
+            import_max_mb: 768,
             signup: false,
             account_url: None,
             host: HostConfig::default(),
@@ -229,6 +238,15 @@ impl Config {
         }
         if let Some(v) = number("MANGO_HOST_IDLE_SECS")? {
             self.host.idle_secs = v;
+        }
+        if let Some(v) = number("MANGO_PROXY_HOPS")? {
+            if v == 0 {
+                return Err("MANGO_PROXY_HOPS must be 1 or more".into());
+            }
+            self.proxy_hops = v;
+        }
+        if let Some(v) = number("MANGO_IMPORT_MAX_MB")? {
+            self.import_max_mb = v.max(1);
         }
         if let Some(v) = number("MANGO_STORES_REFRESH_HOURS")? {
             self.stores.refresh_hours = v;

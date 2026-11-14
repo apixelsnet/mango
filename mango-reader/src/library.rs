@@ -327,10 +327,13 @@ pub fn bulk(conn: &mut Connection, titles: &[i64], action: &Bulk) -> Result<()> 
             let read = matches!(action, Bulk::Read);
             tx.execute(
                 &format!(
-                    "UPDATE chapters SET read = ?1, last_page_read = 0
-                     WHERE manga_id IN ({list}) OR manga_id IN (SELECT id FROM manga WHERE merged_into IN ({list}))"
+                    // As on a title page (titles.rs, `mark`): marked read now counts as read now in
+                    // the statistics, and a chapter read already keeps its own time.
+                    "UPDATE chapters SET read = ?1, last_page_read = 0, read_at = CASE WHEN ?1 THEN ?2 ELSE read_at END
+                     WHERE (manga_id IN ({list}) OR manga_id IN (SELECT id FROM manga WHERE merged_into IN ({list})))
+                       AND (NOT ?1 OR read = 0)"
                 ),
-                [read],
+                rusqlite::params![read, crate::db::now()],
             )?;
         }
         Bulk::Remove => {
@@ -428,16 +431,19 @@ fn ranked(counts: HashMap<String, i64>, keep: usize) -> Vec<Count> {
     list
 }
 
-/// What the reading adds up to. Days are counted in UTC.
-pub fn stats(conn: &Connection) -> Result<Stats> {
+/// What the reading adds up to. Days and months are the reader's own: `east` is how many
+/// minutes the reader's clock is ahead of UTC, as the browser says.
+pub fn stats(conn: &Connection, east: i64) -> Result<Stats> {
     let count = |sql: &str| -> Result<i64> { Ok(conn.query_row(sql, [], |r| r.get(0))?) };
     let library = view_counts(conn)?;
-    let now = now();
-    let today = now / DAY;
+    // No place is more than 14 hours from UTC.
+    let shift = east.clamp(-14 * 60, 14 * 60) * 60;
+    let now = now() + shift;
+    let today = now.div_euclid(DAY);
     let mut stmt = conn.prepare(
-        "SELECT read_at / 86400 FROM chapters WHERE read = 1 AND read_at IS NOT NULL UNION SELECT read_at / 86400 FROM history ORDER BY 1 DESC",
+        "SELECT (read_at + ?1) / 86400 FROM chapters WHERE read = 1 AND read_at IS NOT NULL UNION SELECT (read_at + ?1) / 86400 FROM history ORDER BY 1 DESC",
     )?;
-    let days = stmt.query_map([], |r| r.get(0))?.collect::<rusqlite::Result<Vec<i64>>>()?;
+    let days = stmt.query_map([shift], |r| r.get(0))?.collect::<rusqlite::Result<Vec<i64>>>()?;
 
     // Twelve months back from this one, each shown even when nothing was read in it.
     let mut months: BTreeMap<String, i64> = BTreeMap::new();
@@ -447,10 +453,10 @@ pub fn stats(conn: &Connection) -> Result<Stats> {
     }
     let first = months.keys().next().cloned().unwrap_or_default();
     let mut stmt = conn.prepare(
-        "SELECT strftime('%Y-%m', read_at, 'unixepoch') AS month, COUNT(*) FROM chapters
+        "SELECT strftime('%Y-%m', read_at + ?2, 'unixepoch') AS month, COUNT(*) FROM chapters
          WHERE read = 1 AND read_at IS NOT NULL GROUP BY month HAVING month >= ?1",
     )?;
-    for row in stmt.query_map([&first], |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?)))? {
+    for row in stmt.query_map(params![&first, shift], |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?)))? {
         let (month, read) = row?;
         if let Some(slot) = months.get_mut(&month) {
             *slot = read;
@@ -612,7 +618,7 @@ mod tests {
         assert_eq!((resume.chapter_id, resume.page), (12, 4), "an unfinished chapter is where to go on");
         conn.execute("UPDATE chapters SET read = 1 WHERE id = 12", []).unwrap();
         assert_eq!(read(&conn).unwrap().resume.unwrap().chapter_id, 11, "after it, the next one up the list");
-        assert_eq!(read(&conn).unwrap().items.iter().find(|i| i.id == 1).unwrap().last_read_at > 0, true);
+        assert!(read(&conn).unwrap().items.iter().find(|i| i.id == 1).unwrap().last_read_at > 0);
 
         forget(&conn, Some(12)).unwrap();
         assert_eq!(history(&conn, 10, 0).unwrap().len(), 1);
@@ -650,7 +656,7 @@ mod tests {
         conn.execute("UPDATE manga SET dedupe = 1 WHERE id = 1", []).unwrap();
         let alpha = read(&conn).unwrap().items.into_iter().find(|i| i.id == 1).unwrap();
         assert_eq!((alpha.total, alpha.unread), (3, 2));
-        assert_eq!(stats(&conn).unwrap().chapters, 3, "statistics count as the library does");
+        assert_eq!(stats(&conn, 0).unwrap().chapters, 3, "statistics count as the library does");
         remember(&conn, 21).unwrap();
         assert_eq!(history(&conn, 10, 0).unwrap()[0].manga_id, 1, "its history shows under Alpha");
         assert_eq!(read(&conn).unwrap().resume.unwrap().manga_id, 1);
@@ -661,12 +667,22 @@ mod tests {
         let conn = database();
         conn.execute("UPDATE chapters SET read = 1, read_at = ?1 WHERE id IN (10, 20)", [now()]).unwrap();
         conn.execute("UPDATE manga SET genre = 'Action, Drama' WHERE id = 1", []).unwrap();
-        let stats = stats(&conn).unwrap();
-        assert_eq!((stats.titles, stats.started, stats.finished, stats.chapters, stats.read), (3, 2, 0, 5, 2));
-        assert_eq!((stats.days, stats.streak, stats.months.len()), (1, 1, 12));
-        assert_eq!(stats.months.last().unwrap().count, 2);
-        assert_eq!(stats.genres[0], Count { name: "Action".into(), count: 1 });
+        let seen = stats(&conn, 0).unwrap();
+        assert_eq!((seen.titles, seen.started, seen.finished, seen.chapters, seen.read), (3, 2, 0, 5, 2));
+        assert_eq!((seen.days, seen.streak, seen.months.len()), (1, 1, 12));
+        assert_eq!(seen.months.last().unwrap().count, 2);
+        assert_eq!(seen.genres[0], Count { name: "Action".into(), count: 1 });
         assert_eq!(streak(&[10, 9, 8, 5], 11), 3, "today is not over yet");
         assert_eq!(streak(&[9, 8], 11), 0);
+
+        // Read at 23:30 UTC on two days running: in UTC+1 that is 00:30 on the next ones.
+        // Two days either way, but a month's last evening counts in the next month there.
+        conn.execute("UPDATE chapters SET read = 0, read_at = NULL", []).unwrap();
+        let evening = 1_798_759_800; // 2026-12-31 23:30 UTC
+        conn.execute("UPDATE chapters SET read = 1, read_at = ?1 WHERE id = 10", [evening]).unwrap();
+        conn.execute("UPDATE chapters SET read = 1, read_at = ?1 WHERE id = 20", [evening + 3600]).unwrap();
+        assert_eq!(stats(&conn, 0).unwrap().days, 2, "00:30 UTC is the next day in UTC");
+        assert_eq!(stats(&conn, 60).unwrap().days, 1, "both are on January 1st in UTC+1");
+        assert_eq!(stats(&conn, -120).unwrap().days, 1, "both are on December 31st in UTC-2");
     }
 }

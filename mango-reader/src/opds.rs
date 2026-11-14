@@ -56,7 +56,13 @@ pub fn slashed(state: Spaces) -> Router {
 }
 
 /// Lets a call through when it carries an account's name and password, or a browser's session.
+/// A browser's session counts only on Mango's own pages: a link or picture on another site
+/// that leads here is not let in on it, since reading a page through this feed moves the
+/// place reached. Reading apps send a name and password instead, and no such label.
 async fn sign_in(State(server): State<Spaces>, ConnectInfo(peer): ConnectInfo<SocketAddr>, mut request: Request, next: Next) -> Response {
+    if !request.headers().contains_key(header::AUTHORIZATION) && crate::api::from_elsewhere(request.headers()) {
+        return AppError::new(403, "cross_site", "Requests from other sites are not accepted").into_response();
+    }
     let app = match server.auth.basic(server.auth.caller(peer.ip(), request.headers()), request.headers()).await {
         Ok(who) => server.of(who),
         Err(why) => Err(why),

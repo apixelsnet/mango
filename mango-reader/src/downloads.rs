@@ -26,6 +26,10 @@ pub const PAUSED: &str = "downloads.paused";
 pub const DELETE_READ: &str = "downloads.deleteAfterReading";
 /// How a chapter is saved: `cbz` (the default), or `folder`, a folder of its pages.
 pub const FORMAT: &str = "downloads.format";
+/// How many pages of a chapter are fetched side by side, 1 to 6. A source that turns away
+/// quick readers wants 1; a fast one and a slow connection, more.
+pub const PAGES_AT_ONCE: &str = "downloads.pagesAtOnce";
+const DEFAULT_PAGES_AT_ONCE: i64 = 2;
 /// Tries a chapter gets before it is parked as failed.
 const TRIES: i64 = 5;
 /// Seconds to wait before the next try, by how many have failed so far.
@@ -390,23 +394,22 @@ impl Downloads {
             Sink::Zip(Arc::new(StdMutex::new(zip::ZipWriter::new(fs::File::create(part)?))))
         };
 
-        // Two pages are fetched at a time and written in order, so memory holds two pages at most.
+        // A few pages are fetched at a time (`PAGES_AT_ONCE`) and written in order, so memory
+        // holds that many pages at most.
+        let at_once = self.db.call(|conn| Ok(settings::get::<i64>(conn, PAGES_AT_ONCE).unwrap_or(DEFAULT_PAGES_AT_ONCE))).await?.clamp(1, 6);
         let mut next = 0;
         while next < total {
             if !self.wanted(job.chapter).await {
                 return Ok(false);
             }
-            let second = (next + 1 < total).then_some(next + 1);
-            let (first, other) = tokio::join!(self.images.page(job.chapter, next), async {
-                match second {
-                    Some(index) => Some(self.images.page(job.chapter, index).await),
-                    None => None,
-                }
-            });
-            let mut pages = vec![first?];
-            if let Some(page) = other {
-                pages.push(page?);
+            let mut fetching = tokio::task::JoinSet::new();
+            for index in next..(next + at_once).min(total) {
+                let (images, chapter) = (self.images.clone(), job.chapter);
+                fetching.spawn(async move { (index, images.page(chapter, index).await) });
             }
+            let mut pages = fetching.join_all().await;
+            pages.sort_by_key(|(index, _)| *index);
+            let pages = pages.into_iter().map(|(_, page)| page).collect::<Result<Vec<_>>>()?;
             let (writer, from) = (sink.clone(), next);
             next += pages.len() as i64;
             tokio::task::spawn_blocking(move || -> Result<()> {

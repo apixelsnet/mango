@@ -27,6 +27,7 @@ const MIGRATIONS: &[&str] = &[
     include_str!("../migrations/014_read_at.sql"),
     include_str!("../migrations/015_sign_in_sync.sql"),
     include_str!("../migrations/016_group_only.sql"),
+    include_str!("../migrations/017_chapters_left.sql"),
 ];
 
 /// Now, in epoch seconds: the unit of every time the database stores.
@@ -35,7 +36,7 @@ pub fn now() -> i64 {
 }
 
 #[derive(Clone)]
-pub struct Db(Arc<Mutex<Connection>>, Arc<PathBuf>);
+pub struct Db(Arc<Mutex<Connection>>, Arc<PathBuf>, Arc<Mutex<Option<Connection>>>);
 
 impl Db {
     pub fn open(path: &Path) -> Result<Self> {
@@ -52,7 +53,7 @@ impl Db {
         conn.busy_timeout(Duration::from_secs(30))?;
         conn.execute_batch("PRAGMA journal_mode = WAL; PRAGMA synchronous = NORMAL; PRAGMA foreign_keys = ON;")?;
         migrate(&mut conn)?;
-        Ok(Self(Arc::new(Mutex::new(conn)), Arc::new(path.to_path_buf())))
+        Ok(Self(Arc::new(Mutex::new(conn)), Arc::new(path.to_path_buf()), Arc::default()))
     }
 
     /// Another connection to the same database, for long work that must not hold up the
@@ -67,6 +68,33 @@ impl Db {
     /// Runs `work` on the connection, on this thread. For start-up, before anything is served.
     pub fn now<T>(&self, work: impl FnOnce(&mut Connection) -> Result<T>) -> Result<T> {
         work(&mut self.0.lock().unwrap_or_else(|poisoned| poisoned.into_inner()))
+    }
+
+    /// Runs `work` on a connection of its own that only reads, opened the first time it is
+    /// wanted: long reads (an export, the statistics) then leave the shared one free for
+    /// the reader's clicks, since the write-ahead log lets readers go on beside a writer.
+    /// A database in memory has no second connection to it, and uses the shared one.
+    pub async fn read<T, F>(&self, work: F) -> Result<T>
+    where
+        F: FnOnce(&Connection) -> Result<T> + Send + 'static,
+        T: Send + 'static,
+    {
+        if self.1.to_str() == Some(":memory:") {
+            return self.call(move |conn| work(conn)).await;
+        }
+        let (path, reader) = (self.1.clone(), self.2.clone());
+        tokio::task::spawn_blocking(move || {
+            let mut held = reader.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+            if held.is_none() {
+                let conn = Connection::open(path.as_path())?;
+                conn.busy_timeout(Duration::from_secs(30))?;
+                conn.execute_batch("PRAGMA query_only = ON;")?;
+                *held = Some(conn);
+            }
+            work(held.as_ref().expect("opened above"))
+        })
+        .await
+        .map_err(|e| AppError::internal(format!("database task: {e}")))?
     }
 
     pub async fn call<T, F>(&self, work: F) -> Result<T>

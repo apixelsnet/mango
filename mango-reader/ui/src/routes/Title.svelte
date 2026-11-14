@@ -7,8 +7,10 @@
   import Icon from '../lib/Icon.svelte';
   import { keep, recall } from '../lib/keep';
   import Notice from '../lib/Notice.svelte';
-  import { canKeep, forget as forgetHere, keep as keepHere, keptChapters } from '../lib/offline';
+  import { canKeep, forget as forgetHere, keep as keepHere, keptChapters, roomTaken } from '../lib/offline';
   import { lacks } from '../lib/plan.svelte';
+  import { savingData } from '../lib/saver';
+  import { session } from '../lib/session.svelte';
   import { pref, setPref } from '../lib/prefs.svelte';
   import { left, moving, queueOf, waiting, type Waits } from '../lib/queue';
   import { back, go } from '../lib/router.svelte';
@@ -410,8 +412,31 @@
       const done = await keepHere(id, list.map((c) => c.id), (pages) => (keeping = `Keeping… ${pages} pages so far`));
       keeping = `${done} ${done === 1 ? 'chapter is' : 'chapters are'} on this device, to read with no connection.`;
       here = await keptChapters();
+      // How much room that takes, and whether the browser may clear it when short of room.
+      const room = await roomTaken().catch(() => null);
+      if (room) keeping += ` Mango takes ${(room.bytes / (1 << 20)).toFixed(1)} MB here${room.lasting ? '.' : '; the browser may clear it when the device runs short of room.'}`;
     } catch (e) {
       keeping = `Not all of it was kept: ${message(e)}`;
+    }
+  }
+
+  /**
+   * Has Mango fetch a chapter's pages from the source again, for a source that fixed one,
+   * then asks for each page past what this browser keeps, so the next reading shows the new ones.
+   */
+  async function fetchAgain(chapter: Chapter) {
+    keeping = `Fetching the pages of ${chapter.name} again…`;
+    try {
+      const { count } = await send<{ count: number }>('POST', `/chapters/${chapter.id}/pages/reload`);
+      for (let page = 0; page < count; page++) {
+        await fetch(`api/chapters/${chapter.id}/pages/${page}?a=${session.id ?? 0}`, { cache: 'reload' });
+        // The smaller copy this device reads with data saver on is a page of its own to the browser.
+        if (savingData()) await fetch(`api/chapters/${chapter.id}/pages/${page}?a=${session.id ?? 0}&light=1`, { cache: 'reload' });
+        keeping = `Fetching the pages of ${chapter.name} again… ${page + 1} of ${count}`;
+      }
+      keeping = `The pages of ${chapter.name} were fetched again.`;
+    } catch (e) {
+      keeping = `The pages were not fetched again: ${message(e)}`;
     }
   }
 
@@ -496,7 +521,7 @@
     }
   }
 
-  // A long press picks, as in Mihon: the first starts picking, the next takes in the run up to it.
+  // A long press picks, as in other readers: the first starts picking, the next takes in the run up to it.
   let press: ReturnType<typeof setTimeout> | undefined;
   let pressAt = { x: 0, y: 0 };
   // A long press just ended: the click that follows it is not a pick.
@@ -919,6 +944,9 @@
                         {/if}
                       {/if}
                       <a class="btn" href="api/chapters/{chapter.id}/file" download onclick={() => (opened = null)}><Icon name="download" size={18} />Save as a CBZ file</a>
+                      {#if !chapter.downloaded && title.sourceId !== '0'}
+                        <button class="btn" onclick={() => ((opened = null), fetchAgain(chapter))}><Icon name="refresh" size={18} />Fetch pages again</button>
+                      {/if}
                       <button class="btn" onclick={() => startPicking(chapter)}>Select</button>
                     </div>
                   {/if}

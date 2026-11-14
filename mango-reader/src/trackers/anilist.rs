@@ -18,7 +18,7 @@ const SAVE: &str = "mutation ($media: Int, $status: MediaListStatus, $progress: 
     SaveMediaListEntry(mediaId: $media, status: $status, progress: $progress, scoreRaw: $score) { id } }";
 
 fn request(http: &Client, token: Option<&str>, query: &str, variables: Value) -> reqwest::RequestBuilder {
-    let request = http.post(API).json(&json!({ "query": query, "variables": variables }));
+    let request = http.post(super::at(API)).json(&json!({ "query": query, "variables": variables }));
     match token {
         Some(token) => request.bearer_auth(token),
         None => request,

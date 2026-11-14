@@ -22,6 +22,30 @@ use std::time::Duration;
 pub const URL: &str = "notify.url";
 /// How it is put: ntfy, discord or webhook.
 pub const KIND: &str = "notify.kind";
+/// A header sent with each message, `Name: value`, for an address that asks to be signed in
+/// to: an ntfy topic behind an access token, a webhook that wants a key. Never shown again.
+pub const HEADER: &str = "notify.header";
+/// Headers the request makes itself, which a header given here may not replace.
+const OWN_HEADERS: [&str; 6] = ["host", "content-length", "content-type", "transfer-encoding", "connection", "user-agent"];
+
+/// Checks a header given for notifications: a plain name, a value on one line. Answers it
+/// split, or None for an empty one, which takes it away.
+pub fn header(text: &str) -> Result<Option<(String, String)>> {
+    let text = text.trim();
+    if text.is_empty() {
+        return Ok(None);
+    }
+    let bad = || AppError::bad_request("Write the header as Name: value, on one line, such as Authorization: Bearer tk_...");
+    let (name, value) = text.split_once(':').ok_or_else(bad)?;
+    let (name, value) = (name.trim(), value.trim());
+    if name.is_empty() || value.is_empty() || value.len() > 1000 || !name.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-') || value.chars().any(char::is_control) {
+        return Err(bad());
+    }
+    if OWN_HEADERS.contains(&name.to_ascii_lowercase().as_str()) {
+        return Err(AppError::bad_request(format!("Mango sets {name} itself")));
+    }
+    Ok(Some((name.to_owned(), value.to_owned())))
+}
 /// Chapters named one by one in a message; the rest are counted.
 const NAMED: usize = 20;
 /// The same on a phone's notification, which shows a few lines.
@@ -49,7 +73,7 @@ pub struct Notifier {
 impl Notifier {
     pub fn new(db: Db, local: bool) -> Result<Self> {
         let builder = Client::builder()
-            .user_agent(concat!("Mango/", env!("CARGO_PKG_VERSION")))
+            .user_agent(concat!("Mango/", env!("MANGO_VERSION")))
             .connect_timeout(Duration::from_secs(10))
             .timeout(Duration::from_secs(20));
         let http = net::guard(builder, local).build().map_err(|e| AppError::internal(e.to_string()))?;
@@ -102,11 +126,16 @@ impl Notifier {
             ));
         }
         let text = message(title, list);
+        let signed = self.db.call(|conn| Ok(settings::get::<String>(conn, HEADER))).await?;
         let request = match kind {
             "discord" => self.http.post(to).json(&json!({ "username": "Mango", "content": text.chars().take(1900).collect::<String>() })),
             "webhook" => self.http.post(to).json(&json!({ "event": "chapters", "count": list.len(), "chapters": list })),
             // ntfy takes the text as the body and the rest as headers, which must be plain ASCII.
             _ => self.http.post(to).header("Title", ascii(title)).header("Tags", "books").body(text),
+        };
+        let request = match signed.as_deref().map(header).transpose()?.flatten() {
+            Some((name, value)) => request.header(name, value),
+            None => request,
         };
         let answer = request.send().await.map_err(|e| AppError::new(502, "notify_failed", format!("The address did not answer: {}", net::told(&e))))?;
         if !answer.status().is_success() {
