@@ -5,12 +5,14 @@
   import { get, message, send, type Card, type Library, type LibraryItem, type Listing, type Source } from '../lib/api';
   import Cover from '../lib/Cover.svelte';
   import Icon from '../lib/Icon.svelte';
+  import { keep, recall } from '../lib/keep';
   import Notice from '../lib/Notice.svelte';
   import { browseLangs } from '../lib/prefs.svelte';
   import { langName } from '../lib/util';
+  import { BY_HAND, MOVED } from '../lib/movingMany';
 
   type Choice = 'chapters' | 'categories' | 'tracks' | 'keep';
-  type Row = { title: LibraryItem; state: 'waiting' | 'looking' | 'found' | 'none' | 'moving' | 'moved' | 'failed'; match: Card | null; from: Source | null; on: boolean; error: string };
+  type Row = { title: LibraryItem; state: 'waiting' | 'looking' | 'found' | 'none' | 'moving' | 'moved' | 'failed'; match: Card | null; from: Source | null; on: boolean; error: string; /** The match has the same name. */ exact: boolean };
 
   let { ids }: { ids: number[] } = $props();
 
@@ -26,15 +28,37 @@
   let options = $state<Record<Choice, boolean>>({ chapters: true, categories: true, tracks: true, keep: false });
 
   const chosen = $derived(picked.map((id) => sources.find((s) => s.id === id)).filter((s): s is Source => !!s));
-  const ready = $derived(rows.filter((row) => row.on && row.match));
+  const ready = $derived(rows.filter((row) => row.on && row.match && row.state === 'found'));
+
+  // The matches found are held while the page lives: "Pick by hand" leaves this screen, and
+  // coming back shows them again, with the title moved by hand marked so.
+  type Held = { rows: Row[]; picked: string[]; options: Record<Choice, boolean>; phase: 'review' | 'done' };
+  const HELD = $derived(`migrate-many|${ids.join(',')}`);
+  $effect(() => {
+    if (phase === 'review' || phase === 'done') keep(HELD, $state.snapshot({ rows, picked, options, phase }));
+  });
+
+  function pickByHand(row: Row) {
+    keep(BY_HAND, { from: row.title.id, back: `/migrate/many?ids=${ids.join(',')}` });
+  }
 
   /** Letters and digits only, in lower case: how two sources' names for one title are compared. */
   const plain = (name: string) => name.toLowerCase().replace(/[^\p{L}\p{N}]/gu, '');
 
   async function load() {
     try {
+      const held = recall<Held>(HELD);
+      if (held) {
+        sources = (await get<{ sources: Source[] }>('/sources')).sources.filter((s) => !s.hidden && s.id !== '0');
+        const moved = recall<number[]>(MOVED) ?? [];
+        keep(MOVED, []);
+        rows = held.rows.map((row) => (moved.includes(row.title.id) ? { ...row, state: 'moved', on: false, match: null, from: null } : row));
+        [picked, options, phase] = [held.picked, held.options, held.phase];
+        loading = false;
+        return;
+      }
       const [library, found] = await Promise.all([get<Library>('/library'), get<{ sources: Source[] }>('/sources')]);
-      rows = library.items.filter((item) => ids.includes(item.id)).map((title) => ({ title, state: 'waiting', match: null, from: null, on: true, error: '' }));
+      rows = library.items.filter((item) => ids.includes(item.id)).map((title) => ({ title, state: 'waiting', match: null, from: null, on: true, error: '', exact: false }));
       sources = found.sources.filter((s) => !s.hidden && s.id !== '0');
       const langs = browseLangs(sources);
       const pinned = sources.filter((s) => s.pinned);
@@ -57,8 +81,17 @@
     picked = next;
   }
 
+  // Searches still out. Leaving the screen stops them, as global search does, and starts no more.
+  const out = new Set<AbortController>();
+  let left = false;
+  $effect(() => () => {
+    left = true;
+    for (const stop of out) stop.abort();
+  });
+
   async function search(source: Source, name: string): Promise<Card[]> {
     const stop = new AbortController();
+    out.add(stop);
     const timer = setTimeout(() => stop.abort(), PATIENCE_MS);
     try {
       return (await get<Listing>(`/sources/${source.id}/search?q=${encodeURIComponent(name)}`, stop.signal)).items;
@@ -66,6 +99,7 @@
       return [];
     } finally {
       clearTimeout(timer);
+      out.delete(stop);
     }
   }
 
@@ -73,17 +107,19 @@
     row.state = 'looking';
     let fallback: [Card, Source] | null = null;
     for (const source of chosen) {
+      if (left) return;
       const found = (await search(source, row.title.title)).filter((card) => card.id !== row.title.id);
       const same = found.find((card) => plain(card.title) === plain(row.title.title));
       if (same) {
-        [row.match, row.from] = [same, source];
+        [row.match, row.from, row.exact] = [same, source, true];
         break;
       }
       fallback ??= found.length ? [found[0], source] : null;
     }
     if (!row.match && fallback) [row.match, row.from] = fallback;
     row.state = row.match ? 'found' : 'none';
-    row.on = !!row.match;
+    // A title under another name may be another title: it is shown, but left until picked.
+    row.on = row.exact;
   }
 
   async function findAll() {
@@ -168,18 +204,20 @@
               <span>
                 {#if row.state === 'looking' || row.state === 'waiting'}Looking…
                 {:else if row.state === 'none'}Not found in the sources picked.
-                {:else if row.match}{row.match.title} · {row.from?.name}{/if}
-                {#if row.state === 'moving'} · moving…{:else if row.state === 'moved'} · moved{:else if row.state === 'failed'} · {row.error}{/if}
+                {:else if row.match}{row.match.title} · {row.from?.name}{#if !row.exact} · <em>another name: check it is the same title</em>{/if}{/if}
+                {#if row.state === 'moving'} · moving…{:else if row.state === 'moved'}{row.match ? ' · moved' : 'Moved by hand.'}{:else if row.state === 'failed'} · {row.error}{/if}
               </span>
             </span>
             {#if row.match}<span class="art"><Cover src={row.match.cover} title={row.match.title} /></span>{/if}
             {#if phase === 'review'}
-              <span class="tools">
-                {#if row.match}
-                  <button class="btn" aria-pressed={row.on} onclick={() => (row.on = !row.on)}>{row.on ? 'Move' : 'Leave'}</button>
-                {/if}
-                <a class="btn" href="#/search?q={encodeURIComponent(row.title.title)}&for={row.title.id}">Pick by hand</a>
-              </span>
+              {#if row.state !== 'moved'}
+                <span class="tools">
+                  {#if row.match}
+                    <button class="btn" aria-pressed={row.on} onclick={() => (row.on = !row.on)}>{row.on ? 'Move' : 'Leave'}</button>
+                  {/if}
+                  <a class="btn" href="#/search?q={encodeURIComponent(row.title.title)}&for={row.title.id}" onclick={() => pickByHand(row)}>Pick by hand</a>
+                </span>
+              {/if}
             {/if}
           </li>
         {/each}

@@ -22,19 +22,31 @@ export const gate = { lost: (_code: string) => {}, plan: (_code: string) => {} }
 /** A change on its way (one held for Undo, lib/undoing.svelte.ts): reads wait for it, so they see it. */
 export const pending = { change: Promise.resolve() as Promise<unknown> };
 
+/**
+ * How long a read may take before it is given up. Longer than Mango itself waits on a
+ * source (30 s for the extension host to start, then 90 s for the call; config.rs), so the
+ * server's own answer always comes first. Changes are not cut off: an upload may be slow and still fine.
+ */
+const READ_LIMIT_MS = 150_000;
+
 export async function api<T>(path: string, options: Options = {}): Promise<T> {
-  if ((options.method ?? 'GET') === 'GET') await pending.change;
+  const reading = (options.method ?? 'GET') === 'GET';
+  if (reading) await pending.change;
+  // A server that hangs would otherwise leave a spinner for good. Browsers without these leave it as it was.
+  const limit = reading && typeof AbortSignal.timeout === 'function' ? AbortSignal.timeout(READ_LIMIT_MS) : undefined;
+  const signal = !limit ? options.signal : !options.signal ? limit : typeof AbortSignal.any === 'function' ? AbortSignal.any([options.signal, limit]) : options.signal;
   let response: Response;
   try {
     response = await fetch('api' + path, {
       method: options.method ?? 'GET',
-      signal: options.signal,
+      signal,
       headers: options.json === undefined ? undefined : { 'Content-Type': 'application/json' },
       body: options.json === undefined ? undefined : JSON.stringify(options.json),
       // A change sent while the page is going away, such as one held back for Undo, still arrives.
       keepalive: options.method !== undefined && options.method !== 'GET' && document.visibilityState === 'hidden',
     });
   } catch {
+    if (limit?.aborted && !options.signal?.aborted) throw new ApiError(0, 'timeout', 'Mango took too long to answer. Try again.');
     throw new ApiError(0, 'offline', 'Mango did not answer. Is it still running?');
   }
   let data: any = null;
@@ -238,7 +250,7 @@ export type Updates = {
   /** Unread chapters found in the last week. */
   fresh: number;
   /** `waiting` counts the titles a run left out because no chapter is expected of them yet. */
-  status: { running: boolean; done: number; total: number; waiting: number; found: number; failed: number; startedAt: number | null; finishedAt: number | null };
+  status: { running: boolean; stopped?: boolean; done: number; total: number; waiting: number; found: number; failed: number; startedAt: number | null; finishedAt: number | null };
 };
 
 export type Queued = {
@@ -269,6 +281,8 @@ export type ReaderInfo = {
   inLibrary: boolean;
   prev: number | null;
   next: number | null;
+  /** The chapters read after this one, in turn, as the group being read is followed. */
+  ahead: number[];
   /** The scanlation group reading follows, empty when uploads name none: handed on to the next chapter opened. */
   group: string;
   chapters: { id: number; name: string }[];

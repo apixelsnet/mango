@@ -42,7 +42,7 @@ body:
     id: alternatives
     attributes:
       label: Alternatives considered
-      description: Other ways around it, and how Mihon, Suwayomi or another reader handle it, if you know.
+      description: Other ways around it, and how other readers handle it, if you know.
 
   - type: dropdown
     id: area

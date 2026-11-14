@@ -102,6 +102,7 @@ const runInfo = (id) => ({
   inLibrary: true,
   prev: id > 21 ? id - 1 : null,
   next: id < 32 ? id + 1 : null,
+  ahead: Array.from({ length: Math.max(0, 32 - id) }, (_, k) => id + 1 + k).slice(0, 10),
   group: '',
   chapters: Array.from({ length: 12 }, (_, k) => 32 - k).map((n) => ({ id: n, name: `Chapter ${n - 20}` })),
   marks: [],
@@ -144,12 +145,14 @@ const GETS = [
       inLibrary: true,
       prev: null,
       next: null,
+      ahead: [],
       group: '',
       chapters: [{ id: Number(m[1]), name: `Chapter ${m[1]}` }],
       marks: [],
     }),
   ],
-  [/^\/api\/chapters\/(\d+)\/pages$/, (m) => ({ count: inRun(Number(m[1])) ? runPages(Number(m[1])) : PAGES })],
+  // Chapter 40 has a single page.
+  [/^\/api\/chapters\/(\d+)\/pages$/, (m) => ({ count: Number(m[1]) === 40 ? 1 : inRun(Number(m[1])) ? runPages(Number(m[1])) : PAGES })],
 ];
 
 http

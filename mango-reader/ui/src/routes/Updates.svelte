@@ -97,6 +97,15 @@
     await loadQueue();
   }
 
+  async function stop() {
+    try {
+      const status = await send<Updates['status']>('DELETE', '/updates/run');
+      if (data) data.status = status;
+    } catch (e) {
+      error = message(e);
+    }
+  }
+
   async function run() {
     note = '';
     try {
@@ -113,12 +122,15 @@
     <h1 class="display caps">Updates</h1>
     <div class="tools">
       {#if data?.status.finishedAt && !running}
-        <strong>Checked {ago(data.status.finishedAt)}: {data.status.found} new{data.status.failed ? `, ${data.status.failed} failed` : ''}{data.status.waiting ? `, ${data.status.waiting} not due yet` : ''}</strong>
+        <strong>{data.status.stopped ? 'Stopped' : 'Checked'} {ago(data.status.finishedAt)}: {data.status.found} new{data.status.failed ? `, ${data.status.failed} failed` : ''}{data.status.waiting ? `, ${data.status.waiting} not due yet` : ''}</strong>
       {/if}
       <button class="btn big spot" disabled={running} onclick={run}>
         <Icon name="refresh" size={18} stroke={3} />
         {running && data ? `Checking ${data.status.done} / ${data.status.total}` : 'Update now'}
       </button>
+      {#if running}
+        <button class="btn big" disabled={data?.status.stopped} onclick={stop}>{data?.status.stopped ? 'Stopping…' : 'Stop'}</button>
+      {/if}
     </div>
   </div>
 

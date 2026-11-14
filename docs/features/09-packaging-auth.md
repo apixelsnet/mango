@@ -27,6 +27,8 @@ How Mango is shipped, configured, protected and kept up to date.
 | | `MANGO_PASSWORD` | none. Sets the password on a start that finds none |
 | `hosts` | `MANGO_HOSTS` | none. Names Mango goes by, comma separated in the variable; see below |
 | `proxied` | `MANGO_PROXIED` | `false`; `on` when a proxy in front writes each caller's address into `X-Forwarded-For` |
+| `proxy_hops` | `MANGO_PROXY_HOPS` | `1`; how many proxies in a row stand in front with `proxied` on (a CDN and a proxy of your own are 2). Wrong passwords are counted by the address the first of them wrote down |
+| `import_max_mb` | `MANGO_IMPORT_MAX_MB` | `768`; what an uploaded backup may unpack to. It sits in memory whole while it is read, one backup at a time on the whole server, so a small server sets it lower (feature 10) |
 | `signup` | `MANGO_SIGNUP` | `false`; `on` shows the main page to whoever is not signed in, and lets the holder of an admin's invitation make an account |
 | `hold_file` | `MANGO_HOLD_FILE` | none. For whoever runs Mango for others: while this file has a line that reads `full`, the download queue waits, keeping what is queued; `GET /api/downloads` says `held` |
 | `account_url` | `MANGO_ACCOUNT_URL` | none. For whoever runs Mango for others: where a reader's plan and billing are kept, an `https://` address or a path on the same site. Shown as a link in Settings, Account and in the tour; see feature 15 |
@@ -83,11 +85,11 @@ Checked on Linux, in a container with no network: before the change, a `POST` wi
 
 - The first account is the owner's: an admin that cannot be removed. Its name is `owner`. An admin adds accounts, sets their passwords, makes them admins or readers, and removes them: `GET | POST /api/users`, `PUT | DELETE /api/users/{id}`.
 - While there is one account, signing in takes the password alone, as before. With more it takes a name too; names ignore case.
-- Each account has everything of its own: its stores and their catalogs, its installed extensions and pinned sources, titles, chapters and progress, categories, history, downloads, cache, tracker sign-ins and settings. The owner's is the data directory, as it was. Every other account has `users/<id>/` in it, with a `mango.db`, `cache/`, `covers/` and `downloads/` of its own, and its own download queue and update schedule.
+- Each account has everything of its own: its stores and their catalogs, its installed extensions and pinned sources, titles, chapters and progress, categories, history, downloads, cache, tracker sign-ins and settings. The owner's is the data directory, as it was. Every other account has `users/<id>/` in it, with a `mango.db`, `cache/`, `covers/` and `downloads/` of its own, and its own download queue and update schedule. One thing is shared: the local source's folder (`MANGO_LOCAL`), which every account reads; each keeps its own reading of it (feature 08).
 - Only the extension host is shared, and it holds one copy of each extension. The cookies sources keep live in the host, so they are shared too. An extension two accounts installed stays in the host until both removed it. When one account installs another version, the other account has that version too. What a store offers is checked against that store's key in the account that installs.
 - The accounts themselves, the solver and the proxy are for an admin; a reader is answered 403 `admin_only`.
 - Removing an account deletes its folder, and takes its extensions out of the host where no other account has them. A database from before accounts is moved on by itself: its password becomes the owner's.
-- An account's number is never given to another (2026-10-11). The number names the folder, and the folder goes a moment after the account, or at the next start when something still holds it. Before, an account added right after the newest one was removed got that number, and with it the removed account's library and tracker sign-ins. A new account whose folder is already there is refused.
+- An account's number is never given to another (2026-10-11). The number names the folder, and the folder goes a moment after the account, or at the next start when something still holds it. Before, an account added right after the newest one was removed got that number, and with it the removed account's library and tracker sign-ins. A new account whose folder is already there is refused. At start, a folder under `users/` whose account is not in the database is deleted only when removing the account marked it (a `removed` file written before the delete). Any other such folder is moved aside to `users/<id>.unknown-<time>` and kept, with a warning in the log: an older `mango.db` put back, or a new one beside an old `users/`, no longer deletes those libraries (2026-11-14).
 - With login switched off, every request is the owner's.
 - A title that two accounts read is fetched and stored once for each. That is the price of keeping accounts apart without touching every query.
 - Extensions are code that runs in the one host, as the user Mango runs as. Bringing one in is for an admin (2026-10-11): a reader adds stores and installs what the host already holds at that version, which an admin put there; an extension or a version no account has yet is answered 403 `admin_only`. A source's settings are kept once for all accounts and may hold a sign-in, so a reader gets an empty list and cannot change them. `MANGO_ANYONE_INSTALLS=on` gives every account what an admin has here; then give accounts only to people you would let run code on the server.
@@ -183,7 +185,7 @@ Not checked: the other four archives were not opened. The release's Linux job ha
 
 - Builds are incremental; the cache is cleared occasionally and only for this project. Release and measured builds are always clean.
 - Tested on Linux in Docker first, then on Windows, then macOS.
-- What a build downloads is pinned (2026-10-11): the Suwayomi jar and the Kotlin compiler by sha256 in the `Dockerfile`, `cargo-about` by version, the workflows' actions by commit, the emulation image by digest. A checkout leaves no token behind. Base images go by tag, so that a rebuild picks up their fixes.
+- What a build downloads is pinned (2026-10-11): the runtime jar and the Kotlin compiler by sha256 in the `Dockerfile`, `cargo-about` by version, the workflows' actions by commit, the emulation image by digest. A checkout leaves no token behind. Base images go by tag, so that a rebuild picks up their fixes.
 
 ## Done when
 
@@ -238,3 +240,11 @@ Routes, all under `/api/auth`: `two-step` (GET state, POST start, PUT confirm, D
 Checked by unit tests (the RFC's SHA-1 cases, base32, the whole flow) and end to end on Linux and Windows: setting up, a wrong first code, a spent code, a fresh code, a recovery code once, OPDS refusing the main password and taking an app password, taking it back; and in a browser, the QR code, the code step at sign-in and the recovery codes on a phone-wide screen.
 
 Not checked: a real authenticator app scanning the picture.
+
+## Signed-in devices, and API tokens (2026-11-14)
+
+- **Signed-in devices** (Settings › Account): every browser signed in to the account, with when it signed in and was last used, and Sign out for each but the one asking. `GET /api/auth/devices`, `DELETE /api/auth/devices/<id>`; a device's id is a hash of its session's hash, so the list gives nothing away.
+- **API tokens**: an app password made "For scripts (API)" is also a token for `/api`, sent as `Authorization: Bearer <token>`. It may do all the account can. Plain app passwords still open only the reading-app routes. A wrong token slows its sender down, as a wrong password does. Revoking it takes effect at once. The routes are those `api.rs` lists in `router`; each takes and gives JSON, and changes are `POST`, `PUT` or `DELETE`.
+- **Behind more than one proxy**: `MANGO_PROXY_HOPS` says how many stand in front (see the table above), so behind a CDN and a proxy of the owner's own, wrong passwords are counted by the address the CDN saw, not the CDN's own.
+
+Checked by unit tests (`two_step` covers tokens, `callers_are_told_apart_by_network` the hops) and on Linux against a running Mango.

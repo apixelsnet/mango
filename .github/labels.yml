@@ -82,7 +82,7 @@
   description: Your own files
 - name: "area: import/export"
   color: "bfdadc"
-  description: Mihon and Suwayomi backups
+  description: Backups from Mihon-compatible apps
 - name: "area: trackers"
   color: "bfdadc"
   description: AniList, MyAnimeList, Kitsu and MangaUpdates
@@ -123,7 +123,7 @@
   description: This will not be worked on
 - name: upstream
   color: "c5def5"
-  description: The cause is in an extension, Suwayomi-Server or another project
+  description: The cause is in an extension, the runtime the host is built on, or another project
 
 # For people who want to help.
 - name: good first issue

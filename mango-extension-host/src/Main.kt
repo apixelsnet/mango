@@ -1,9 +1,9 @@
 // Mango extension host.
 //
 // Runs Mihon-compatible extensions and exposes them to the Rust core over loopback
-// HTTP. The contract is protocol/openapi.yaml. Suwayomi-Server's runtime classes
-// (Android compatibility layer, source API, network stack, loaders) are used as a
-// library from a stripped copy of its release jar; nothing of its server is started.
+// HTTP. The contract is protocol/openapi.yaml. The runtime's classes (Android
+// compatibility layer, source API, network stack, loaders) are used as a library from
+// a stripped copy of its release jar; nothing of its server is started.
 
 package mango.host
 
@@ -110,6 +110,54 @@ import kotlin.system.exitProcess
 private const val PROTOCOL = 6
 private const val HOST_VERSION = "0.8.0"
 private val PKG_NAME = Regex("[A-Za-z0-9_.]+")
+
+/** Whether an address is on the public internet: not this machine, nor a private or shared network. */
+internal fun isPublic(address: InetAddress): Boolean {
+    if (address.isLoopbackAddress || address.isSiteLocalAddress || address.isLinkLocalAddress || address.isAnyLocalAddress || address.isMulticastAddress) return false
+    val b = address.address.map { it.toInt() and 0xff }
+    return when (b.size) {
+        // 0.0.0.0/8, and 100.64.0.0/10, which carriers share.
+        4 -> b[0] != 0 && !(b[0] == 100 && b[1] in 64..127)
+        // fc00::/7, the private networks of IPv6.
+        else -> (b[0] and 0xfe) != 0xfc
+    }
+}
+
+/**
+ * Sockets that refuse to connect to an address that is not public, before anything is sent:
+ * every connection a cover's fetch makes goes through one, after each redirect too, whether
+ * the address was written out or a name resolved to it. Let through: the source's own site
+ * (`ownHost`), since a source that reads a server on the owner's own network has its covers
+ * there, and the proxy the owner set.
+ */
+private class PublicSockets(private val ownHost: String?) : javax.net.SocketFactory() {
+    private val allowed: Set<InetAddress> by lazy {
+        val names = listOfNotNull(ownHost, proxyAddress?.first)
+        names.flatMap { runCatching { InetAddress.getAllByName(it).toList() }.getOrDefault(emptyList()) }.toSet()
+    }
+
+    private fun checked(to: InetAddress?) {
+        if (to != null && !isPublic(to) && to !in allowed) throw IOException("Not a public address: ${to.hostAddress}")
+    }
+
+    override fun createSocket(): java.net.Socket =
+        object : java.net.Socket() {
+            override fun connect(endpoint: SocketAddress?, timeout: Int) {
+                checked((endpoint as? InetSocketAddress)?.address)
+                super.connect(endpoint, timeout)
+            }
+        }
+
+    override fun createSocket(host: String, port: Int) = createSocket().apply { connect(InetSocketAddress(host, port)) }
+
+    override fun createSocket(host: String, port: Int, local: InetAddress, localPort: Int) =
+        createSocket().apply { bind(InetSocketAddress(local, localPort)); connect(InetSocketAddress(host, port)) }
+
+    override fun createSocket(host: InetAddress, port: Int) = createSocket().apply { connect(InetSocketAddress(host, port)) }
+
+    override fun createSocket(host: InetAddress, port: Int, local: InetAddress, localPort: Int) =
+        createSocket().apply { bind(InetSocketAddress(local, localPort)); connect(InetSocketAddress(host, port)) }
+}
 
 private class ApiError(
     val status: Int,
@@ -317,7 +365,7 @@ private fun siteProxy(
     return SiteProxy(proxy, named, direct)
 }
 
-/** The part of Suwayomi's start-up that extensions depend on, and nothing else. */
+/** The part of the runtime's start-up that extensions depend on, and nothing else. */
 private fun initRuntime(dataDir: Path) {
     (LoggerFactory.getLogger(Logger.ROOT_LOGGER_NAME) as ch.qos.logback.classic.Logger).level = Level.WARN
     System.setProperty("suwayomi.tachidesk.config.server.rootDir", dataDir.absolutePathString())
@@ -566,12 +614,13 @@ private fun install(body: JsonObject): JsonObject {
             throw ApiError(422, "bad_extension", "The file is an older version than the store lists")
         }
 
-        unload(pkg)
         // A file name of its own each time. Where a jar that was loaded cannot be replaced
         // or deleted yet, the old file stays behind until the host starts again.
         val jar = extDir.resolve("$pkg-v$versionName-${System.currentTimeMillis().toString(36)}.jar")
         Files.move(tmp, jar, StandardCopyOption.REPLACE_EXISTING)
 
+        // The new version is loaded before the installed one is let go: an update that does
+        // not load leaves the extension as it was, with its sources, rather than gone.
         val loaded =
             try {
                 loadJar(jar.absolutePathString(), className)
@@ -579,6 +628,7 @@ private fun install(body: JsonObject): JsonObject {
                 runCatching { Files.deleteIfExists(jar) }
                 throw e
             }
+        unload(pkg)
         loaded.forEach { sources[it.id] = it }
         loadedPkgs += pkg
 
@@ -1012,8 +1062,13 @@ private fun routeSource(
                     // way cannot make one from it. It is fetched the plain way, with
                     // the source's client and headers.
                     val address = if (cover.startsWith("/")) src.baseUrl.trimEnd('/') + cover else cover
+                    // The address comes from the source's site, which could name one on the
+                    // network Mango runs in: only public addresses are connected to, after
+                    // each redirect too (`PublicSockets`).
+                    val ownHost = runCatching { URI(src.baseUrl).host }.getOrNull()
+                    val client = src.client.newBuilder().socketFactory(PublicSockets(ownHost)).build()
                     call {
-                        val answer = src.client.newCall(Request.Builder().url(address).headers(src.headers).build()).execute()
+                        val answer = client.newCall(Request.Builder().url(address).headers(src.headers).build()).execute()
                         if (!answer.isSuccessful) {
                             answer.close()
                             throw ApiError(502, "source_error", "HTTP ${answer.code} for the cover")

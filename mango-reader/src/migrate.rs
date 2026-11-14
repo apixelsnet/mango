@@ -66,6 +66,8 @@ pub struct Outcome {
     pub read: i64,
     pub categories: i64,
     pub tracks: i64,
+    /// Pages kept with a note.
+    pub marks: i64,
 }
 
 fn same_title() -> AppError {
@@ -116,7 +118,7 @@ struct Change {
 }
 
 /// Works out what the new title's chapters take over, changing nothing.
-/// As Mihon does it: every numbered chapter up to the last one read counts as read, so a
+/// As other readers do it: every numbered chapter up to the last one read counts as read, so a
 /// source that splits or numbers its chapters differently still lands in the right place.
 fn plan(conn: &Connection, from: i64, to: i64) -> Result<Vec<Change>> {
     let mut olds: HashMap<Key, Old> = HashMap::new();
@@ -238,6 +240,47 @@ pub fn apply(conn: &mut Connection, from: i64, to: i64, options: &Options) -> Re
             }
             outcome.read += i64::from(change.read);
         }
+        // Pages kept with a note go to the same chapter on the new side.
+        let mut stmt = tx.prepare(
+            "SELECT c.chapter_number, c.name, p.page, p.note, p.created_at FROM page_marks p JOIN chapters c ON c.id = p.chapter_id WHERE c.manga_id = ?1",
+        )?;
+        let marks: Vec<(f64, String, i64, String, i64)> =
+            stmt.query_map([from], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)))?.collect::<rusqlite::Result<_>>()?;
+        drop(stmt);
+        if !marks.is_empty() {
+            let mut there: HashMap<Key, i64> = HashMap::new();
+            let mut stmt = tx.prepare("SELECT id, chapter_number, name FROM chapters WHERE manga_id = ?1 ORDER BY source_order")?;
+            for row in stmt.query_map([to], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, f64>(1)?, r.get::<_, String>(2)?)))? {
+                let (id, number, name) = row?;
+                there.entry(key(number, &name)).or_insert(id);
+            }
+            drop(stmt);
+            for (number, name, page, note, created_at) in marks {
+                if let Some(chapter) = there.get(&key(number, &name)) {
+                    outcome.marks += tx.execute(
+                        "INSERT OR IGNORE INTO page_marks (chapter_id, page, note, created_at) VALUES (?1, ?2, ?3, ?4)",
+                        params![chapter, page, note, created_at],
+                    )? as i64;
+                }
+            }
+        }
+    }
+    // What was edited by hand on the old title holds on the new one, where nothing was edited
+    // there: the name, the people, the description, genres, status and the cover. A cover set
+    // by hand names a file the caller copied over first (`Images::copy_cover`).
+    let locks = |id: i64| -> Result<Vec<String>> {
+        let text: Option<String> = tx.query_row("SELECT locked FROM manga WHERE id = ?1", [id], |r| r.get(0))?;
+        Ok(text.and_then(|text| serde_json::from_str(&text).ok()).unwrap_or_default())
+    };
+    let (theirs, ours) = (locks(from)?, locks(to)?);
+    let carried: Vec<&str> = crate::titles::LOCKABLE.into_iter().filter(|field| theirs.iter().any(|f| f == field) && !ours.iter().any(|f| f == field)).collect();
+    for field in &carried {
+        let column = if *field == "cover" { "thumbnail_url" } else { field };
+        tx.execute(&format!("UPDATE manga SET {column} = (SELECT {column} FROM manga WHERE id = ?1) WHERE id = ?2"), [from, to])?;
+    }
+    if !carried.is_empty() {
+        let all: Vec<&str> = crate::titles::LOCKABLE.into_iter().filter(|field| carried.contains(field) || ours.iter().any(|f| f == field)).collect();
+        tx.execute("UPDATE manga SET locked = ?2 WHERE id = ?1", params![to, serde_json::json!(all).to_string()])?;
     }
     if options.categories {
         outcome.categories = tx.execute(
@@ -259,12 +302,16 @@ pub fn apply(conn: &mut Connection, from: i64, to: i64, options: &Options) -> Re
             tx.execute("DELETE FROM tracks WHERE manga_id = ?1", [from])?;
         }
     }
-    // How it is read goes along, where the new title has no say of its own yet.
+    // How it is read goes along, where the new title has no say of its own yet, and which
+    // scanlation groups are wanted: groups name themselves the same on every site.
     tx.execute(
         "UPDATE manga SET reader_mode = COALESCE(reader_mode, (SELECT reader_mode FROM manga WHERE id = ?1)),
              reader_fit = COALESCE(reader_fit, (SELECT reader_fit FROM manga WHERE id = ?1)),
              reader_prefs = COALESCE(reader_prefs, (SELECT reader_prefs FROM manga WHERE id = ?1)),
-             auto_download = auto_download OR (SELECT auto_download FROM manga WHERE id = ?1)
+             auto_download = auto_download OR (SELECT auto_download FROM manga WHERE id = ?1),
+             scanlators = COALESCE(scanlators, (SELECT scanlators FROM manga WHERE id = ?1)),
+             dedupe = dedupe OR (SELECT dedupe FROM manga WHERE id = ?1),
+             group_only = group_only OR (SELECT group_only FROM manga WHERE id = ?1)
          WHERE id = ?2",
         [from, to],
     )?;
@@ -392,7 +439,7 @@ mod tests {
 
         // A copy leaves the old title as it was.
         let copy = Options { keep: true, ..Options::default() };
-        assert_eq!(apply(&mut conn, old, new, &copy).unwrap(), Outcome { read: 0, categories: 1, tracks: 1 });
+        assert_eq!(apply(&mut conn, old, new, &copy).unwrap(), Outcome { read: 0, categories: 1, tracks: 1, marks: 0 });
         assert_eq!(count(&conn, "SELECT media_id FROM tracks WHERE manga_id = ?1", new), 77);
         assert_eq!(count(&conn, "SELECT COUNT(*) FROM tracks WHERE manga_id = ?1", old), 1);
         assert_eq!(count(&conn, "SELECT COUNT(*) FROM manga_categories WHERE manga_id = ?1", old), 2);
@@ -408,6 +455,38 @@ mod tests {
             assert_eq!(count(&conn, &format!("SELECT COUNT(*) FROM {table} WHERE manga_id = ?1"), old), 0, "{table}");
         }
         assert_eq!(count(&conn, "SELECT in_library FROM manga WHERE id = ?1", old), 0);
+    }
+
+    #[test]
+    fn notes_edits_and_groups_come_along() {
+        let mut conn = database();
+        let (old, new) = (title(&conn, 1, true), title(&conn, 2, false));
+        let had = chapters(&conn, old, &[(2.0, "Ch 2", false), (1.0, "Ch 1", true)]);
+        let got = chapters(&conn, new, &[(3.0, "Three", false), (2.0, "Two", false)]);
+        conn.execute("INSERT INTO page_marks (chapter_id, page, note, created_at) VALUES (?1, 4, 'the map', 70), (?2, 0, 'gone', 71)", [had[0], had[1]]).unwrap();
+        conn.execute(
+            "UPDATE manga SET title = 'My name', author = 'Me', thumbnail_url = 'custom:ab', locked = '[\"title\",\"author\",\"cover\"]',
+                 scanlators = '[\"Team A\"]', dedupe = 1, group_only = 1 WHERE id = ?1",
+            [old],
+        )
+        .unwrap();
+        conn.execute("UPDATE manga SET author = 'Theirs', locked = '[\"author\"]' WHERE id = ?1", [new]).unwrap();
+
+        let outcome = apply(&mut conn, old, new, &Options::default()).unwrap();
+        assert_eq!(outcome.marks, 1, "chapter 1 is not on the new side");
+        let note: String = conn.query_row("SELECT note FROM page_marks WHERE chapter_id = ?1 AND page = 4", [got[1]], |r| r.get(0)).unwrap();
+        assert_eq!(note, "the map");
+        type Row = (String, String, String, String, String, bool, bool);
+        let row: Row = conn
+            .query_row("SELECT title, author, thumbnail_url, locked, scanlators, dedupe, group_only FROM manga WHERE id = ?1", [new], |r| {
+                Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?, r.get(6)?))
+            })
+            .unwrap();
+        assert_eq!(row.0, "My name", "a name given by hand comes along");
+        assert_eq!(row.1, "Theirs", "what the new side edited stays");
+        assert_eq!(row.2, "custom:ab");
+        assert_eq!(row.3, r#"["title","author","cover"]"#);
+        assert_eq!((row.4.as_str(), row.5, row.6), (r#"["Team A"]"#, true, true));
     }
 
     #[test]

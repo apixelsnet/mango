@@ -9,7 +9,8 @@
   async function load() {
     error = null;
     try {
-      data = await get<Stats>('/stats');
+      // Days and months as this device's clock has them, not UTC's.
+      data = await get<Stats>(`/stats?tz=${-new Date().getTimezoneOffset()}`);
     } catch (e) {
       error = message(e);
     }
@@ -46,7 +47,7 @@
 <div class="page">
   <div class="page-head">
     <h1 class="display caps">Stats</h1>
-    <span class="muted">What your reading adds up to. Days are counted in UTC.</span>
+    <span class="muted">What your reading adds up to. Days follow this device's clock.</span>
   </div>
 
   <Notice {loading} {error} retry={load} />

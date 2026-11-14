@@ -9,8 +9,8 @@ body:
         Thanks for taking the time to report this. The more of this form is filled
         in, the sooner the problem can be found.
 
-        A source that is broken in Mihon as well is a problem for that extension's
-        maker, not Mango. A source that works in Mihon but not here goes in an
+        A source that is broken in other Mihon-compatible apps as well is a problem for that extension's
+        maker, not Mango. A source that works in another Mihon-compatible app but not here goes in an
         **Extension problem** instead.
 
   - type: checkboxes
