@@ -24,9 +24,9 @@ futures-core = "0.3"
 # deflate-flate2 rather than deflate: that one moves flate2 onto zlib-rs. Without it flate2
 # keeps miniz_oxide, through the flate2 line above.
 zip = { version = "9.0.5", default-features = false, features = ["deflate-flate2", "deflate-zopfli"] }
-sha2 = { version = "0.10", features = ["oid"] }
+sha2 = { version = "0.11", features = ["oid"] }
 argon2 = { version = "0.5", default-features = false, features = ["alloc", "password-hash"] }
-rsa = "0.9"
+rsa = { version = "0.10", features = ["pkcs1v15"] }
 cms = "0.2"
 der = { version = "0.7", features = ["oid", "std"] }
 base64 = "0.22"
@@ -36,10 +36,10 @@ jpeg-encoder = "0.7"
 png = "0.17"
 image-webp = "0.2"
 p256 = { version = "0.13", default-features = false, features = ["ecdh", "ecdsa", "std"] }
-hkdf = "0.12"
-hmac = "0.12"
-sha1 = "0.10"
-md-5 = "0.10"
+hkdf = "0.13"
+hmac = "0.13"
+sha1 = "0.11"
+md-5 = "0.11"
 aes-gcm = "0.10"
 getrandom = "0.2"
 tracing = "0.1"
