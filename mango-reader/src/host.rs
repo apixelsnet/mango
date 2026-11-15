@@ -27,7 +27,7 @@ use tokio::{
     sync::{oneshot, watch, Mutex, OwnedSemaphorePermit, Semaphore},
 };
 
-const PROTOCOL: u32 = 6;
+const PROTOCOL: u32 = 7;
 /// Cap on one image from a source.
 const MAX_IMAGE: usize = 64 << 20;
 const PING_EVERY: Duration = Duration::from_secs(15);
@@ -252,14 +252,7 @@ impl Host {
             dir,
             data: data_dir.join("host"),
             http,
-            slot: Mutex::new(Slot {
-                running: None,
-                failures: 0,
-                retry_at: None,
-                last_ping: Instant::now(),
-                missed_pings: 0,
-                health: None,
-            }),
+            slot: Mutex::new(Slot { running: None, failures: 0, retry_at: None, last_ping: Instant::now(), missed_pings: 0, health: None }),
             in_flight: AtomicUsize::new(0),
             last_used: StdMutex::new(Instant::now()),
             caps: StdMutex::new(HashMap::new()),
@@ -317,9 +310,7 @@ impl Host {
         let _held = self.enter(opts.source).await?;
         let mut response = self.exchange(Method::POST, path, Some(body), opts.timeout).await?;
         let mut bytes = Vec::new();
-        while let Some(chunk) =
-            response.chunk().await.map_err(|e| AppError::new(502, "source_error", format!("The image broke off: {e}")))?
-        {
+        while let Some(chunk) = response.chunk().await.map_err(|e| AppError::new(502, "source_error", format!("The image broke off: {e}")))? {
             if bytes.len() + chunk.len() > MAX_IMAGE {
                 return Err(AppError::new(502, "source_error", "The image is too large"));
             }
@@ -343,8 +334,7 @@ impl Host {
         let mut retried = false;
         loop {
             let (port, token) = self.ensure().await?;
-            let mut request =
-                self.http.request(method.clone(), format!("http://127.0.0.1:{port}{path}")).bearer_auth(&token).timeout(timeout);
+            let mut request = self.http.request(method.clone(), format!("http://127.0.0.1:{port}{path}")).bearer_auth(&token).timeout(timeout);
             if let Some(body) = body {
                 request = request.json(body);
             }
@@ -492,11 +482,7 @@ impl Host {
         // that keeps failing is not hammered: callers are told when to come back.
         if let Some(wait) = slot.retry_at.and_then(|at| at.checked_duration_since(Instant::now())) {
             if wait > PATIENCE {
-                return Err(AppError::new(
-                    503,
-                    "host_unavailable",
-                    format!("The extension host keeps failing. Trying again in {} s", wait.as_secs() + 1),
-                ));
+                return Err(AppError::new(503, "host_unavailable", format!("The extension host keeps failing. Trying again in {} s", wait.as_secs() + 1)));
             }
             tokio::time::sleep(wait).await;
         }
@@ -523,9 +509,8 @@ impl Host {
 
     async fn start(&self) -> Result<Running> {
         let failed = |why: String| AppError::new(503, "host_unavailable", why);
-        let (host_jar, runtime_jar) = self.jars().ok_or_else(|| {
-            AppError::new(503, "host_missing", format!("The extension host is not installed (looked in {})", self.dir.display()))
-        })?;
+        let (host_jar, runtime_jar) =
+            self.jars().ok_or_else(|| AppError::new(503, "host_missing", format!("The extension host is not installed (looked in {})", self.dir.display())))?;
         std::fs::create_dir_all(&self.data)?;
         let token = new_token()?;
         let class_path = std::env::join_paths([&host_jar, &runtime_jar]).map_err(|e| failed(e.to_string()))?;
@@ -702,9 +687,7 @@ fn parse_ready(line: &str) -> Option<std::result::Result<u16, String>> {
     let field = |name: &str| rest.split_whitespace().find_map(|part| part.strip_prefix(name)?.parse::<u32>().ok());
     Some(match (field("port="), field("protocol=")) {
         (Some(port), Some(PROTOCOL)) if (1..=65535).contains(&port) => Ok(port as u16),
-        (_, Some(other)) if other != PROTOCOL => {
-            Err(format!("The extension host speaks protocol {other}; this Mango needs protocol {PROTOCOL}"))
-        }
+        (_, Some(other)) if other != PROTOCOL => Err(format!("The extension host speaks protocol {other}; this Mango needs protocol {PROTOCOL}")),
         _ => Err("The extension host sent an unreadable ready line".into()),
     })
 }
@@ -728,9 +711,9 @@ mod tests {
 
     #[test]
     fn ready_line() {
-        assert_eq!(parse_ready("MANGO_HOST_READY port=41233 protocol=6"), Some(Ok(41233)));
+        assert_eq!(parse_ready("MANGO_HOST_READY port=41233 protocol=7"), Some(Ok(41233)));
         assert!(matches!(parse_ready("MANGO_HOST_READY port=41233 protocol=1"), Some(Err(why)) if why.contains("protocol 1")));
-        assert!(matches!(parse_ready("MANGO_HOST_READY port=0 protocol=6"), Some(Err(_))));
+        assert!(matches!(parse_ready("MANGO_HOST_READY port=0 protocol=7"), Some(Err(_))));
         assert_eq!(parse_ready("some log line"), None);
     }
 

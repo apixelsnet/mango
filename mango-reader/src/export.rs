@@ -2,7 +2,7 @@
 //! one `import.rs` takes in. A gzipped protobuf.
 //!
 //! Library titles go out with their chapters, read state, categories, history and
-//! tracker links. Titles are written one at a time, so memory holds the packed file
+//! tracker links, and Mango's settings in a field of its own. Titles are written one at a time, so memory holds the packed file
 //! and one title, never the whole library as objects.
 
 use crate::{
@@ -39,6 +39,11 @@ fn viewer_flags(mode: Option<&str>) -> Option<i32> {
         _ => None,
     }
 }
+
+/// Mango's own settings, as a JSON object, under a field number the other apps do not use.
+/// They skip a field they do not know; their own preferences field would make them take
+/// Mango's keys in as theirs.
+pub(crate) const SETTINGS_FIELD: u32 = 7001;
 
 /// The library as a backup file.
 pub fn write(conn: &Connection) -> Result<Vec<u8>> {
@@ -111,9 +116,7 @@ pub fn write(conn: &Connection) -> Result<Vec<u8>> {
             tracking: Vec::new(),
             favorite: Some(true),
             viewer_flags: viewer_flags(mode.as_deref()),
-            history: history
-                .query_map([id], |h| Ok(BackupHistory { url: h.get(0)?, last_read: h.get::<_, i64>(1)? * 1000 }))?
-                .collect::<rusqlite::Result<_>>()?,
+            history: history.query_map([id], |h| Ok(BackupHistory { url: h.get(0)?, last_read: h.get::<_, i64>(1)? * 1000 }))?.collect::<rusqlite::Result<_>>()?,
             update_strategy: i32::from(strategy == "ONLY_FETCH_ONCE"),
         };
         let mut body = manga.encode_to_vec();
@@ -160,7 +163,8 @@ pub fn write(conn: &Connection) -> Result<Vec<u8>> {
     }
 
     // The names of the sources the titles come from, so a reader can say which are missing.
-    let mut sources = conn.prepare("SELECT s.id, s.name FROM sources s WHERE s.id IN (SELECT source_id FROM manga WHERE in_library OR merged_into IS NOT NULL) ORDER BY s.id")?;
+    let mut sources =
+        conn.prepare("SELECT s.id, s.name FROM sources s WHERE s.id IN (SELECT source_id FROM manga WHERE in_library OR merged_into IS NOT NULL) ORDER BY s.id")?;
     let mut rows = sources.query([])?;
     while let Some(r) = rows.next()? {
         let source = BackupSource { source_id: r.get(0)?, name: r.get(1)? };
@@ -170,6 +174,13 @@ pub fn write(conn: &Connection) -> Result<Vec<u8>> {
         }
         field.clear();
         nest(&mut field, 101, &body);
+        out.write_all(&field)?;
+    }
+
+    let settings = crate::settings::backed_up(conn)?;
+    if !settings.is_empty() {
+        field.clear();
+        nest(&mut field, SETTINGS_FIELD, serde_json::Value::Object(settings).to_string().as_bytes());
         out.write_all(&field)?;
     }
     Ok(out.finish()?)
@@ -225,7 +236,9 @@ mod tests {
              INSERT INTO history (chapter_id, manga_id, read_at) VALUES (2, 1, 9000), (3, 2, 9500);
              INSERT INTO tracks (manga_id, tracker, library_id, media_id, url, title, last_chapter_read, total_chapters, score, status, started_at) VALUES
                  (1, 2, 44, 99, 'https://example.org/99', 'Alpha', 1, 12, 85, 1, 1700000000000),
-                 (1, 7, 0, 55099564912, '', 'Alpha', 1, 0, 7.5, 0, 0);",
+                 (1, 7, 0, 55099564912, '', 'Alpha', 1, 0, 7.5, 0, 0);
+             INSERT INTO settings (key, value) VALUES ('reader.mode', '\"rtl\"'), ('updates.hours', '12'), ('updates.lastRun', '5'),
+                 ('notify.header', '\"X-Key: secret\"'), ('notify.url', '\"https://ntfy.example.org/t\"'), ('theme', '{}');",
         )
         .unwrap();
         conn
@@ -266,6 +279,21 @@ mod tests {
         assert_eq!((report.titles_added, report.chapters_added, report.categories_added), (2, 3, 3), "only the library goes out");
         assert_eq!((report.history_entries, report.tracker_links, report.skipped), (2, 2, 0));
         assert_eq!(carried(&fresh), carried(&ours));
+        assert_eq!(report.settings_restored, 2, "the reader's choices come along");
+        let settings = crate::settings::all(&fresh).unwrap();
+        assert_eq!((settings.get("reader.mode"), settings.get("theme")), (Some(&serde_json::json!("rtl")), Some(&serde_json::json!({}))));
+        assert!(settings.get("updates.lastRun").is_none(), "this Mango's own state does not");
+        assert!(settings.get("updates.hours").is_none(), "nor the update interval, which a plan may hold");
+        assert!(settings.get("notify.url").is_none(), "nor where notifications go");
+        let secret: Option<String> = crate::settings::get(&fresh, crate::notify::HEADER);
+        assert!(secret.is_none(), "a reserved key never goes out");
+
+        // A setting this Mango has already is kept as it is.
+        crate::settings::set(&ours, "reader.mode", &serde_json::json!("ltr")).unwrap();
+        let mine = write(&ours).unwrap();
+        crate::settings::set(&fresh, "reader.mode", &serde_json::json!("webtoon")).unwrap();
+        assert_eq!(import::run(&mut fresh, &mine, &|_, _| {}).unwrap().settings_restored, 0);
+        assert_eq!(crate::settings::get::<String>(&fresh, "reader.mode").as_deref(), Some("webtoon"));
 
         // And taking its own backup in changes nothing.
         let before = carried(&ours);
@@ -304,10 +332,14 @@ mod tests {
             media_id: i64,
         }
 
-        let data = import::unpack(&write(&library()).unwrap()).unwrap();
-        let mut titles = Vec::new();
-        import::fields(&data, 1, |field| {
-            titles.push(Probe::decode(field).unwrap());
+        let data = write(&library()).unwrap();
+        let (mut titles, mut sources) = (Vec::new(), Vec::new());
+        import::stream(&data, |number, field| {
+            match number {
+                1 => titles.push(Probe::decode(field).unwrap()),
+                101 => sources.push(import::BackupSource::decode(field).unwrap().name),
+                _ => {}
+            }
             Ok(())
         })
         .unwrap();
@@ -318,12 +350,6 @@ mod tests {
         let links: Vec<_> = alpha.tracking.iter().map(|link| (link.library_id, link.media_id_int, link.media_id)).collect();
         assert_eq!(links, [(Some(44), 99, 99), (Some(0), 0, 55_099_564_912)], "an id too wide for the old field goes in the new one only");
 
-        let mut sources = Vec::new();
-        import::fields(&data, 101, |field| {
-            sources.push(import::BackupSource::decode(field).unwrap().name);
-            Ok(())
-        })
-        .unwrap();
         assert_eq!(sources, ["Local"], "sources that are installed are named");
     }
 

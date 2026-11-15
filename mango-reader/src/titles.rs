@@ -499,9 +499,7 @@ impl Titles {
             return Err(AppError::bad_request(format!("A title keeps an order for {MAX_GROUPS} groups at most")));
         }
         let kept = (!groups.is_empty()).then(|| json!(groups).to_string());
-        self.change(move |conn| {
-            Ok(conn.execute("UPDATE manga SET scanlators = ?2, dedupe = ?3, group_only = ?4 WHERE id = ?1", params![id, kept, dedupe, only])?)
-        })
+        self.change(move |conn| Ok(conn.execute("UPDATE manga SET scanlators = ?2, dedupe = ?3, group_only = ?4 WHERE id = ?1", params![id, kept, dedupe, only])?))
             .await
     }
 
@@ -513,10 +511,7 @@ impl Titles {
     /// Takes a merged title out of `head` again. It is not in the library on its own after.
     pub async fn unmerge(&self, head: i64, other: i64) -> Result<()> {
         self.change(move |conn| {
-            Ok(conn.execute(
-                "UPDATE manga SET merged_into = NULL, merged_at = NULL, added_at = NULL WHERE id = ?2 AND merged_into = ?1",
-                [head, other],
-            )?)
+            Ok(conn.execute("UPDATE manga SET merged_into = NULL, merged_at = NULL, added_at = NULL WHERE id = ?2 AND merged_into = ?1", [head, other])?)
         })
         .await
     }
@@ -831,10 +826,8 @@ fn page_marks(conn: &Connection, which: &str) -> Result<Vec<PageMark>> {
 /// Keeps where a chapter is read to, and with `read` whether it is finished. Answers how
 /// many chapters that was: none when there is no such chapter.
 fn save_place(conn: &Connection, chapter: i64, page: i64, read: Option<bool>) -> Result<usize> {
-    let changed = conn.execute(
-        "UPDATE chapters SET last_page_read = ?2, read = COALESCE(?3, read), read_at = ?4 WHERE id = ?1",
-        params![chapter, page.max(0), read, now()],
-    )?;
+    let changed =
+        conn.execute("UPDATE chapters SET last_page_read = ?2, read = COALESCE(?3, read), read_at = ?4 WHERE id = ?1", params![chapter, page.max(0), read, now()])?;
     crate::library::remember(conn, chapter)?;
     if read == Some(true) && settings::get::<bool>(conn, MARK_DUPLICATES).unwrap_or(false) {
         read_duplicates(conn, chapter)?;
@@ -991,18 +984,10 @@ fn wire_manga(conn: &Connection, id: i64) -> Result<(i64, WireManga)> {
 }
 
 fn wire_chapters(conn: &Connection, manga: i64) -> Result<Vec<WireChapter>> {
-    let mut stmt = conn
-        .prepare("SELECT url, name, date_upload, chapter_number, scanlator, memo FROM chapters WHERE manga_id = ?1 ORDER BY source_order")?;
+    let mut stmt = conn.prepare("SELECT url, name, date_upload, chapter_number, scanlator, memo FROM chapters WHERE manga_id = ?1 ORDER BY source_order")?;
     let chapters = stmt
         .query_map([manga], |r| {
-            Ok(WireChapter {
-                url: r.get(0)?,
-                name: r.get(1)?,
-                date_upload: r.get(2)?,
-                chapter_number: r.get(3)?,
-                scanlator: r.get(4)?,
-                memo: json_column(r, 5)?,
-            })
+            Ok(WireChapter { url: r.get(0)?, name: r.get(1)?, date_upload: r.get(2)?, chapter_number: r.get(3)?, scanlator: r.get(4)?, memo: json_column(r, 5)? })
         })?
         .collect::<rusqlite::Result<Vec<_>>>()?;
     Ok(chapters)
@@ -1017,14 +1002,7 @@ pub(crate) fn wire_chapter(conn: &Connection, chapter: i64) -> Result<(i64, Wire
         |r| {
             Ok((
                 r.get(0)?,
-                WireChapter {
-                    url: r.get(1)?,
-                    name: r.get(2)?,
-                    date_upload: r.get(3)?,
-                    chapter_number: r.get(4)?,
-                    scanlator: r.get(5)?,
-                    memo: json_column(r, 6)?,
-                },
+                WireChapter { url: r.get(1)?, name: r.get(2)?, date_upload: r.get(3)?, chapter_number: r.get(4)?, scanlator: r.get(5)?, memo: json_column(r, 6)? },
             ))
         },
     )
@@ -1214,8 +1192,7 @@ fn read_reader(conn: &Connection, chapter: i64, group: Option<String>) -> Result
         from = listed.iter().find(|c| c.id == id).and_then(|c| follow(&listed, c, &group, only, &order, true));
     }
     // The list shows the uploads the title prefers, and the one open.
-    let chapters: Vec<ChapterName> =
-        listed.into_iter().filter(|c| !c.duplicate || c.id == chapter).map(|c| ChapterName { id: c.id, name: c.name }).collect();
+    let chapters: Vec<ChapterName> = listed.into_iter().filter(|c| !c.duplicate || c.id == chapter).map(|c| ChapterName { id: c.id, name: c.name }).collect();
     let marks = page_marks(conn, &format!("p.chapter_id = {chapter}"))?;
     Ok(ReaderView { chapter: view, manga_id, title, kind, reader_mode, reader_fit, reader_prefs, in_library, prev, next, ahead, group, chapters, marks })
 }
@@ -1511,7 +1488,8 @@ fn readdressed(tx: &Connection, manga: i64, known: &HashMap<String, i64>, chapte
     }
     let mut leaving: HashMap<(Key, String), Option<i64>> = HashMap::new();
     let mut stmt = tx.prepare("SELECT url, id, chapter_number, name, scanlator FROM chapters WHERE manga_id = ?1")?;
-    let rows = stmt.query_map([manga], |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?, r.get::<_, f64>(2)?, r.get::<_, String>(3)?, r.get::<_, Option<String>>(4)?)))?;
+    let rows =
+        stmt.query_map([manga], |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?, r.get::<_, f64>(2)?, r.get::<_, String>(3)?, r.get::<_, Option<String>>(4)?)))?;
     for row in rows {
         let (url, id, number, name, scanlator) = row?;
         if !listed.contains(url.as_str()) {
@@ -1564,10 +1542,10 @@ mod tests {
         assert!(apply_update(&mut conn, id, &manga("/a", "Alpha"), &first, true, true).unwrap().is_empty(), "a first fetch is not news");
         let title = read_title(&conn, id).unwrap();
         assert!(title.initialized);
-        assert_eq!(title.chapters.iter().map(|c| (c.name.as_str(), c.number, c.fetched_at)).collect::<Vec<_>>(), [
-            ("Chapter 2", 2.0, 2 * 86_400),
-            ("Vol.1 Ch. 1.5 - Start", 1.5, 86_400)
-        ]);
+        assert_eq!(
+            title.chapters.iter().map(|c| (c.name.as_str(), c.number, c.fetched_at)).collect::<Vec<_>>(),
+            [("Chapter 2", 2.0, 2 * 86_400), ("Vol.1 Ch. 1.5 - Start", 1.5, 86_400)]
+        );
 
         // Reading state survives a refresh; a new chapter is reported; a dropped one goes.
         conn.execute("UPDATE chapters SET read = 1 WHERE manga_id = ?1 AND url = '/a/2'", [id]).unwrap();
@@ -1617,7 +1595,13 @@ mod tests {
         assert_eq!(at("/new/2").3, 7);
 
         // Two arrivals with one number and group match nothing: they come as new, as before.
-        let twice = [chapter("/z/4a", "Chapter 4", 0), chapter("/z/4b", "Chapter 4", 0), chapter("/new/3", "Ch. 3", 0), chapter("/new/2", "Chapter 2", 0), chapter("/new/1", "Chapter 1", 0)];
+        let twice = [
+            chapter("/z/4a", "Chapter 4", 0),
+            chapter("/z/4b", "Chapter 4", 0),
+            chapter("/new/3", "Ch. 3", 0),
+            chapter("/new/2", "Chapter 2", 0),
+            chapter("/new/1", "Chapter 1", 0),
+        ];
         let added = apply_update(&mut conn, id, &manga("/a", "Alpha"), &twice, false, true).unwrap();
         assert_eq!(added.len(), 2);
     }
@@ -1691,7 +1675,8 @@ mod tests {
             serde_json::from_value(json!({ "url": url, "name": format!("Chapter {number}"), "scanlator": group })).unwrap()
         };
         // Newest first, two groups taking turns, and B without chapter 3.
-        let list = [up("/4a", 4.0, "A"), up("/4b", 4.0, "B"), up("/3a", 3.0, "A"), up("/2a", 2.0, "A"), up("/2b", 2.0, "B"), up("/1b", 1.0, "B"), up("/1a", 1.0, "A")];
+        let list =
+            [up("/4a", 4.0, "A"), up("/4b", 4.0, "B"), up("/3a", 3.0, "A"), up("/2a", 2.0, "A"), up("/2b", 2.0, "B"), up("/1b", 1.0, "B"), up("/1a", 1.0, "A")];
         apply_update(&mut conn, id, &manga("/a", "Alpha"), &list, true, true).unwrap();
         let by_url = |url: &str| -> i64 { conn.query_row("SELECT id FROM chapters WHERE url = ?1", [url], |r| r.get(0)).unwrap() };
         let ends = |url: &str, group: Option<&str>| {
@@ -1864,7 +1849,9 @@ mod tests {
 
     #[test]
     fn volumes_from_names() {
-        for (name, volume) in [("Vol.2 Ch. 10", Some(2.0)), ("Volume 3 - 41 A Title", Some(3.0)), ("vol 4 chapter 1", Some(4.0)), ("Chapter 9", None), ("Volatile 2", None)] {
+        for (name, volume) in
+            [("Vol.2 Ch. 10", Some(2.0)), ("Volume 3 - 41 A Title", Some(3.0)), ("vol 4 chapter 1", Some(4.0)), ("Chapter 9", None), ("Volatile 2", None)]
+        {
             assert_eq!(volume_from_name(name), volume, "{name}");
         }
     }
@@ -1885,7 +1872,12 @@ mod tests {
         let mut conn = database();
         let id = save_listing(&mut conn, 7, &[manga("/a", "Alpha")]).unwrap()[0].id;
         apply_update(&mut conn, id, &manga("/a", "Alpha"), &[], true, false).unwrap();
-        let edit = Edit { title: Some(" Alpha, Mine ".into()), author: Some(String::new()), genres: Some(vec!["Action".into(), " ".into(), "Drama".into()]), ..Edit::default() };
+        let edit = Edit {
+            title: Some(" Alpha, Mine ".into()),
+            author: Some(String::new()),
+            genres: Some(vec!["Action".into(), " ".into(), "Drama".into()]),
+            ..Edit::default()
+        };
         assert_eq!(edit_details(&mut conn, id, &edit).unwrap(), 1);
         assert_eq!(edit_details(&mut conn, 999, &edit).unwrap(), 0);
         assert!(edit_details(&mut conn, id, &Edit { title: Some("  ".into()), ..Edit::default() }).is_err(), "a name cannot be cleared");

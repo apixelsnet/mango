@@ -205,9 +205,8 @@ impl Downloads {
         let chapters = self
             .db
             .call(|conn| {
-                let mut stmt = conn.prepare(&format!(
-                    "SELECT c.id FROM chapters c JOIN manga m ON m.id = c.manga_id WHERE c.download_path IS NOT NULL AND NOT {FOLLOWED}"
-                ))?;
+                let mut stmt =
+                    conn.prepare(&format!("SELECT c.id FROM chapters c JOIN manga m ON m.id = c.manga_id WHERE c.download_path IS NOT NULL AND NOT {FOLLOWED}"))?;
                 let ids = stmt.query_map([], |r| r.get(0))?.collect::<rusqlite::Result<Vec<i64>>>()?;
                 Ok(ids)
             })
@@ -280,8 +279,7 @@ impl Downloads {
         let path = self
             .db
             .call(move |conn| {
-                let path: Option<String> =
-                    conn.query_row("SELECT download_path FROM chapters WHERE id = ?1", [chapter], |r| r.get(0)).optional()?.flatten();
+                let path: Option<String> = conn.query_row("SELECT download_path FROM chapters WHERE id = ?1", [chapter], |r| r.get(0)).optional()?.flatten();
                 conn.execute("UPDATE chapters SET download_path = NULL WHERE id = ?1", [chapter])?;
                 Ok(path)
             })
@@ -490,10 +488,7 @@ impl Sink {
 
     fn finish(self) -> Result<()> {
         if let Sink::Zip(writer) = self {
-            let zip = Arc::try_unwrap(writer)
-                .ok()
-                .and_then(|lock| lock.into_inner().ok())
-                .ok_or_else(|| AppError::internal("the archive is still in use"))?;
+            let zip = Arc::try_unwrap(writer).ok().and_then(|lock| lock.into_inner().ok()).ok_or_else(|| AppError::internal("the archive is still in use"))?;
             zip.finish()?.sync_all()?;
         }
         Ok(())
@@ -579,8 +574,7 @@ fn orphaned(conn: &Connection) -> Result<Vec<(i64, String, Option<String>, Vec<S
 /// Whether the hold file says to wait: a line that reads `full`, notes after `#` left out.
 /// A file that is not there, or cannot be read, holds nothing.
 fn held(file: Option<&Path>) -> bool {
-    file.and_then(|file| fs::read_to_string(file).ok())
-        .is_some_and(|text| text.lines().any(|line| line.split('#').next().unwrap_or("").trim() == "full"))
+    file.and_then(|file| fs::read_to_string(file).ok()).is_some_and(|text| text.lines().any(|line| line.split('#').next().unwrap_or("").trim() == "full"))
 }
 
 /// Every saved chapter already read, with its file.
@@ -655,9 +649,8 @@ fn next_job(conn: &Connection) -> Result<Option<Job>> {
 
 /// Is `path` some other chapter's saved file? Case is ignored, as Windows and macOS ignore it.
 fn owned_elsewhere(conn: &Connection, path: &str, chapter: i64) -> Result<bool> {
-    let found = conn
-        .query_row("SELECT 1 FROM chapters WHERE download_path = ?1 COLLATE NOCASE AND id != ?2 LIMIT 1", params![path, chapter], |_| Ok(()))
-        .optional()?;
+    let found =
+        conn.query_row("SELECT 1 FROM chapters WHERE download_path = ?1 COLLATE NOCASE AND id != ?2 LIMIT 1", params![path, chapter], |_| Ok(())).optional()?;
     Ok(found.is_some())
 }
 

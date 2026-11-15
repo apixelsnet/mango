@@ -3,12 +3,14 @@ name: CI
 # Checks every push to the main branch and every pull request: the UI type-checks
 # and builds, the core's tests and lints pass with that UI built in, the UI's main paths
 # work in Chromium and Firefox against a stand-in API, the extension host compiles, the
-# desktop shell compiles, and no dependency has a known serious advisory.
+# desktop shell compiles, Rust code is formatted, and no dependency has a known serious
+# advisory. Pushes to main also build and start the image on amd64 and arm64.
 
 on:
   push:
     branches: [main, master]
   pull_request:
+  workflow_dispatch:
 
 concurrency:
   group: ci-${{ github.ref }}
@@ -57,6 +59,10 @@ jobs:
       - name: Lint the core
         working-directory: mango-reader
         run: cargo clippy --release --locked --all-targets -- -D warnings -A clippy::type_complexity
+
+      - name: Format of the core
+        working-directory: mango-reader
+        run: cargo fmt --check
 
   browser:
     name: UI in a browser
@@ -158,4 +164,51 @@ jobs:
 
       - name: Check the shell
         working-directory: mango-desktop
-        run: cargo check --locked
+        run: |
+          cargo fmt --check
+          cargo check --locked
+
+  # The image as it ships, built and started on each processor it ships for, the arm64 one
+  # on an arm64 machine rather than emulated. With the repository variables
+  # MANGO_SMOKE_STORE, MANGO_SMOKE_STORE_LINK and MANGO_SMOKE_PKG set, smoke.py then runs
+  # against a real store and extension; without them, only the start is checked. Not on
+  # pull requests: it takes about as long as a release build.
+  image:
+    name: Image on ${{ matrix.arch }}
+    if: github.event_name != 'pull_request'
+    # New and not yet run on GitHub: a failure is shown but does not fail the run. Take
+    # this line out once it has passed on both processors.
+    continue-on-error: true
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { arch: amd64, runner: ubuntu-24.04 }
+          - { arch: arm64, runner: ubuntu-24.04-arm }
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+
+      - name: Build the image
+        run: docker build --target mango --tag mango:ci .
+
+      - name: Start it
+        run: |
+          docker run -d --name mango -p 127.0.0.1:8787:8787 -e MANGO_PASSWORD=smoke-test-password mango:ci
+          for _ in $(seq 1 60); do curl -fsS http://127.0.0.1:8787/api/health && break; sleep 2; done
+          docker exec mango mango version
+          uname -m
+
+      - name: Smoke test against a real store
+        if: vars.MANGO_SMOKE_STORE != ''
+        env:
+          MANGO_SMOKE_STORE: ${{ vars.MANGO_SMOKE_STORE }}
+          MANGO_SMOKE_STORE_LINK: ${{ vars.MANGO_SMOKE_STORE_LINK }}
+          MANGO_SMOKE_PKG: ${{ vars.MANGO_SMOKE_PKG }}
+        run: python3 mango-reader/smoke.py http://127.0.0.1:8787
+
+      - name: The log of a failed run
+        if: failure()
+        run: docker logs mango

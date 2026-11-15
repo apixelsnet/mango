@@ -110,7 +110,8 @@ async fn run() -> Result<(), String> {
     import::set_unpack_cap(cfg.import_max_mb);
     let front = auth::Front { hosts: cfg.hosts.clone(), proxied: cfg.proxied, hops: cfg.proxy_hops as usize, signup: cfg.signup, account: cfg.account_url.clone() };
     let auth = auth::Auth::open(db.clone(), cfg.login, cfg.port()?, cfg.first_password.clone(), front).await.map_err(|e| e.to_string())?;
-    let private = |name: &str, text: &str| db::write_private(&cfg.data_dir.join(name), text).map_err(|e| format!("cannot write {name} in {}: {e}", cfg.data_dir.display()));
+    let private =
+        |name: &str, text: &str| db::write_private(&cfg.data_dir.join(name), text).map_err(|e| format!("cannot write {name} in {}: {e}", cfg.data_dir.display()));
     private(INSTANCE, auth.instance())?;
     match auth.setup_code() {
         Some(code) => private(SETUP_CODE, code)?,
@@ -134,8 +135,7 @@ async fn run() -> Result<(), String> {
     tokio::spawn(host.clone().monitor());
     tokio::spawn(releases.clone().check_on_schedule());
 
-    let listener =
-        tokio::net::TcpListener::bind(&cfg.listen).await.map_err(|e| format!("cannot listen on {}: {e}", cfg.listen))?;
+    let listener = tokio::net::TcpListener::bind(&cfg.listen).await.map_err(|e| format!("cannot listen on {}: {e}", cfg.listen))?;
     tracing::info!("Mango {} on http://{}, data in {}", version::describe(), cfg.listen, cfg.data_dir.display());
     if !cfg.login {
         tracing::warn!("login is switched off: anyone who can reach this address can use Mango");
@@ -151,7 +151,7 @@ async fn run() -> Result<(), String> {
         host: host.clone(),
         local,
         data_dir: cfg.data_dir.clone(),
-        cache_mb: cfg.cache_mb,
+        cache: images::CacheBudget::new(cfg.cache_mb),
         stores_refresh_hours: cfg.stores.refresh_hours,
         store_rules: store::Rules { local: cfg.stores.local, anyone_installs: cfg.stores.anyone_installs },
         blocklist: std::sync::Arc::new(store::blocklist::Blocklist::new(cfg.stores.blocklist.clone())),

@@ -1,5 +1,6 @@
 //! The local source: titles the owner already has on disk, laid out as
-//! `<root>/<title>/<chapter>`. A chapter is a `.cbz`, a `.zip`, or a folder of images.
+//! `<root>/<title>/<chapter>`. A chapter is a `.cbz`, a `.zip`, an `.epub` or a folder
+//! of images. An EPUB's pages come in the order its book gives them, not by name.
 //! A title with no chapter level is one chapter: a folder of images, or an archive
 //! straight in the root. Such a chapter goes by `WHOLE` in place of a name on disk.
 //!
@@ -100,7 +101,7 @@ impl Local {
                     found
                 }
                 None => {
-                    let archive = zip::ZipArchive::new(fs::File::open(path)?)?;
+                    let mut archive = zip::ZipArchive::new(fs::File::open(path)?)?;
                     let mut names: Vec<String> = archive
                         .file_names()
                         // A name that does not decode cannot be asked for by name, so it is no page.
@@ -109,6 +110,11 @@ impl Local {
                         .map(Cow::into_owned)
                         .collect();
                     names.sort_by(|a, b| natural_cmp(a, b));
+                    if is_epub(path) {
+                        if let Some(ordered) = epub_pages(&mut archive, &names) {
+                            names = ordered;
+                        }
+                    }
                     let fresh = Arc::new(Mutex::new(Opened { path: path.to_path_buf(), stamp, archive, names }));
                     open.retain(|one| one.lock().unwrap_or_else(|e| e.into_inner()).path != path);
                     open.push_front(fresh.clone());
@@ -359,7 +365,109 @@ fn chapters(dir: &Path) -> Vec<(String, String, i64)> {
 
 fn archive_stem(name: &str) -> Option<&str> {
     let (stem, extension) = name.rsplit_once('.')?;
-    (extension.eq_ignore_ascii_case("cbz") || extension.eq_ignore_ascii_case("zip")).then_some(stem)
+    ["cbz", "zip", "epub"].iter().any(|known| extension.eq_ignore_ascii_case(known)).then_some(stem)
+}
+
+fn is_epub(path: &Path) -> bool {
+    path.extension().is_some_and(|extension| extension.eq_ignore_ascii_case("epub"))
+}
+
+/// An EPUB's images in reading order: the book's spine, page by page, and in each page
+/// its images as they appear. `None` when the book cannot be read that way; its images
+/// are then taken by name, as in any archive.
+fn epub_pages(archive: &mut zip::ZipArchive<fs::File>, images: &[String]) -> Option<Vec<String>> {
+    fn text(archive: &mut zip::ZipArchive<fs::File>, name: &str) -> Option<String> {
+        let mut out = String::new();
+        archive.by_name(name).ok()?.take(4 << 20).read_to_string(&mut out).ok()?;
+        Some(out)
+    }
+    let container = text(archive, "META-INF/container.xml")?;
+    let opf_path = tags(&container, &["rootfile"]).into_iter().find_map(|tag| attr(tag, "full-path"))?;
+    let opf = text(archive, &opf_path)?;
+    let manifest: HashMap<String, (String, String)> = tags(&opf, &["item"])
+        .into_iter()
+        .filter_map(|tag| Some((attr(tag, "id")?, (resolve(&opf_path, &attr(tag, "href")?), attr(tag, "media-type").unwrap_or_default()))))
+        .collect();
+    let mut order: Vec<String> = Vec::new();
+    for tag in tags(&opf, &["itemref"]) {
+        let Some((href, kind)) = attr(tag, "idref").and_then(|id| manifest.get(&id)) else { continue };
+        if kind.starts_with("image/") {
+            order.push(href.clone());
+            continue;
+        }
+        let Some(page) = text(archive, href) else { continue };
+        for tag in tags(&page, &["img", "image"]) {
+            if let Some(src) = attr(tag, "src").or_else(|| attr(tag, "xlink:href")).or_else(|| attr(tag, "href")) {
+                order.push(resolve(href, &src));
+            }
+        }
+    }
+    let mut seen = std::collections::HashSet::new();
+    let pages: Vec<String> = order.into_iter().filter(|name| images.contains(name) && seen.insert(name.clone())).collect();
+    (!pages.is_empty()).then_some(pages)
+}
+
+/// The text of each tag with one of `names`, with or without a prefix, in document order.
+fn tags<'a>(xml: &'a str, names: &[&str]) -> Vec<&'a str> {
+    xml.split('<')
+        .skip(1)
+        .filter_map(|piece| {
+            let tag = piece.split('>').next()?;
+            let local = tag.split([' ', '\t', '\n', '\r', '/']).next()?.rsplit(':').next()?;
+            names.iter().any(|name| local.eq_ignore_ascii_case(name)).then_some(tag)
+        })
+        .collect()
+}
+
+/// One attribute's value in a tag's text, with the entities for quotes and ampersands undone.
+fn attr(tag: &str, name: &str) -> Option<String> {
+    let mut rest = tag;
+    while let Some(at) = rest.find(name) {
+        let follows_space = rest[..at].chars().last().is_some_and(char::is_whitespace);
+        let after = &rest[at + name.len()..];
+        rest = after;
+        let Some(value) = after.trim_start().strip_prefix('=').map(str::trim_start).filter(|_| follows_space) else { continue };
+        let quote = value.chars().next().filter(|c| *c == '"' || *c == '\'')?;
+        let value = value[1..].split(quote).next()?;
+        return Some(value.replace("&quot;", "\"").replace("&apos;", "'").replace("&amp;", "&"));
+    }
+    None
+}
+
+/// `href` as a name in the archive, read from the file `from`: relative to its folder,
+/// with `..` and `%xx` undone and anything after `#` left off.
+fn resolve(from: &str, href: &str) -> String {
+    let href = href.split('#').next().unwrap_or_default();
+    let mut parts: Vec<String> = from.rsplit_once('/').map(|(dir, _)| dir.split('/').map(str::to_owned).collect()).unwrap_or_default();
+    for part in href.split('/') {
+        match part {
+            "" | "." => {}
+            ".." => {
+                parts.pop();
+            }
+            part => parts.push(unescape(part)),
+        }
+    }
+    parts.join("/")
+}
+
+/// `%xx` escapes undone; a name that does not decode stays as it was.
+fn unescape(part: &str) -> String {
+    let bytes = part.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'%' && i + 2 < bytes.len() {
+            if let Some(byte) = part.get(i + 1..i + 3).and_then(|hex| u8::from_str_radix(hex, 16).ok()) {
+                out.push(byte);
+                i += 3;
+                continue;
+            }
+        }
+        out.push(bytes[i]);
+        i += 1;
+    }
+    String::from_utf8(out).unwrap_or_else(|_| part.to_owned())
 }
 
 /// `cover.jpg` and its kin: a title's cover, not a page.
@@ -527,7 +635,10 @@ mod tests {
         fs::write(root.join("One Shot/cover.png"), b"\x89PNG cover").unwrap();
         archive(&root.join("Loose.cbz"), &[("a.png", b"\x89PNG loose"), ("ComicInfo.xml", b"<ComicInfo><Writer>W</Writer></ComicInfo>")]);
         let titles = local.browse(false, "", 1).unwrap().0;
-        assert_eq!(titles.iter().map(|t| (t.url.as_str(), t.title.as_str())).collect::<Vec<_>>(), [("alpha", "alpha"), ("Loose.cbz", "Loose"), ("One Shot", "One Shot"), ("Salt Wind", "Salt Wind")]);
+        assert_eq!(
+            titles.iter().map(|t| (t.url.as_str(), t.title.as_str())).collect::<Vec<_>>(),
+            [("alpha", "alpha"), ("Loose.cbz", "Loose"), ("One Shot", "One Shot"), ("Salt Wind", "Salt Wind")]
+        );
 
         let (_, chapters) = local.details("One Shot").unwrap();
         assert_eq!(chapters.iter().map(|c| (c.url.as_str(), c.name.as_str())).collect::<Vec<_>>(), [(WHOLE, "One Shot")]);
@@ -540,6 +651,39 @@ mod tests {
         assert_eq!(local.page("Loose.cbz", WHOLE, 0).unwrap(), b"\x89PNG loose");
         assert_eq!(local.cover("Loose.cbz").unwrap(), b"\x89PNG loose");
         fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn an_epub_reads_in_its_own_order() {
+        let (root, local) = library();
+        let container = br#"<?xml version="1.0"?><container><rootfiles><rootfile full-path="OEBPS/content.opf" media-type="application/oebps-package+xml"/></rootfiles></container>"#;
+        let opf = br#"<package><manifest>
+            <item id="p1" href="Text/b%20page.xhtml" media-type="application/xhtml+xml"/>
+            <item id="p2" href="Text/a.xhtml" media-type="application/xhtml+xml"/>
+            <item id="i9" href="Images/z.png" media-type="image/png"/>
+            </manifest><spine><itemref idref="p1"/><itemref idref='p2'/><itemref idref="i9"/></spine></package>"#;
+        archive(
+            &root.join("Salt Wind/Volume 1.epub"),
+            &[
+                ("META-INF/container.xml", container),
+                ("OEBPS/content.opf", opf),
+                ("OEBPS/Text/b page.xhtml", br#"<html><body><img src="../Images/y.jpg"/><svg><image xlink:href="../Images/x.png"/></svg></body></html>"#),
+                ("OEBPS/Text/a.xhtml", br#"<html><body><img alt="" src="../Images/w.png#top"/></body></html>"#),
+                ("OEBPS/Images/w.png", b"\x89PNG w"),
+                ("OEBPS/Images/x.png", b"\x89PNG x"),
+                ("OEBPS/Images/y.jpg", b"\xFF\xD8\xFF y"),
+                ("OEBPS/Images/z.png", b"\x89PNG z"),
+            ],
+        );
+        let (_, chapters) = local.details("Salt Wind").unwrap();
+        assert!(chapters.iter().any(|c| c.url == "Volume 1.epub" && c.name == "Volume 1"), "an EPUB is a chapter");
+        assert_eq!(local.page_count("Salt Wind", "Volume 1.epub").unwrap(), 4);
+        let pages: Vec<Vec<u8>> = (0..4).map(|i| local.page("Salt Wind", "Volume 1.epub", i).unwrap()).collect();
+        assert_eq!(pages, [b"\xFF\xD8\xFF y".to_vec(), b"\x89PNG x".to_vec(), b"\x89PNG w".to_vec(), b"\x89PNG z".to_vec()], "the spine's order, not the names'");
+        // A book whose spine cannot be read still opens, by name.
+        archive(&root.join("Salt Wind/Loose.epub"), &[("2.png", b"\x89PNG 2"), ("1.png", b"\x89PNG 1")]);
+        assert_eq!(local.page("Salt Wind", "Loose.epub", 0).unwrap(), b"\x89PNG 1");
+        let _ = fs::remove_dir_all(&root);
     }
 
     #[test]

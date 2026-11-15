@@ -283,10 +283,9 @@ pub fn apply(conn: &mut Connection, from: i64, to: i64, options: &Options) -> Re
         tx.execute("UPDATE manga SET locked = ?2 WHERE id = ?1", params![to, serde_json::json!(all).to_string()])?;
     }
     if options.categories {
-        outcome.categories = tx.execute(
-            "INSERT OR IGNORE INTO manga_categories (manga_id, category_id) SELECT ?2, category_id FROM manga_categories WHERE manga_id = ?1",
-            [from, to],
-        )? as i64;
+        outcome.categories = tx
+            .execute("INSERT OR IGNORE INTO manga_categories (manga_id, category_id) SELECT ?2, category_id FROM manga_categories WHERE manga_id = ?1", [from, to])?
+            as i64;
     }
     if options.tracks {
         // The old title's link wins over one the new title has to the same tracker.
@@ -383,16 +382,20 @@ mod tests {
         conn.execute("UPDATE chapters SET last_page_read = 7, bookmark = 1 WHERE id = ?1", [had[0]]).unwrap();
         conn.execute("INSERT INTO history (chapter_id, manga_id, read_at) VALUES (?1, ?2, 900)", [had[0], old]).unwrap();
         // The other source splits chapter 2 in two, has one more, and names its extras its own way.
-        let got = chapters(&conn, new, &[
-            (5.0, "Five", false),
-            (4.0, "Four", false),
-            (3.0, "Three", false),
-            (2.5, "Two, part two", false),
-            (2.0, "Two", false),
-            (1.0, "One", false),
-            (-1.0, " prologue", false),
-            (-1.0, "Extra", false),
-        ]);
+        let got = chapters(
+            &conn,
+            new,
+            &[
+                (5.0, "Five", false),
+                (4.0, "Four", false),
+                (3.0, "Three", false),
+                (2.5, "Two, part two", false),
+                (2.0, "Two", false),
+                (1.0, "One", false),
+                (-1.0, " prologue", false),
+                (-1.0, "Extra", false),
+            ],
+        );
 
         let seen = compare(&conn, old, new).unwrap();
         assert_eq!((seen.read, seen.from.read, seen.from.last_read, seen.to.latest, seen.to.chapters), (5, 3, 3.0, 5.0, 8));
@@ -400,16 +403,10 @@ mod tests {
 
         let outcome = apply(&mut conn, old, new, &Options::default()).unwrap();
         assert_eq!(outcome.read, 5);
-        assert_eq!(state(&conn, new), [
-            (false, 0, false),
-            (false, 7, true),
-            (true, 0, false),
-            (true, 0, false),
-            (true, 0, false),
-            (true, 0, false),
-            (true, 0, false),
-            (false, 0, false)
-        ]);
+        assert_eq!(
+            state(&conn, new),
+            [(false, 0, false), (false, 7, true), (true, 0, false), (true, 0, false), (true, 0, false), (true, 0, false), (true, 0, false), (false, 0, false)]
+        );
         assert_eq!(count(&conn, "SELECT read_at FROM history WHERE chapter_id = ?1", got[1]), 900, "the history comes along");
         assert_eq!(count(&conn, "SELECT COUNT(*) FROM history WHERE manga_id = ?1", old), 0);
         assert_eq!(count(&conn, "SELECT in_library FROM manga WHERE id = ?1", old), 0);

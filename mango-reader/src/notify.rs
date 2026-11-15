@@ -38,7 +38,12 @@ pub fn header(text: &str) -> Result<Option<(String, String)>> {
     let bad = || AppError::bad_request("Write the header as Name: value, on one line, such as Authorization: Bearer tk_...");
     let (name, value) = text.split_once(':').ok_or_else(bad)?;
     let (name, value) = (name.trim(), value.trim());
-    if name.is_empty() || value.is_empty() || value.len() > 1000 || !name.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-') || value.chars().any(char::is_control) {
+    if name.is_empty()
+        || value.is_empty()
+        || value.len() > 1000
+        || !name.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-')
+        || value.chars().any(char::is_control)
+    {
         return Err(bad());
     }
     if OWN_HEADERS.contains(&name.to_ascii_lowercase().as_str()) {
@@ -72,10 +77,8 @@ pub struct Notifier {
 
 impl Notifier {
     pub fn new(db: Db, local: bool) -> Result<Self> {
-        let builder = Client::builder()
-            .user_agent(concat!("Mango/", env!("MANGO_VERSION")))
-            .connect_timeout(Duration::from_secs(10))
-            .timeout(Duration::from_secs(20));
+        let builder =
+            Client::builder().user_agent(concat!("Mango/", env!("MANGO_VERSION"))).connect_timeout(Duration::from_secs(10)).timeout(Duration::from_secs(20));
         let http = net::guard(builder, local).build().map_err(|e| AppError::internal(e.to_string()))?;
         Ok(Self { push: Push::new(db.clone())?, db, http, local })
     }
@@ -110,11 +113,7 @@ impl Notifier {
 
     /// Sends a message that says only that it arrived, so the owner can try an address.
     pub async fn test(&self) -> Result<()> {
-        let (url, kind) = self
-            .db
-            .call(|conn| Ok(target(conn)))
-            .await?
-            .ok_or_else(|| AppError::bad_request("Set an address for notifications first"))?;
+        let (url, kind) = self.db.call(|conn| Ok(target(conn))).await?.ok_or_else(|| AppError::bad_request("Set an address for notifications first"))?;
         self.send(&url, &kind, "Mango can reach you here", &[]).await
     }
 
@@ -133,11 +132,15 @@ impl Notifier {
             // ntfy takes the text as the body and the rest as headers, which must be plain ASCII.
             _ => self.http.post(to).header("Title", ascii(title)).header("Tags", "books").body(text),
         };
-        let request = match signed.as_deref().map(header).transpose()?.flatten() {
-            Some((name, value)) => request.header(name, value),
-            None => request,
-        };
-        let answer = request.send().await.map_err(|e| AppError::new(502, "notify_failed", format!("The address did not answer: {}", net::told(&e))))?;
+        let mut request = request.build().map_err(|e| AppError::internal(e.to_string()))?;
+        // The owner's header takes the place of one Mango sets, rather than going beside it:
+        // ntfy reads the first of two, so a Title or Tags given here would be lost.
+        if let Some((name, value)) = signed.as_deref().map(header).transpose()?.flatten() {
+            let name = reqwest::header::HeaderName::from_bytes(name.as_bytes()).map_err(|_| AppError::bad_request("Not a header name"))?;
+            let value = reqwest::header::HeaderValue::from_str(&value).map_err(|_| AppError::bad_request("Not a header value"))?;
+            request.headers_mut().insert(name, value);
+        }
+        let answer = self.http.execute(request).await.map_err(|e| AppError::new(502, "notify_failed", format!("The address did not answer: {}", net::told(&e))))?;
         if !answer.status().is_success() {
             return Err(AppError::new(502, "notify_failed", format!("The address answered {}", answer.status().as_u16())));
         }

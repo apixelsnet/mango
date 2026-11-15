@@ -75,10 +75,8 @@ pub struct Push {
 
 impl Push {
     pub fn new(db: Db) -> Result<Self> {
-        let builder = Client::builder()
-            .user_agent(concat!("Mango/", env!("MANGO_VERSION")))
-            .connect_timeout(Duration::from_secs(10))
-            .timeout(Duration::from_secs(20));
+        let builder =
+            Client::builder().user_agent(concat!("Mango/", env!("MANGO_VERSION"))).connect_timeout(Duration::from_secs(10)).timeout(Duration::from_secs(20));
         let http = net::guard(builder, false).build().map_err(|e| AppError::internal(e.to_string()))?;
         Ok(Self { db, http })
     }
@@ -245,7 +243,10 @@ fn encrypt(device_key: &[u8], auth: &[u8], payload: &[u8], own: SecretKey, salt:
     keys.expand(b"Content-Encoding: nonce\0", &mut nonce).map_err(|_| AppError::internal("could not encrypt a push message"))?;
     // The last record ends in 2, and has no padding.
     let plain = [payload, &[2]].concat();
-    let sealed = Aes128Gcm::new_from_slice(&cek).map_err(|_| AppError::internal("could not encrypt a push message"))?.encrypt(Nonce::from_slice(&nonce), plain.as_slice()).map_err(broken)?;
+    let sealed = Aes128Gcm::new_from_slice(&cek)
+        .map_err(|_| AppError::internal("could not encrypt a push message"))?
+        .encrypt(Nonce::from_slice(&nonce), plain.as_slice())
+        .map_err(broken)?;
     Ok([salt.as_slice(), &RECORD.to_be_bytes(), &[own_public.len() as u8], &own_public, &sealed].concat())
 }
 
@@ -296,10 +297,8 @@ mod tests {
     async fn devices_are_kept_and_forgotten() {
         let push = Push::new(Db::open(std::path::Path::new(":memory:")).unwrap()).unwrap();
         let device = B64.encode(public(&random_key().unwrap()));
-        let subscription = |endpoint: &str, p256dh: &str| Subscription {
-            endpoint: endpoint.into(),
-            keys: Keys { p256dh: p256dh.into(), auth: B64.encode([7u8; 16]) },
-        };
+        let subscription =
+            |endpoint: &str, p256dh: &str| Subscription { endpoint: endpoint.into(), keys: Keys { p256dh: p256dh.into(), auth: B64.encode([7u8; 16]) } };
         push.add(subscription("https://push.example.net/a", &device), Some("https://mango.example.org".into())).await.unwrap();
         push.add(subscription("https://push.example.net/a", &device), None).await.unwrap();
         assert_eq!(push.status().await.unwrap().1, 1, "the same address twice is one device");

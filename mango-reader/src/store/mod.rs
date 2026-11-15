@@ -15,6 +15,7 @@ use crate::{
     local::PKG as LOCAL_PKG,
     net,
 };
+use blocklist::Blocklist;
 use reqwest::{header, Method, Url};
 use rusqlite::{params, params_from_iter, types::Value as Sql, Connection, OptionalExtension, Row};
 use serde::{Deserialize, Serialize};
@@ -25,7 +26,6 @@ use std::{
     sync::{Arc, Mutex as StdMutex},
     time::Duration,
 };
-use blocklist::Blocklist;
 use tokio::sync::{watch, Mutex};
 use verify::VerifyError;
 
@@ -282,11 +282,7 @@ impl Stores {
     }
 
     pub async fn get(&self, id: i64) -> Result<StoreInfo> {
-        self.db
-            .call(move |conn| {
-                conn.query_row(&format!("{STORE_COLUMNS} WHERE s.id = ?1"), [id], store_row).optional()?.ok_or_else(no_store)
-            })
-            .await
+        self.db.call(move |conn| conn.query_row(&format!("{STORE_COLUMNS} WHERE s.id = ?1"), [id], store_row).optional()?.ok_or_else(no_store)).await
     }
 
     /// Adds a store from the URL of its `repo.json` or its `index.pb`, and pins its signing key.
@@ -309,11 +305,7 @@ impl Stores {
                 (bytes, etag) = self.download(&index_url).await?;
             }
             Ok(_) => {
-                return Err(AppError::new(
-                    400,
-                    "legacy_store",
-                    "This is an old index.min.json store. Mango reads stores that publish repo.json and index.pb",
-                ));
+                return Err(AppError::new(400, "legacy_store", "This is an old index.min.json store. Mango reads stores that publish repo.json and index.pb"));
             }
             Err(_) => {}
         }
@@ -383,10 +375,7 @@ impl Stores {
                     }
                     Some(pulled) if pulled.key != pinned => {
                         tracing::warn!("store {id} changed its signing key from {pinned} to {}", pulled.key);
-                        conn.execute(
-                            "UPDATE stores SET offered_key = ?2, error = ?3, checked_at = ?4 WHERE id = ?1",
-                            params![id, pulled.key, KEY_CHANGED, now()],
-                        )?;
+                        conn.execute("UPDATE stores SET offered_key = ?2, error = ?3, checked_at = ?4 WHERE id = ?1", params![id, pulled.key, KEY_CHANGED, now()])?;
                     }
                     Some(pulled) => {
                         let tx = conn.transaction()?;
@@ -473,16 +462,11 @@ impl Stores {
         self.db
             .call(move |conn| {
                 let mut item = conn
-                    .query_row(
-                        &format!("{CATALOG_COLUMNS}{CATALOG_FROM} WHERE c.store_id = ?1 AND c.pkg = ?2"),
-                        params![store, pkg],
-                        catalog_row,
-                    )
+                    .query_row(&format!("{CATALOG_COLUMNS}{CATALOG_FROM} WHERE c.store_id = ?1 AND c.pkg = ?2"), params![store, pkg], catalog_row)
                     .optional()?
                     .ok_or_else(|| AppError::new(404, "unknown_extension", "The repository does not list this extension"))?;
-                let mut stmt = conn.prepare(
-                    "SELECT source_id, name, lang, home_url FROM catalog_sources WHERE store_id = ?1 AND pkg = ?2 ORDER BY name COLLATE NOCASE, lang",
-                )?;
+                let mut stmt =
+                    conn.prepare("SELECT source_id, name, lang, home_url FROM catalog_sources WHERE store_id = ?1 AND pkg = ?2 ORDER BY name COLLATE NOCASE, lang")?;
                 let sources = stmt
                     .query_map(params![store, pkg], |r| {
                         Ok(CatalogSource { id: r.get::<_, i64>(0)?.to_string(), name: r.get(1)?, lang: r.get(2)?, home_url: r.get(3)? })
@@ -537,8 +521,7 @@ impl Stores {
     }
 
     async fn preference_call(&self, id: i64, method: Method, body: Option<&Value>) -> Result<Value> {
-        let pkg: Option<String> =
-            self.db.call(move |conn| Ok(conn.query_row("SELECT pkg FROM sources WHERE id = ?1", [id], |r| r.get(0)).optional()?)).await?;
+        let pkg: Option<String> = self.db.call(move |conn| Ok(conn.query_row("SELECT pkg FROM sources WHERE id = ?1", [id], |r| r.get(0)).optional()?)).await?;
         match pkg.as_deref() {
             None => Err(AppError::new(404, "unknown_source", "No installed extension provides this source")),
             // The local source is not the host's, and has nothing to set.
@@ -624,13 +607,12 @@ impl Stores {
             let why = "The store lists an older version of this extension than it did before. Mango does not go back to one. Remove the store and add it again if the store meant it.";
             return Err(AppError::new(409, "older_version", why));
         }
-        let jar_url = pick.jar_url.ok_or_else(|| {
-            AppError::new(501, "apk_not_supported", "This extension is published as an APK only, which Mango cannot install yet")
-        })?;
+        let jar_url =
+            pick.jar_url.ok_or_else(|| AppError::new(501, "apk_not_supported", "This extension is published as an APK only, which Mango cannot install yet"))?;
 
         let (bytes, _) = self.download(&jar_url).await?;
         let (key, expected) = (pick.key, pick.sha256);
-        let sha256 = tokio::task::spawn_blocking(move || check_jar(&bytes, &key, expected.as_deref()))
+        let (sha256, bytes) = tokio::task::spawn_blocking(move || check_jar(&bytes, &key, expected.as_deref()).map(|sha256| (sha256, bytes)))
             .await
             .map_err(|e| AppError::internal(e.to_string()))??;
 
@@ -644,8 +626,11 @@ impl Stores {
                 return Err(AppError::new(403, "admin_only", why));
             }
             None => {
-                // The host is told which extension and version were asked for, and refuses a file that is another.
-                let body = json!({ "url": jar_url, "sha256": sha256, "pkg": pkg, "versionCode": pick.version_code });
+                // The host is handed the file that was just checked, so it is not downloaded twice,
+                // and told which extension and version were asked for: it refuses a file that is another.
+                use base64::Engine;
+                let jar = base64::engine::general_purpose::STANDARD.encode(&bytes);
+                let body = json!({ "jar": jar, "sha256": sha256, "pkg": pkg, "versionCode": pick.version_code });
                 let opts = Call { timeout: Some(INSTALL_TIMEOUT), ..Call::default() };
                 self.host.call(Method::POST, "/extensions/install", Some(&body), opts).await?
             }
@@ -674,10 +659,7 @@ impl Stores {
         }
         let _one_at_a_time = self.fleet.changes.lock().await;
         let name = pkg.to_owned();
-        let known = self
-            .db
-            .call(move |conn| Ok(conn.query_row("SELECT 1 FROM extensions WHERE pkg = ?1", [&name], |_| Ok(())).optional()?.is_some()))
-            .await?;
+        let known = self.db.call(move |conn| Ok(conn.query_row("SELECT 1 FROM extensions WHERE pkg = ?1", [&name], |_| Ok(())).optional()?.is_some())).await?;
         if !known {
             return Err(AppError::new(404, "not_installed", "This extension is not installed"));
         }
@@ -864,9 +846,8 @@ impl Stores {
             let (list, _) = self.download(list_url.as_str()).await?;
             store.extension_list = Some(index::parse_list(&list)?);
         }
-        let key = index::normalize_key(&store.signing_key).ok_or_else(|| {
-            AppError::new(422, "no_signing_key", "The repository publishes no signing key, so its extensions could not be checked")
-        })?;
+        let key = index::normalize_key(&store.signing_key)
+            .ok_or_else(|| AppError::new(422, "no_signing_key", "The repository publishes no signing key, so its extensions could not be checked"))?;
         let hashes = self.hashes(index_url).await;
         Ok(Pulled { store, key, etag, hashes })
     }
@@ -888,6 +869,12 @@ impl Stores {
         match self.fetch(url.as_str(), None).await {
             Ok(Fetched::Body { bytes, .. }) => match serde_json::from_slice::<HashMap<String, Assets>>(&bytes) {
                 Ok(assets) => assets.into_iter().filter_map(|(pkg, a)| Some((pkg, a.jar?.sha256.to_lowercase()))).collect(),
+                // Since 2026-11 one store writes a bare hash per package, of neither the jar nor
+                // the APK it lists. Not a jar hash, so not used, and not worth a warning.
+                Err(_) if serde_json::from_slice::<HashMap<String, String>>(&bytes).is_ok() => {
+                    tracing::debug!("{url} lists hashes in a shape Mango does not use");
+                    HashMap::new()
+                }
                 Err(e) => {
                     tracing::warn!("ignoring an unreadable {url}: {e}");
                     HashMap::new()
@@ -944,14 +931,10 @@ fn check_jar(bytes: &[u8], key: &str, expected: Option<&str>) -> Result<String> 
         return Err(AppError::new(422, "sha256_mismatch", "The downloaded extension does not match the hash the repository publishes"));
     }
     verify::verify_jar(bytes, key).map_err(|e| match e {
-        VerifyError::Unsigned => {
-            AppError::new(422, "unsigned_extension", "The extension is not signed, so it cannot be checked against the repository's key")
+        VerifyError::Unsigned => AppError::new(422, "unsigned_extension", "The extension is not signed, so it cannot be checked against the repository's key"),
+        VerifyError::WrongKey(found) => {
+            AppError::new(422, "signing_key_mismatch", format!("The extension is signed by another key than the repository's: {}", found.join(", ")))
         }
-        VerifyError::WrongKey(found) => AppError::new(
-            422,
-            "signing_key_mismatch",
-            format!("The extension is signed by another key than the repository's: {}", found.join(", ")),
-        ),
         VerifyError::Invalid(why) => AppError::new(422, "signature_invalid", format!("The extension's signature does not hold: {why}")),
     })?;
     Ok(sha256)
@@ -1010,9 +993,7 @@ fn write_catalog(conn: &Connection, store_id: i64, pulled: &Pulled) -> Result<()
              jar_url, apk_url, icon_url, jar_sha256, langs, source_count, search)
          VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)",
     )?;
-    let mut add_source = conn.prepare(
-        "INSERT OR REPLACE INTO catalog_sources (store_id, pkg, source_id, name, lang, home_url) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
-    )?;
+    let mut add_source = conn.prepare("INSERT OR REPLACE INTO catalog_sources (store_id, pkg, source_id, name, lang, home_url) VALUES (?1, ?2, ?3, ?4, ?5, ?6)")?;
     for ext in pulled.store.extensions().iter().filter(|ext| valid_pkg(&ext.package_name)) {
         let resources = ext.resources.clone().unwrap_or_default();
         let langs: BTreeSet<&str> = ext.sources.iter().filter_map(|s| non_empty(&s.language)).collect();
@@ -1039,14 +1020,7 @@ fn write_catalog(conn: &Connection, store_id: i64, pulled: &Pulled) -> Result<()
             search.to_lowercase(),
         ])?;
         for source in &ext.sources {
-            add_source.execute(params![
-                store_id,
-                ext.package_name,
-                source.id,
-                source.name,
-                source.language,
-                non_empty(&source.home_url)
-            ])?;
+            add_source.execute(params![store_id, ext.package_name, source.id, source.name, source.language, non_empty(&source.home_url)])?;
         }
     }
     // The highest version the store ever listed stays known; see `install`.
@@ -1217,8 +1191,7 @@ mod tests {
     fn database() -> Connection {
         let mut conn = Connection::open_in_memory().unwrap();
         crate::db::migrate(&mut conn).unwrap();
-        conn.execute("INSERT INTO stores (id, url, index_url, name, signing_key, added_at) VALUES (1, 'u', 'i', 'old name', 'k', 0)", [])
-            .unwrap();
+        conn.execute("INSERT INTO stores (id, url, index_url, name, signing_key, added_at) VALUES (1, 'u', 'i', 'old name', 'k', 0)", []).unwrap();
         let pulled = Pulled {
             store: StoreMsg {
                 name: "Example".into(),

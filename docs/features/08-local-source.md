@@ -4,7 +4,7 @@ Read files the user already has. Pure Rust; the JVM is never involved.
 
 ## MVP
 
-- A library folder laid out as `<root>/<title>/<chapter>`, where a chapter is a `.cbz`, a `.zip`, or a folder of images.
+- A library folder laid out as `<root>/<title>/<chapter>`, where a chapter is a `.cbz`, a `.zip`, an `.epub`, or a folder of images.
 - Metadata from `ComicInfo.xml` when present; otherwise from folder and file names.
 - Cover from `cover.jpg` / `cover.png`, else the first page.
 - Natural sort for chapters and pages (`2` before `10`).
@@ -44,6 +44,10 @@ A folder of CBZ files shows up as titles and reads in every reader mode with the
 ## Archives kept open (2026-11-14)
 
 A chapter in a CBZ or ZIP was opened, and its page names listed and sorted, for every page read. The last 8 archives read now stay open with their page names, and are opened again when their file's size or time of change differs. A refresh looks for every chapter's ComicInfo.xml, and every library update refreshes local titles: what each archive held is remembered by the file's size and time of change, so an archive is opened again only when it changed.
+
+## EPUB (2026-11-15)
+
+An `.epub` is read like a CBZ, as a chapter or as a title of its own. Its pages come in the book's order: the spine from `META-INF/container.xml` and the package file, and in each page its `img` and `image` tags as they appear. A book whose spine cannot be read is taken by image names, as any archive. Not read: CBR/RAR (the free libraries do not unpack RAR 5, and the full one is under a license that does not fit), 7z (pages cannot be read one at a time without unpacking the archive from its start) and PDF (it needs a renderer). An EPUB that is a novel rather than a comic has few or no images, so it lists as a chapter with few or no pages. Checked by a unit test with a book whose spine and names disagree, and on Linux and Windows with an EPUB in the local folder.
 
 ## One folder for every account
 

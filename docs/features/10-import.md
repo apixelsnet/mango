@@ -4,13 +4,13 @@ Bring an existing library across so nobody starts from zero, and take it out aga
 
 ## One importer covers both
 
-Mihon and Suwayomi-Server write the same backup file: `.tachibk`, a gzip-compressed protobuf. Suwayomi's export is Mihon-compatible, so one parser handles both. Pure Rust; the extension host is not needed to import.
+Mihon-compatible apps, phone and server alike, write the same backup file: `.tachibk`, a gzip-compressed protobuf, so one parser handles them all. Pure Rust; the extension host is not needed to import.
 
 ## Format (checked 2026-10 against an existing reader of it)
 
 | Message | Fields seen |
 |---|---|
-| Backup | 1 backupManga, 2 backupCategories, 101 backupSources, 9000+ app-specific settings |
+| Backup | 1 backupManga, 2 backupCategories, 101 backupSources, 9000+ app-specific settings; Mango writes its own settings at 7001 |
 | BackupManga | 3 title, 4 artist, 5 author, 6 description, 7 genre, 8 status, 9 thumbnailUrl, 13 dateAdded, 14 viewer, 16 chapters, 17 categories, 18 tracking, 100 favorite, 104 history, 105 updateStrategy, 112 memo |
 | BackupChapter | 3 scanlator, 4 read, 5 bookmark, 6 lastPageRead, 7 dateFetch, 8 dateUpload, 9 chapterNumber, 10 sourceOrder, 13 memo |
 | BackupCategory | 2 order, 100 flags |
@@ -92,6 +92,8 @@ Implementation: `backups.rs`. The schedule is configured in Settings › Sources
 
 Backups count against an account's storage, so since 2026-11-14 they are kept small. A backup whose unpacked content equals the newest one's is not written again: the schedule moves on, and `POST /api/backups` answers that newest backup with `unchanged: true`, which Settings reports. The export, and so every backup, is gzip at the highest level. A database snapshot was considered for a backup that restores everything (settings, custom covers, source preferences) and left out on purpose: it would make every backup several times larger.
 
+Since 2026-11-15 the export, and so every backup, carries the account's settings, a few kilobytes: a JSON object under field 7001, which other apps skip (their own preferences field, 104, would make them take Mango's keys in as theirs). Left out, and never taken from a file: the reserved keys (proxy, solver, notification header); where notifications go, since a file someone else made would otherwise send this account's notices to its maker; the update interval, which a hosted plan may hold to a minimum where settings are changed; this Mango's own state (when updates and backups last ran, tracker changes waiting to be sent, a paused queue); and the update category lists, which name categories by their number here. An import takes a setting only where Mango has none, as it never overwrites; the preview counts them and the report says how many were taken. Custom covers and source preferences stay out.
+
 Exports omit custom covers, and include titles merged into another as separate library titles: the apps have no concept of merged titles, and their reading progress would otherwise be lost.
 
 Verification: unit tests and `smoke.py` on Linux.
@@ -100,4 +102,4 @@ Verification: unit tests and `smoke.py` on Linux.
 
 - A file bigger than 128 MB is turned down in the browser before it is sent.
 - The file the preview read is kept for 30 minutes, and the import that follows takes it from there: it is sent once, not twice. When Mango no longer holds it (it restarted), the page sends it again.
-- A backup sits in memory whole while it is read. One backup is read at a time on the whole server, not one per account, and what one may unpack to is `MANGO_IMPORT_MAX_MB` (768 unless set; see feature 09), so a small server can set it lower.
+- A backup is read one top-level entry at a time from the gzip stream (2026-11-15): memory holds the upload and one title, never the unpacked file. A title over 64 MB unpacked is refused. One backup is read at a time on the whole server, not one per account, and what one may unpack to is `MANGO_IMPORT_MAX_MB` (768 unless set; see feature 09).

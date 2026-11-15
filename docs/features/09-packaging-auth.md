@@ -20,7 +20,7 @@ How Mango is shipped, configured, protected and kept up to date.
 | `listen` | `MANGO_LISTEN` | `127.0.0.1:8787`; the image sets `0.0.0.0:8787` |
 | `data_dir` | `MANGO_DATA` | `data`; the image sets `/data` |
 | `log` | `MANGO_LOG` | `info` |
-| `cache_mb` | `MANGO_CACHE_MB` | `1024`: cap on cached pages and covers |
+| `cache_mb` | `MANGO_CACHE_MB` | `1024`: cap on cached pages and covers, for every account together |
 | `keep_free_mb` | `MANGO_KEEP_FREE_MB` | `0`; above it, no chapter is downloaded while the disk has less free (Linux and macOS) |
 | `local_dir` | `MANGO_LOCAL` | `local` in the data directory |
 | `login` | `MANGO_LOGIN` | `true`; `off` lets everyone in |
@@ -28,7 +28,7 @@ How Mango is shipped, configured, protected and kept up to date.
 | `hosts` | `MANGO_HOSTS` | none. Names Mango goes by, comma separated in the variable; see below |
 | `proxied` | `MANGO_PROXIED` | `false`; `on` when a proxy in front writes each caller's address into `X-Forwarded-For` |
 | `proxy_hops` | `MANGO_PROXY_HOPS` | `1`; how many proxies in a row stand in front with `proxied` on (a CDN and a proxy of your own are 2). Wrong passwords are counted by the address the first of them wrote down |
-| `import_max_mb` | `MANGO_IMPORT_MAX_MB` | `768`; what an uploaded backup may unpack to. It sits in memory whole while it is read, one backup at a time on the whole server, so a small server sets it lower (feature 10) |
+| `import_max_mb` | `MANGO_IMPORT_MAX_MB` | `768`; what an uploaded backup may unpack to. It is read as a stream, one backup at a time on the whole server (feature 10) |
 | `signup` | `MANGO_SIGNUP` | `false`; `on` shows the main page to whoever is not signed in, and lets the holder of an admin's invitation make an account |
 | `hold_file` | `MANGO_HOLD_FILE` | none. For whoever runs Mango for others: while this file has a line that reads `full`, the download queue waits, keeping what is queued; `GET /api/downloads` says `held` |
 | `account_url` | `MANGO_ACCOUNT_URL` | none. For whoever runs Mango for others: where a reader's plan and billing are kept, an `https://` address or a path on the same site. Shown as a link in Settings, Account and in the tour; see feature 15 |
@@ -90,6 +90,7 @@ Checked on Linux, in a container with no network: before the change, a `POST` wi
 - The accounts themselves, the solver and the proxy are for an admin; a reader is answered 403 `admin_only`.
 - Removing an account deletes its folder, and takes its extensions out of the host where no other account has them. A database from before accounts is moved on by itself: its password becomes the owner's.
 - An account's number is never given to another (2026-10-11). The number names the folder, and the folder goes a moment after the account, or at the next start when something still holds it. Before, an account added right after the newest one was removed got that number, and with it the removed account's library and tracker sign-ins. A new account whose folder is already there is refused. At start, a folder under `users/` whose account is not in the database is deleted only when removing the account marked it (a `removed` file written before the delete). Any other such folder is moved aside to `users/<id>.unknown-<time>` and kept, with a warning in the log: an older `mango.db` put back, or a new one beside an old `users/`, no longer deletes those libraries (2026-11-14).
+- Every account's library is opened at start, with its own download queue, update and backup schedules and store upkeep: six tasks that wait between rounds, and two database connections. They are not opened when first visited instead, since an account nobody opens would then miss its scheduled updates and backups. The page cache is not per account (2026-11-15): one cap (`MANGO_CACHE_MB`) holds for every account together, kept by one sweep, so ten accounts no longer take ten times the cap.
 - With login switched off, every request is the owner's.
 - A title that two accounts read is fetched and stored once for each. That is the price of keeping accounts apart without touching every query.
 - Extensions are code that runs in the one host, as the user Mango runs as. Bringing one in is for an admin (2026-10-11): a reader adds stores and installs what the host already holds at that version, which an admin put there; an extension or a version no account has yet is answered 403 `admin_only`. A source's settings are kept once for all accounts and may hold a sign-in, so a reader gets an empty list and cannot change them. `MANGO_ANYONE_INSTALLS=on` gives every account what an admin has here; then give accounts only to people you would let run code on the server.
@@ -244,7 +245,7 @@ Not checked: a real authenticator app scanning the picture.
 ## Signed-in devices, and API tokens (2026-11-14)
 
 - **Signed-in devices** (Settings › Account): every browser signed in to the account, with when it signed in and was last used, and Sign out for each but the one asking. `GET /api/auth/devices`, `DELETE /api/auth/devices/<id>`; a device's id is a hash of its session's hash, so the list gives nothing away.
-- **API tokens**: an app password made "For scripts (API)" is also a token for `/api`, sent as `Authorization: Bearer <token>`. It may do all the account can. Plain app passwords still open only the reading-app routes. A wrong token slows its sender down, as a wrong password does. Revoking it takes effect at once. The routes are those `api.rs` lists in `router`; each takes and gives JSON, and changes are `POST`, `PUT` or `DELETE`.
+- **API tokens**: an app password made "For scripts (API)" is also a token for `/api`, sent as `Authorization: Bearer <token>`. It may do all the account can. Plain app passwords still open only the reading-app routes. A wrong token slows its sender down, as a wrong password does. Revoking it takes effect at once. The routes are listed in `docs/api.md`, which a test keeps in step with the router.
 - **Behind more than one proxy**: `MANGO_PROXY_HOPS` says how many stand in front (see the table above), so behind a CDN and a proxy of the owner's own, wrong passwords are counted by the address the CDN saw, not the CDN's own.
 
 Checked by unit tests (`two_step` covers tokens, `callers_are_told_apart_by_network` the hops) and on Linux against a running Mango.
