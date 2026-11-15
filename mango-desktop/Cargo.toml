@@ -11,7 +11,7 @@ path = "src/main.rs"
 
 [dependencies]
 tao = "0.30"
-wry = "0.47"
+wry = "0.57"
 tray-icon = "0.19"
 
 [profile.release]
