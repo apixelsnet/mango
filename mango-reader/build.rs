@@ -19,7 +19,10 @@ fn main() {
     let index = Path::new("ui/dist/index.html");
     if !index.exists() {
         fs::create_dir_all("ui/dist").expect("create ui/dist");
-        fs::write(index, "<!doctype html><title>Mango</title><p>The UI has not been built. Run <code>npm run build</code> in <code>ui/</code>, then build Mango again.</p>\n")
-            .expect("write the stand-in page");
+        fs::write(
+            index,
+            "<!doctype html><title>Mango</title><p>The UI has not been built. Run <code>npm run build</code> in <code>ui/</code>, then build Mango again.</p>\n",
+        )
+        .expect("write the stand-in page");
     }
 }

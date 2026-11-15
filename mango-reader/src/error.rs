@@ -18,11 +18,7 @@ pub struct AppError {
 
 impl AppError {
     pub fn new(status: u16, code: &str, message: impl Into<String>) -> Self {
-        Self {
-            status: StatusCode::from_u16(status).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR),
-            code: code.to_owned(),
-            message: message.into(),
-        }
+        Self { status: StatusCode::from_u16(status).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR), code: code.to_owned(), message: message.into() }
     }
 
     pub fn bad_request(message: impl Into<String>) -> Self {

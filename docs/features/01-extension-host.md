@@ -40,9 +40,9 @@ Not by copying source. The build downloads that server's release jar (named in t
 
 License: the runtime jar is MPL-2.0, some parts Apache-2.0. We ship it unmodified apart from deleted entries and point to its source tag.
 
-## Protocol (version 6, frozen)
+## Protocol (version 7, frozen)
 
-The protocol is at version 6 (2026-10-28); each version after 3 has a section of its own below: 4 under "Install says what was asked for", 5 under "Filters", 6 under "A title's own address". A change to it is a new version, made on both sides at once.
+The protocol is at version 7 (2026-11-15); each version after 3 has a section of its own below: 4 under "Install says what was asked for", 5 under "Filters", 6 under "A title's own address", 7 under "Install takes the checked file". A change to it is a new version, made on both sides at once.
 
 Version 3 (2026-10-11, host 0.5.0) changed one thing: preferences answer and take a change, where they were reserved; see below.
 
@@ -55,7 +55,7 @@ Local HTTP, loopback only. The core passes a bearer token when it starts the hos
 The host implements everything below. APK-only extensions answer 501.
 
 - `GET /health` — host version, protocol version, loaded sources
-- `POST /extensions/install` `{jarUrl | apkUrl, sha256}` · `DELETE /extensions/{pkg}`
+- `POST /extensions/install` `{jar | url, sha256, pkg, versionCode}` · `DELETE /extensions/{pkg}`
 - `GET /sources` · `GET /sources/{id}/filters` · `GET | PUT /sources/{id}/preferences`
 - `POST /sources/{id}/popular | latest | search` `{page, query, filters}`
 - `POST /sources/{id}/manga` `{manga, chapters, fetchDetails, fetchChapters}`
@@ -250,6 +250,12 @@ Checked: the smoke test against the real repository passes with the new jars; a 
 ## Done when
 
 The core installs an extension from the store and reads a chapter through the host, on Linux and on Windows.
+
+## Install takes the checked file (2026-11-15, host 0.9.0, protocol 7)
+
+The core downloads an extension to check its hash and signature, and the host then downloaded it a second time. `/extensions/install` now takes `jar`, the file itself in base64, and the core sends the file it has just checked: one download, and the host loads exactly the bytes that were checked. The host still compares the file's sha256 with the one given. `url` is still taken when `jar` is left out, as the host's own smoke test does. Checked: the core's `smoke.py` against the real store on Linux (213 checks) and on Windows with Oracle's Java (212), and two accounts installing the same extension.
+
+Since the same day the host writes the stack of a source call that failed in an unexpected way to its log, so a report says where it failed.
 
 ## Covers at public addresses only (2026-11-14)
 

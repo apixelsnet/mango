@@ -9,15 +9,12 @@ use serde_json::json;
 const API: &str = "https://api.mangaupdates.com/v1";
 
 pub(super) async fn login(http: &Client, username: &str, password: &str) -> Result<Account> {
-    let body = sign_in(Kind::MangaUpdates, http.put(format!("{base}/account/login", base = super::at(API))).json(&json!({ "username": username, "password": password }))).await?;
+    let body =
+        sign_in(Kind::MangaUpdates, http.put(format!("{base}/account/login", base = super::at(API))).json(&json!({ "username": username, "password": password })))
+            .await?;
     let context = &body["context"];
     let token = context["session_token"].as_str().ok_or_else(|| tracker_error("MangaUpdates sent no token".into()))?;
-    Ok(Account {
-        token: token.to_owned(),
-        user_id: context["uid"].as_i64().unwrap_or(0).to_string(),
-        user_name: username.to_owned(),
-        ..Account::default()
-    })
+    Ok(Account { token: token.to_owned(), user_id: context["uid"].as_i64().unwrap_or(0).to_string(), user_name: username.to_owned(), ..Account::default() })
 }
 
 /// Open to everyone.

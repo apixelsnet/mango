@@ -2,8 +2,8 @@
 //! Both apps write the same format. Pure Rust; the extension host is not needed.
 //!
 //! The file is untrusted. Its unpacked size and its lists are capped, and nothing in
-//! it is used as a path. Titles are decoded one at a time, so memory holds the
-//! unpacked file and one title, never the whole library as objects.
+//! it is used as a path. The file is read as a stream, one title at a time, so memory
+//! holds the upload and one title, never the unpacked file or the library as objects.
 //!
 //! Importing merges and never overwrites: a chapter read on either side stays read,
 //! the further page wins, and what Mango already knows about a title is kept. So
@@ -13,11 +13,8 @@ use crate::{
     db::Db,
     error::{AppError, Result},
 };
-use prost::{
-    bytes::Buf,
-    encoding::{decode_key, decode_varint, skip_field, DecodeContext, WireType},
-    Message,
-};
+use axum::body::Bytes;
+use prost::Message;
 use rusqlite::{params, Connection, OptionalExtension};
 use serde::Serialize;
 use std::{
@@ -29,7 +26,7 @@ use std::{
 /// Cap on the upload, and on what it may unpack to.
 pub const MAX_UPLOAD: usize = 128 << 20;
 /// What a backup may unpack to, in bytes: 768 MB unless `MANGO_IMPORT_MAX_MB` says otherwise.
-/// It sits in memory whole while it is read, so a small server sets it lower.
+/// It is read as a stream, so this bounds the work of reading one file, not its memory.
 static MAX_UNPACKED: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(768 << 20);
 
 /// Sets what a backup may unpack to, from the configuration, before anything is imported.
@@ -37,8 +34,8 @@ pub fn set_unpack_cap(mb: u64) {
     MAX_UNPACKED.store(mb.max(1) << 20, std::sync::atomic::Ordering::Relaxed);
 }
 
-/// Held while a backup sits unpacked in memory: one at a time on the whole server, not one
-/// per account, so that many accounts reading backups at once take one backup's memory.
+/// Held while a backup is read: one at a time on the whole server, not one per account,
+/// so that many accounts reading backups at once take one backup's work.
 static UNPACKED: Mutex<()> = Mutex::new(());
 const MAX_TITLES: usize = 200_000;
 const MAX_CHAPTERS: usize = 100_000;
@@ -195,6 +192,8 @@ pub struct Preview {
     pub sources: Vec<SourceNeed>,
     /// Entries that could not be read at all.
     pub unreadable: usize,
+    /// Mango settings the file carries; another app's backup has none.
+    pub settings: usize,
 }
 
 #[derive(Serialize, Clone, Default, Debug)]
@@ -209,6 +208,8 @@ pub struct Report {
     pub history_entries: usize,
     pub tracker_links: usize,
     pub skipped: usize,
+    /// Settings this Mango had no value for and took from the file.
+    pub settings_restored: usize,
     /// Why, for the first of them: `title: reason`.
     pub reasons: Vec<String>,
     pub sources: Vec<SourceNeed>,
@@ -229,7 +230,7 @@ pub struct Importer {
     status: Arc<Mutex<Status>>,
     /// The file last looked at, for a while: the import that follows a preview takes it
     /// from here instead of having it sent again.
-    previewed: Arc<Mutex<Option<(Vec<u8>, std::time::Instant)>>>,
+    previewed: Arc<Mutex<Option<(Bytes, std::time::Instant)>>>,
 }
 
 /// How long a previewed file waits for its import.
@@ -245,12 +246,13 @@ impl Importer {
     }
 
     /// What the file holds, without changing anything.
-    pub async fn preview(&self, file: Vec<u8>) -> Result<Preview> {
+    /// The file is held as it came in, not copied: a backup is read from it as a stream.
+    pub async fn preview(&self, file: Bytes) -> Result<Preview> {
         let (tally, file) = crate::local::blocking(move || {
             let Ok(_one_at_a_time) = UNPACKED.try_lock() else {
                 return Err(AppError::new(409, "import_running", "Another backup is being read. Try again when it is done."));
             };
-            Ok((tally(&unpack(&file)?)?, file))
+            Ok((tally(&file)?, file))
         })
         .await?;
         // Held for the import that follows, and let go after a while if none does.
@@ -272,16 +274,17 @@ impl Importer {
             chapters: tally.chapters,
             read_chapters: tally.read_chapters,
             tracked: tally.tracked,
-            categories: tally.categories,
+            categories: tally.categories.into_iter().map(|c| c.name).collect(),
             sources,
             unreadable: tally.unreadable,
+            settings: tally.settings.len(),
         })
     }
 
     /// Starts the import in the background. It works on a connection of its own, in one
     /// transaction: readers carry on meanwhile, and a failure leaves the library as it was.
     /// Starts importing `file` or, when it is empty, the file looked at last.
-    pub fn start(&self, file: Vec<u8>) -> Result<Status> {
+    pub fn start(&self, file: Bytes) -> Result<Status> {
         let file = if file.is_empty() {
             let held = self.previewed.lock().unwrap_or_else(|e| e.into_inner()).take();
             match held {
@@ -321,10 +324,6 @@ impl Importer {
 
 // ---------- reading the file ----------
 
-fn damaged(_: prost::DecodeError) -> AppError {
-    AppError::new(422, "bad_backup", "This file is not a readable backup from a Mihon-compatible app")
-}
-
 /// Undoes the gzip, up to the cap.
 pub(crate) fn unpack(file: &[u8]) -> Result<Vec<u8>> {
     if !file.starts_with(&[0x1f, 0x8b]) {
@@ -342,37 +341,88 @@ pub(crate) fn unpack(file: &[u8]) -> Result<Vec<u8>> {
     Ok(data)
 }
 
-/// Calls `each` with every top-level field of the backup that has the wanted number.
+/// Reads the backup's top-level fields one at a time from the gzip stream, calling `each`
+/// with the field's number and its bytes. Memory holds one field (one title), never the
+/// whole unpacked file; the unpack cap still holds for the stream as a whole.
 /// Titles are field 1, categories 2, source names 101.
-pub(crate) fn fields<'a>(mut data: &'a [u8], wanted: u32, mut each: impl FnMut(&'a [u8]) -> Result<()>) -> Result<()> {
-    while data.has_remaining() {
-        let (number, wire) = decode_key(&mut data).map_err(damaged)?;
-        if wire != WireType::LengthDelimited {
-            skip_field(wire, number, &mut data, DecodeContext::default()).map_err(damaged)?;
-            continue;
-        }
-        let length = decode_varint(&mut data).map_err(damaged)? as usize;
-        if length > data.len() {
-            return Err(AppError::new(422, "bad_backup", "This backup is damaged: it ends too early"));
-        }
-        let (field, rest) = data.split_at(length);
-        data = rest;
-        if number == wanted {
-            each(field)?;
-        }
+pub(crate) fn stream(file: &[u8], mut each: impl FnMut(u32, &[u8]) -> Result<()>) -> Result<()> {
+    if !file.starts_with(&[0x1f, 0x8b]) {
+        return Err(AppError::new(422, "bad_backup", "This is not a .tachibk backup: it is not gzip-compressed"));
     }
-    Ok(())
-}
-
-fn categories_of(data: &[u8]) -> Result<Vec<BackupCategory>> {
-    let mut categories = Vec::new();
-    fields(data, 2, |field| {
-        if categories.len() < MAX_CATEGORIES {
-            categories.extend(BackupCategory::decode(field).ok().filter(|c| !c.name.trim().is_empty()));
+    let cap = MAX_UNPACKED.load(std::sync::atomic::Ordering::Relaxed);
+    let mut reader = std::io::BufReader::new(flate2::read::GzDecoder::new(file).take(cap + 1));
+    let mut field = Vec::new();
+    let mut outcome = || -> Result<()> {
+        while let Some(key) = varint(&mut reader, true)? {
+            let number = u32::try_from(key >> 3).ok().filter(|&n| n > 0).ok_or_else(broken)?;
+            match key & 7 {
+                0 => {
+                    varint(&mut reader, false)?;
+                }
+                1 => skip(&mut reader, 8)?,
+                2 => {
+                    let length = varint(&mut reader, false)?.ok_or_else(broken)?;
+                    if length > MAX_FIELD {
+                        return Err(AppError::new(422, "bad_backup", "One title in this backup is larger than Mango accepts"));
+                    }
+                    field.clear();
+                    (&mut reader).take(length).read_to_end(&mut field).map_err(|_| unreadable())?;
+                    if field.len() as u64 != length {
+                        return Err(broken());
+                    }
+                    each(number, &field)?;
+                }
+                5 => skip(&mut reader, 4)?,
+                _ => return Err(broken()),
+            }
         }
         Ok(())
-    })?;
-    Ok(categories)
+    };
+    let outcome = outcome();
+    // A stream cut short by the cap reads as damaged; say what it really was.
+    if reader.get_ref().limit() == 0 {
+        return Err(AppError::new(422, "bad_backup", "This backup unpacks to more than Mango accepts"));
+    }
+    outcome
+}
+
+/// The most one top-level field (one title with its chapters) may take.
+const MAX_FIELD: u64 = 64 << 20;
+
+fn broken() -> AppError {
+    AppError::new(422, "bad_backup", "This backup is damaged: it ends too early")
+}
+
+fn unreadable() -> AppError {
+    AppError::new(422, "bad_backup", "This backup is damaged: it does not unpack")
+}
+
+/// One protobuf varint from the stream. `None` at a clean end, where `at_start` allows one.
+fn varint(reader: &mut impl Read, at_start: bool) -> Result<Option<u64>> {
+    let mut value = 0u64;
+    for shift in (0..64).step_by(7) {
+        let mut byte = [0u8];
+        match reader.read(&mut byte) {
+            Ok(0) if at_start && shift == 0 => return Ok(None),
+            Ok(0) => return Err(broken()),
+            Ok(_) => {}
+            Err(_) => return Err(unreadable()),
+        }
+        value |= u64::from(byte[0] & 0x7f) << shift;
+        if byte[0] & 0x80 == 0 {
+            return Ok(Some(value));
+        }
+    }
+    Err(broken())
+}
+
+fn skip(reader: &mut impl Read, bytes: u64) -> Result<()> {
+    let skipped = std::io::copy(&mut reader.take(bytes), &mut std::io::sink()).map_err(|_| unreadable())?;
+    if skipped == bytes {
+        Ok(())
+    } else {
+        Err(broken())
+    }
 }
 
 struct Tally {
@@ -382,23 +432,14 @@ struct Tally {
     read_chapters: usize,
     tracked: usize,
     unreadable: usize,
-    categories: Vec<String>,
+    categories: Vec<BackupCategory>,
     per_source: BTreeMap<i64, usize>,
     source_names: HashMap<i64, String>,
+    settings: serde_json::Map<String, serde_json::Value>,
 }
 
-fn source_names(data: &[u8]) -> Result<HashMap<i64, String>> {
-    let mut names = HashMap::new();
-    fields(data, 101, |field| {
-        if let Ok(source) = BackupSource::decode(field) {
-            names.insert(source.source_id, source.name);
-        }
-        Ok(())
-    })?;
-    Ok(names)
-}
-
-fn tally(data: &[u8]) -> Result<Tally> {
+/// One pass over the file: what it holds, without keeping any title.
+fn tally(file: &[u8]) -> Result<Tally> {
     let mut tally = Tally {
         titles: 0,
         in_library: 0,
@@ -406,21 +447,41 @@ fn tally(data: &[u8]) -> Result<Tally> {
         read_chapters: 0,
         tracked: 0,
         unreadable: 0,
-        categories: categories_of(data)?.into_iter().map(|c| c.name).collect(),
+        categories: Vec::new(),
         per_source: BTreeMap::new(),
-        source_names: source_names(data)?,
+        source_names: HashMap::new(),
+        settings: serde_json::Map::new(),
     };
-    fields(data, 1, |field| {
-        match BackupManga::decode(field) {
-            Ok(manga) if !manga.url.is_empty() => {
-                tally.titles += 1;
-                tally.in_library += usize::from(manga.favorite.unwrap_or(true));
-                tally.chapters += manga.chapters.len();
-                tally.read_chapters += manga.chapters.iter().filter(|c| c.read).count();
-                tally.tracked += usize::from(!manga.tracking.is_empty());
-                *tally.per_source.entry(manga.source).or_default() += 1;
+    stream(file, |number, field| {
+        match number {
+            1 => match BackupManga::decode(field) {
+                Ok(manga) if !manga.url.is_empty() => {
+                    tally.titles += 1;
+                    tally.in_library += usize::from(manga.favorite.unwrap_or(true));
+                    tally.chapters += manga.chapters.len();
+                    tally.read_chapters += manga.chapters.iter().filter(|c| c.read).count();
+                    tally.tracked += usize::from(!manga.tracking.is_empty());
+                    *tally.per_source.entry(manga.source).or_default() += 1;
+                }
+                _ => tally.unreadable += 1,
+            },
+            2 if tally.categories.len() < MAX_CATEGORIES => {
+                tally.categories.extend(BackupCategory::decode(field).ok().filter(|c| !c.name.trim().is_empty()));
             }
-            _ => tally.unreadable += 1,
+            101 => {
+                if let Ok(source) = BackupSource::decode(field) {
+                    tally.source_names.insert(source.source_id, source.name);
+                }
+            }
+            crate::export::SETTINGS_FIELD => {
+                if let Ok(serde_json::Value::Object(values)) = serde_json::from_slice(field) {
+                    tally.settings.extend(values);
+                }
+            }
+            _ => {}
+        }
+        if tally.titles + tally.unreadable > MAX_TITLES {
+            return Err(AppError::new(422, "bad_backup", "This backup holds more titles than Mango accepts"));
         }
         Ok(())
     })?;
@@ -474,22 +535,16 @@ fn reader_mode(viewer_flags: Option<i32>) -> Option<&'static str> {
 /// Imports the whole file in one transaction. `progress` is told `(titles done, titles in all)`.
 pub fn run(conn: &mut Connection, file: &[u8], progress: &dyn Fn(usize, usize)) -> Result<Report> {
     let _one_at_a_time = UNPACKED.lock().unwrap_or_else(|e| e.into_inner());
-    let data = unpack(file)?;
-    let mut total = 0;
-    fields(&data, 1, |_| {
-        total += 1;
-        Ok(())
-    })?;
-    if total > MAX_TITLES {
-        return Err(AppError::new(422, "bad_backup", "This backup holds more titles than Mango accepts"));
-    }
+    // First pass: categories and source names, which the file keeps after the titles.
+    let survey = tally(file)?;
+    let total = survey.titles + survey.unreadable;
     let mut report = Report::default();
     let mut per_source = BTreeMap::new();
     let tx = conn.transaction()?;
 
     // Categories are matched by name; the backup refers to them by their `order`.
     let mut category_ids: HashMap<i64, i64> = HashMap::new();
-    for category in categories_of(&data)? {
+    for category in survey.categories {
         let name = category.name.trim();
         let known: Option<i64> = tx.query_row("SELECT id FROM categories WHERE name = ?1", [name], |r| r.get(0)).optional()?;
         let id = match known {
@@ -504,7 +559,10 @@ pub fn run(conn: &mut Connection, file: &[u8], progress: &dyn Fn(usize, usize)) 
     }
 
     let mut done = 0;
-    fields(&data, 1, |field| {
+    stream(file, |number, field| {
+        if number != 1 {
+            return Ok(());
+        }
         done += 1;
         if done % 25 == 0 {
             progress(done, total);
@@ -534,7 +592,8 @@ pub fn run(conn: &mut Connection, file: &[u8], progress: &dyn Fn(usize, usize)) 
         title(&tx, &manga, &category_ids, &mut report)
     })?;
 
-    report.sources = needs(&tx, &per_source, &source_names(&data)?)?;
+    report.sources = needs(&tx, &per_source, &survey.source_names)?;
+    report.settings_restored = crate::settings::restore(&tx, &survey.settings)?;
     tx.commit()?;
     progress(total, total);
     Ok(report)
@@ -546,8 +605,7 @@ fn title(tx: &Connection, manga: &BackupManga, category_ids: &HashMap<i64, i64>,
     let added = (manga.date_added > 0).then_some(manga.date_added / 1000).filter(|_| favorite);
     let genre = (!manga.genre.is_empty()).then(|| manga.genre.join(", "));
     let strategy = if manga.update_strategy == 1 { "ONLY_FETCH_ONCE" } else { "ALWAYS_UPDATE" };
-    let known: Option<i64> =
-        tx.query_row("SELECT id FROM manga WHERE source_id = ?1 AND url = ?2", params![manga.source, manga.url], |r| r.get(0)).optional()?;
+    let known: Option<i64> = tx.query_row("SELECT id FROM manga WHERE source_id = ?1 AND url = ?2", params![manga.source, manga.url], |r| r.get(0)).optional()?;
     let id = match known {
         Some(id) => {
             // Mango's own details stand. The backup only fills what is still empty, and can add the title to the library.
@@ -558,7 +616,19 @@ fn title(tx: &Connection, manga: &BackupManga, category_ids: &HashMap<i64, i64>,
                      genre = COALESCE(genre, ?9), thumbnail_url = COALESCE(thumbnail_url, ?10),
                      status = CASE WHEN status = 0 THEN ?11 ELSE status END
                  WHERE id = ?1",
-                params![id, favorite, added, reader_mode(manga.viewer_flags), manga.title, manga.artist, manga.author, manga.description, genre, manga.thumbnail_url, manga.status],
+                params![
+                    id,
+                    favorite,
+                    added,
+                    reader_mode(manga.viewer_flags),
+                    manga.title,
+                    manga.artist,
+                    manga.author,
+                    manga.description,
+                    genre,
+                    manga.thumbnail_url,
+                    manga.status
+                ],
             )?;
             report.titles_merged += 1;
             id
@@ -604,8 +674,12 @@ fn title(tx: &Connection, manga: &BackupManga, category_ids: &HashMap<i64, i64>,
                 let now_page = if now_read { page } else { page.max(chapter.last_page_read) };
                 let now_bookmark = bookmark || chapter.bookmark;
                 if (now_read, now_page, now_bookmark) != (read, page, bookmark) {
-                    tx.prepare_cached("UPDATE chapters SET read = ?2, last_page_read = ?3, bookmark = ?4 WHERE id = ?1")?
-                        .execute(params![chapter_id, now_read, now_page, now_bookmark])?;
+                    tx.prepare_cached("UPDATE chapters SET read = ?2, last_page_read = ?3, bookmark = ?4 WHERE id = ?1")?.execute(params![
+                        chapter_id,
+                        now_read,
+                        now_page,
+                        now_bookmark
+                    ])?;
                     report.chapters_updated += 1;
                 }
             }
@@ -771,11 +845,14 @@ mod tests {
              INSERT INTO catalog_sources (store_id, pkg, source_id, name, lang) VALUES (1, 'ext.eight', 8, 'Eight', 'en');",
         )
         .unwrap();
-        let tally = tally(&unpack(&file()).unwrap()).unwrap();
+        let tally = tally(&file()).unwrap();
         assert_eq!((tally.titles, tally.in_library, tally.chapters, tally.read_chapters, tally.tracked, tally.unreadable), (2, 1, 3, 1, 1, 1));
-        assert_eq!(tally.categories, ["Reading"]);
+        assert_eq!(tally.categories.iter().map(|c| c.name.as_str()).collect::<Vec<_>>(), ["Reading"]);
         let sources = needs(&conn, &tally.per_source, &tally.source_names).unwrap();
-        assert_eq!(sources.iter().map(|s| (s.name.as_str(), s.titles, s.pkg.as_deref())).collect::<Vec<_>>(), [("Seven", 1, None), ("Source 8", 1, Some("ext.eight"))]);
+        assert_eq!(
+            sources.iter().map(|s| (s.name.as_str(), s.titles, s.pkg.as_deref())).collect::<Vec<_>>(),
+            [("Seven", 1, None), ("Source 8", 1, Some("ext.eight"))]
+        );
         assert_eq!(snapshot(&conn), "", "a preview writes nothing");
     }
 
@@ -826,7 +903,8 @@ mod tests {
         assert_eq!(state("/a/2"), (false, 30), "Mango's further page stands");
         assert_eq!(state("/a/1"), (true, 3), "read in the backup means read");
         assert_eq!(state("/a/9"), (true, 0), "what only Mango has is left alone");
-        let ours: (String, String, bool) = conn.query_row("SELECT title, description, in_library FROM manga WHERE id = 1", [], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?))).unwrap();
+        let ours: (String, String, bool) =
+            conn.query_row("SELECT title, description, in_library FROM manga WHERE id = 1", [], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?))).unwrap();
         assert_eq!(ours, ("Alpha, as Mango calls it".into(), "Ours".into(), true), "details stay, the library gains the title");
     }
 

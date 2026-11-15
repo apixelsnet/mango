@@ -107,8 +107,8 @@ import kotlin.concurrent.thread
 import kotlin.io.path.absolutePathString
 import kotlin.system.exitProcess
 
-private const val PROTOCOL = 6
-private const val HOST_VERSION = "0.8.0"
+private const val PROTOCOL = 7
+private const val HOST_VERSION = "0.9.0"
 private val PKG_NAME = Regex("[A-Za-z0-9_.]+")
 
 /** Whether an address is on the public internet: not this machine, nor a private or shared network. */
@@ -574,21 +574,31 @@ private fun sha256(file: Path): String =
 
 @Synchronized
 private fun install(body: JsonObject): JsonObject {
-    val url = body.str("url") ?: bad("url")
+    // The core hands over the file it has just checked; a URL is downloaded here instead.
+    val given = body.str("jar")
+    val url = body.str("url")
     val expected = body.str("sha256")?.lowercase() ?: bad("sha256")
-    if (!url.substringBefore('?').endsWith(".jar")) {
-        throw ApiError(501, "apk_not_supported", "This host version installs .jar extensions only")
+    if (given == null) {
+        if (url == null) bad("jar or url")
+        if (!url.substringBefore('?').endsWith(".jar")) {
+            throw ApiError(501, "apk_not_supported", "This host version installs .jar extensions only")
+        }
     }
 
     val tmp = Files.createTempFile(extDir, "download-", ".tmp")
     try {
-        val response =
-            downloader.send(
-                HttpRequest.newBuilder(URI(url)).timeout(Duration.ofSeconds(120)).build(),
-                HttpResponse.BodyHandlers.ofFile(tmp),
-            )
-        if (response.statusCode() != 200) throw ApiError(502, "download_failed", "HTTP ${response.statusCode()} for the extension file")
-        if (sha256(tmp) != expected) throw ApiError(422, "sha256_mismatch", "Downloaded file does not match the expected sha256")
+        if (given != null) {
+            val bytes = runCatching { java.util.Base64.getDecoder().decode(given) }.getOrElse { bad("jar is not base64") }
+            Files.write(tmp, bytes)
+        } else {
+            val response =
+                downloader.send(
+                    HttpRequest.newBuilder(URI(url!!)).timeout(Duration.ofSeconds(120)).build(),
+                    HttpResponse.BodyHandlers.ofFile(tmp),
+                )
+            if (response.statusCode() != 200) throw ApiError(502, "download_failed", "HTTP ${response.statusCode()} for the extension file")
+        }
+        if (sha256(tmp) != expected) throw ApiError(422, "sha256_mismatch", "The extension file does not match the expected sha256")
 
         val manifest =
             ZipFile(tmp.toFile()).use { zip ->
@@ -663,6 +673,8 @@ private fun <T> call(block: suspend () -> T): T =
     } catch (e: LinkageError) {
         throw ApiError(501, "needs_optional_module", "This source needs a module that is not installed: ${e.message}")
     } catch (e: Throwable) {
+        // The reader gets a sentence; the log keeps where it failed, for a bug report.
+        System.err.println("a source failed: ${e.stackTraceToString().lines().take(24).joinToString("\n")}")
         throw ApiError(502, "source_error", told(e))
     }
 

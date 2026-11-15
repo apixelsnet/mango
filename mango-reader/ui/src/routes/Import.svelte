@@ -5,7 +5,7 @@
   import Notice from '../lib/Notice.svelte';
 
   type Source = { id: string; name: string; titles: number; installed: boolean; pkg: string | null; storeId: number | null; extension: string | null };
-  type Preview = { titles: number; inLibrary: number; chapters: number; readChapters: number; tracked: number; categories: string[]; sources: Source[]; unreadable: number };
+  type Preview = { titles: number; inLibrary: number; chapters: number; readChapters: number; tracked: number; categories: string[]; sources: Source[]; unreadable: number; settings?: number };
   type Report = {
     titlesAdded: number;
     titlesMerged: number;
@@ -15,6 +15,7 @@
     historyEntries: number;
     trackerLinks: number;
     skipped: number;
+    settingsRestored?: number;
     reasons: string[];
     sources: Source[];
   };
@@ -122,6 +123,7 @@
         <li><strong>{preview.chapters}</strong> {preview.chapters === 1 ? 'chapter' : 'chapters'}, {preview.readChapters} read</li>
         <li><strong>{preview.categories.length}</strong> {preview.categories.length === 1 ? 'category' : 'categories'}{preview.categories.length ? `: ${preview.categories.join(', ')}` : ''}</li>
         <li><strong>{preview.tracked}</strong> titles with tracker links</li>
+        {#if preview.settings}<li><strong>{preview.settings}</strong> Mango {preview.settings === 1 ? 'setting' : 'settings'}; only those you have not set are taken</li>{/if}
         {#if preview.unreadable}<li><strong>{preview.unreadable}</strong> entries that cannot be read and will be skipped</li>{/if}
       </ul>
       <button class="btn big spot" onclick={start}>Import<Icon name="arrow" size={18} stroke={3} /></button>
@@ -143,6 +145,7 @@
         <li><strong>{report.titlesAdded}</strong> {report.titlesAdded === 1 ? 'title' : 'titles'} added, <strong>{report.titlesMerged}</strong> merged with ones you had</li>
         <li><strong>{report.chaptersAdded}</strong> {report.chaptersAdded === 1 ? 'chapter' : 'chapters'} added, <strong>{report.chaptersUpdated}</strong> moved forward</li>
         <li><strong>{report.categoriesAdded}</strong> {report.categoriesAdded === 1 ? 'category' : 'categories'} added, <strong>{report.historyEntries}</strong> history entries, <strong>{report.trackerLinks}</strong> tracker links</li>
+        {#if report.settingsRestored}<li><strong>{report.settingsRestored}</strong> {report.settingsRestored === 1 ? 'setting' : 'settings'} taken from the backup</li>{/if}
         {#if report.skipped}<li><strong>{report.skipped}</strong> skipped</li>{/if}
       </ul>
       {#if report.reasons.length}

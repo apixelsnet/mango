@@ -94,10 +94,7 @@ fn read_entries(jar: &[u8]) -> Result<Files, VerifyError> {
         }
         let name = entry.name().map_err(|e| invalid(format!("unreadable entry name: {e}")))?.into_owned();
         let mut data = Vec::new();
-        (&mut entry)
-            .take(MAX_UNPACKED - total + 1)
-            .read_to_end(&mut data)
-            .map_err(|e| invalid(format!("unreadable entry {name}: {e}")))?;
+        (&mut entry).take(MAX_UNPACKED - total + 1).read_to_end(&mut data).map_err(|e| invalid(format!("unreadable entry {name}: {e}")))?;
         total += data.len() as u64;
         if total > MAX_UNPACKED {
             return Err(invalid("the archive unpacks to too much data"));
@@ -164,8 +161,7 @@ fn signed_message(signer: &SignerInfo, sf: &[u8]) -> Result<Option<Vec<u8>>, Str
     // over the attributes, which must then name the file's digest.
     let Some(attributes) = &signer.signed_attrs else { return Ok(Some(sf.to_vec())) };
     let digest = Sha256::digest(sf);
-    let names_file =
-        attributes.iter().any(|a| a.oid == MESSAGE_DIGEST && a.values.iter().any(|value| value.value() == digest.as_slice()));
+    let names_file = attributes.iter().any(|a| a.oid == MESSAGE_DIGEST && a.values.iter().any(|value| value.value() == digest.as_slice()));
     if !names_file {
         return Err("the signed attributes do not match the signature file".into());
     }
@@ -175,8 +171,7 @@ fn signed_message(signer: &SignerInfo, sf: &[u8]) -> Result<Option<Vec<u8>>, Str
 fn check_signature_file(sf: &[u8], manifest: &[u8]) -> Result<(), VerifyError> {
     let sections = parse_sections(sf);
     let main = sections.first().ok_or_else(|| invalid("the signature file is empty"))?;
-    let digest = attribute(main, "SHA-256-Digest-Manifest")
-        .ok_or_else(|| invalid("the signature file has no SHA-256 digest of the manifest"))?;
+    let digest = attribute(main, "SHA-256-Digest-Manifest").ok_or_else(|| invalid("the signature file has no SHA-256 digest of the manifest"))?;
     if !digest_matches(digest, manifest) {
         return Err(invalid("MANIFEST.MF was changed after signing"));
     }
@@ -185,8 +180,7 @@ fn check_signature_file(sf: &[u8], manifest: &[u8]) -> Result<(), VerifyError> {
 
 fn check_manifest(manifest: &[u8], files: &Files) -> Result<(), VerifyError> {
     let sections = parse_sections(manifest);
-    let digests: HashMap<&str, &str> =
-        sections.iter().skip(1).filter_map(|s| Some((attribute(s, "Name")?, attribute(s, "SHA-256-Digest")?))).collect();
+    let digests: HashMap<&str, &str> = sections.iter().skip(1).filter_map(|s| Some((attribute(s, "Name")?, attribute(s, "SHA-256-Digest")?))).collect();
     for (name, data) in files {
         if is_signature_file(name) {
             continue;

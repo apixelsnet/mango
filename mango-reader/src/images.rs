@@ -14,10 +14,10 @@ use crate::{
 };
 use axum::body::Bytes;
 use reqwest::Method;
-use sha2::{Digest, Sha256};
 use rusqlite::{params, OptionalExtension};
 use serde::Deserialize;
 use serde_json::json;
+use sha2::{Digest, Sha256};
 use std::{
     borrow::Cow,
     collections::HashMap,
@@ -138,6 +138,48 @@ impl KeyedLock {
     }
 }
 
+/// The page cache's cap. It is one budget for the whole server, not one per account:
+/// every account's cache folder is swept together, least recently used first, so many
+/// accounts never take more than the cap between them.
+pub struct CacheBudget {
+    max_bytes: u64,
+    dirs: StdMutex<Vec<PathBuf>>,
+    /// Bytes put in any cache since the last sweep, and the call for an early one.
+    written: AtomicU64,
+    early: Notify,
+}
+
+impl CacheBudget {
+    pub fn new(cache_mb: u64) -> Arc<Self> {
+        Arc::new(Self { max_bytes: cache_mb.saturating_mul(1 << 20), dirs: StdMutex::default(), written: AtomicU64::new(0), early: Notify::new() })
+    }
+
+    fn join(&self, dir: PathBuf) {
+        let mut dirs = self.dirs.lock().unwrap_or_else(|e| e.into_inner());
+        if !dirs.contains(&dir) {
+            dirs.push(dir);
+        }
+    }
+
+    fn leave(&self, dir: &Path) {
+        self.dirs.lock().unwrap_or_else(|e| e.into_inner()).retain(|known| known != dir);
+    }
+
+    /// Keeps every cache together under the cap: every ten minutes, and sooner when much
+    /// was put in. Never returns.
+    pub async fn sweep_forever(self: Arc<Self>) {
+        loop {
+            self.written.store(0, Ordering::Relaxed);
+            let (dirs, max) = (self.dirs.lock().unwrap_or_else(|e| e.into_inner()).clone(), self.max_bytes);
+            let _ = tokio::task::spawn_blocking(move || sweep_all(&dirs, max)).await;
+            tokio::select! {
+                _ = tokio::time::sleep(SWEEP_EVERY) => {}
+                _ = self.early.notified() => {}
+            }
+        }
+    }
+}
+
 #[derive(Clone)]
 pub struct Images {
     db: Db,
@@ -146,27 +188,24 @@ pub struct Images {
     cache: PathBuf,
     covers: PathBuf,
     downloads: PathBuf,
-    max_bytes: u64,
-    /// Bytes put in the cache since the last sweep, and the call for an early one.
-    written: Arc<AtomicU64>,
-    early: Arc<Notify>,
+    budget: Arc<CacheBudget>,
     lists: Arc<StdMutex<HashMap<i64, PageList>>>,
     locks: KeyedLock,
     archives: Archives,
 }
 
 impl Images {
-    pub fn new(db: Db, host: Arc<Host>, local: Local, data_dir: &Path, cache_mb: u64) -> Self {
+    pub fn new(db: Db, host: Arc<Host>, local: Local, data_dir: &Path, budget: Arc<CacheBudget>) -> Self {
+        let cache = data_dir.join("cache");
+        budget.join(cache.clone());
         Self {
             db,
             host,
             local,
-            cache: data_dir.join("cache"),
+            cache,
             covers: data_dir.join("covers"),
             downloads: data_dir.join("downloads"),
-            max_bytes: cache_mb.saturating_mul(1 << 20),
-            written: Arc::default(),
-            early: Arc::default(),
+            budget,
             lists: Arc::default(),
             locks: KeyedLock::default(),
             archives: Archives::default(),
@@ -272,12 +311,13 @@ impl Images {
     /// sweep calls the next one early, so a fast browse cannot run far past the cap.
     async fn stash(&self, path: PathBuf, bytes: Bytes) {
         let size = bytes.len() as u64;
-        if size > self.max_bytes / 8 {
+        let budget = &self.budget;
+        if size > budget.max_bytes / 8 {
             return;
         }
         write(path, bytes).await;
-        if self.written.fetch_add(size, Ordering::Relaxed) + size > self.max_bytes / 10 {
-            self.early.notify_one();
+        if budget.written.fetch_add(size, Ordering::Relaxed) + size > budget.max_bytes / 10 {
+            budget.early.notify_one();
         }
     }
 
@@ -294,7 +334,10 @@ impl Images {
     /// source. The one there, if any, stays until the other's is taken up.
     pub async fn copy_cover(&self, from: i64, to: i64, mark: &str) -> Result<()> {
         let (source, target) = (self.custom_cover(from, mark), self.custom_cover(to, mark));
-        tokio::task::spawn_blocking(move || fs::copy(source, target)).await.map_err(|e| AppError::internal(e.to_string()))?.map_err(|e| AppError::internal(format!("Could not copy the cover: {e}")))?;
+        tokio::task::spawn_blocking(move || fs::copy(source, target))
+            .await
+            .map_err(|e| AppError::internal(e.to_string()))?
+            .map_err(|e| AppError::internal(format!("Could not copy the cover: {e}")))?;
         Ok(())
     }
 
@@ -529,17 +572,9 @@ impl Images {
         .unwrap_or(0)
     }
 
-    /// Keeps the cache under its cap: every ten minutes, and sooner when much was put in. Never returns.
-    pub async fn sweep_forever(self) {
-        loop {
-            self.written.store(0, Ordering::Relaxed);
-            let (dir, max) = (self.cache.clone(), self.max_bytes);
-            let _ = tokio::task::spawn_blocking(move || sweep(&dir, max)).await;
-            tokio::select! {
-                _ = tokio::time::sleep(SWEEP_EVERY) => {}
-                _ = self.early.notified() => {}
-            }
-        }
+    /// Takes this account's cache out of the shared budget, for an account being removed.
+    pub fn leave_budget(&self) {
+        self.budget.leave(&self.cache);
     }
 }
 
@@ -554,9 +589,7 @@ fn shrink(bytes: Vec<u8>) -> Vec<u8> {
         let mut decoder = jpeg_decoder::Decoder::new(bytes.as_slice());
         decoder.read_info().ok()?;
         let info = decoder.info()?;
-        if info.coding_process == jpeg_decoder::CodingProcess::DctProgressive
-            && u32::from(info.width) * u32::from(info.height) > PROGRESSIVE_MAX_PIXELS
-        {
+        if info.coding_process == jpeg_decoder::CodingProcess::DctProgressive && u32::from(info.width) * u32::from(info.height) > PROGRESSIVE_MAX_PIXELS {
             return None;
         }
         // The browser turns the picture by its EXIF orientation; a new file would lose it.
@@ -592,7 +625,8 @@ fn turned(exif: &[u8]) -> bool {
         _ => return false,
     };
     let u16_at = |at: usize| tiff.get(at..at + 2).map(|b| if big { u16::from_be_bytes([b[0], b[1]]) } else { u16::from_le_bytes([b[0], b[1]]) });
-    let u32_at = |at: usize| tiff.get(at..at + 4).map(|b| if big { u32::from_be_bytes([b[0], b[1], b[2], b[3]]) } else { u32::from_le_bytes([b[0], b[1], b[2], b[3]]) });
+    let u32_at =
+        |at: usize| tiff.get(at..at + 4).map(|b| if big { u32::from_be_bytes([b[0], b[1], b[2], b[3]]) } else { u32::from_le_bytes([b[0], b[1], b[2], b[3]]) });
     let Some(ifd) = u32_at(4).map(|at| at as usize) else { return false };
     let count = u16_at(ifd).unwrap_or(0) as usize;
     (0..count).map(|i| ifd + 2 + i * 12).any(|entry| u16_at(entry) == Some(0x0112) && u16_at(entry + 8).is_some_and(|value| value > 1))
@@ -846,6 +880,12 @@ async fn write(path: PathBuf, bytes: Bytes) {
 
 /// Deletes the least recently used files until the folder is a tenth under `max`.
 fn sweep(dir: &Path, max: u64) -> u64 {
+    sweep_all(std::slice::from_ref(&dir.to_path_buf()), max)
+}
+
+/// Deletes the least recently used files across all `dirs` until together they are a
+/// tenth under `max`. Answers what they hold after.
+fn sweep_all(dirs: &[PathBuf], max: u64) -> u64 {
     fn walk(dir: &Path, files: &mut Vec<(SystemTime, u64, PathBuf)>) {
         let Ok(entries) = fs::read_dir(dir) else { return };
         for entry in entries.flatten() {
@@ -859,7 +899,9 @@ fn sweep(dir: &Path, max: u64) -> u64 {
         }
     }
     let mut files = Vec::new();
-    walk(dir, &mut files);
+    for dir in dirs {
+        walk(dir, &mut files);
+    }
     let mut total: u64 = files.iter().map(|(_, size, _)| size).sum();
     if total <= max {
         return total;
@@ -1068,5 +1110,30 @@ mod tests {
         assert!(!dir.join("pages/1/0").exists() && dir.join("pages/1/1").exists() && dir.join("cover").exists());
         assert_eq!(sweep(&dir, 0), 0, "a cap of nothing empties it");
         fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn accounts_share_one_cap() {
+        let root = std::env::temp_dir().join(format!("mango-budget-{:08x}", fnv(&format!("{:?}", Instant::now()))));
+        let (one, two) = (root.join("1/cache"), root.join("2/cache"));
+        let old = SystemTime::now() - Duration::from_secs(3600);
+        for (dir, age) in [(&one, None), (&two, Some(old))] {
+            fs::create_dir_all(dir).unwrap();
+            let path = dir.join("page");
+            fs::write(&path, vec![0u8; 600]).unwrap();
+            if let Some(time) = age {
+                fs::OpenOptions::new().write(true).open(&path).unwrap().set_modified(time).unwrap();
+            }
+        }
+        // Each is under the cap alone; together they are not, and the older account's page goes.
+        assert_eq!(sweep_all(&[one.clone(), two.clone()], 1000), 600);
+        assert!(one.join("page").exists() && !two.join("page").exists());
+        let budget = CacheBudget::new(1);
+        budget.join(one.clone());
+        budget.join(one.clone());
+        budget.join(two.clone());
+        budget.leave(&two);
+        assert_eq!(*budget.dirs.lock().unwrap(), [one]);
+        fs::remove_dir_all(&root).unwrap();
     }
 }

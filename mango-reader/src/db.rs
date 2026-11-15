@@ -178,8 +178,7 @@ mod tests {
         migrate(&mut conn).unwrap();
         let version: i64 = conn.query_row("PRAGMA user_version", [], |r| r.get(0)).unwrap();
         assert_eq!(version as usize, MIGRATIONS.len());
-        conn.execute("INSERT INTO stores (url, index_url, name, signing_key, added_at) VALUES ('u', 'i', 'n', 'k', 0)", [])
-            .unwrap();
+        conn.execute("INSERT INTO stores (url, index_url, name, signing_key, added_at) VALUES ('u', 'i', 'n', 'k', 0)", []).unwrap();
     }
 
     #[test]

@@ -75,7 +75,11 @@ async fn every_tracker_client_speaks_its_trackers_tongue() {
     })
     .await;
     let account = anilist::login(&http, "https://anilist.co/api/v2/oauth/pin#access_token=tok123&token_type=Bearer&expires_in=1").await.unwrap();
-    assert_eq!((account.token.as_str(), account.user_id.as_str(), account.user_name.as_str()), ("tok123", "7", "Ann"), "the token is taken out of the pasted address");
+    assert_eq!(
+        (account.token.as_str(), account.user_id.as_str(), account.user_name.as_str()),
+        ("tok123", "7", "Ann"),
+        "the token is taken out of the pasted address"
+    );
     assert_eq!(last(&seen).auth, "Bearer tok123");
     let found = anilist::search(&http, "alpha").await.unwrap();
     assert_eq!((found[0].media_id, found[0].kind.as_str(), found[0].year, found[0].total_chapters), (31, "one shot", Some(2019), 12));
@@ -113,7 +117,11 @@ async fn every_tracker_client_speaks_its_trackers_tongue() {
     let found = kitsu::search(&http, "beta").await.unwrap();
     assert_eq!((found[0].media_id, found[0].year, found[0].url.as_str()), (12, Some(2001), "https://kitsu.app/manga/beta"));
     let entry = kitsu::find(&http, &account, 12).await.unwrap().unwrap();
-    assert_eq!((entry.library_id, entry.status, entry.last_chapter_read, entry.score, entry.total_chapters), (44, 3, 3.0, 7.0, 30), "twentieths come back out of ten");
+    assert_eq!(
+        (entry.library_id, entry.status, entry.last_chapter_read, entry.score, entry.total_chapters),
+        (44, 3, 3.0, 7.0, 30),
+        "twentieths come back out of ten"
+    );
     assert_eq!(kitsu::save(&http, &account, &track(12, 0, 5, 4.0, 8.0)).await.unwrap(), 45);
     let made = last(&seen);
     let body: Value = serde_json::from_str(&made.body).unwrap();
@@ -128,8 +136,12 @@ async fn every_tracker_client_speaks_its_trackers_tongue() {
     let seen = stand_in(|method, path, _| match (method, path.split('?').next().unwrap_or_default()) {
         ("POST", "/v1/oauth2/token") => (StatusCode::OK, json!({ "access_token": "m1", "refresh_token": "mr", "expires_in": 100 })),
         ("GET", "/v2/users/@me") => (StatusCode::OK, json!({ "id": 9, "name": "Mal" })),
-        ("GET", "/v2/manga") => (StatusCode::OK, json!({ "data": [{ "node": { "id": 77, "title": "Gamma", "num_chapters": 40, "media_type": "manhwa", "start_date": "2015" } }] })),
-        ("GET", "/v2/manga/77") => (StatusCode::OK, json!({ "num_chapters": 40, "my_list_status": { "status": "completed", "is_rereading": true, "num_chapters_read": 40, "score": 9 } })),
+        ("GET", "/v2/manga") => {
+            (StatusCode::OK, json!({ "data": [{ "node": { "id": 77, "title": "Gamma", "num_chapters": 40, "media_type": "manhwa", "start_date": "2015" } }] }))
+        }
+        ("GET", "/v2/manga/77") => {
+            (StatusCode::OK, json!({ "num_chapters": 40, "my_list_status": { "status": "completed", "is_rereading": true, "num_chapters_read": 40, "score": 9 } }))
+        }
         ("GET", "/v2/manga/78") => (StatusCode::OK, json!({ "num_chapters": 10 })),
         ("PUT", _) => (StatusCode::OK, json!({})),
         _ => (StatusCode::UNAUTHORIZED, json!({ "error": "invalid_token" })),

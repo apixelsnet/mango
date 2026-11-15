@@ -85,7 +85,11 @@ impl Kind {
     }
 
     fn reading(self) -> i32 {
-        if self == Kind::MangaUpdates { 0 } else { 1 }
+        if self == Kind::MangaUpdates {
+            0
+        } else {
+            1
+        }
     }
 
     fn completed(self) -> i32 {
@@ -417,8 +421,7 @@ fn store(conn: &Connection, manga: i64, track: &Track) -> Result<()> {
 /// The chapters of titles merged into it count.
 fn reached(conn: &Connection, manga: i64) -> Result<f64> {
     let list = id_list(&members(conn, manga)?);
-    let highest: f64 =
-        conn.query_row(&format!("SELECT COALESCE(MAX(chapter_number), 0) FROM chapters WHERE manga_id IN ({list}) AND read"), [], |r| r.get(0))?;
+    let highest: f64 = conn.query_row(&format!("SELECT COALESCE(MAX(chapter_number), 0) FROM chapters WHERE manga_id IN ({list}) AND read"), [], |r| r.get(0))?;
     Ok(highest.clamp(0.0, MAX_CHAPTER).floor())
 }
 

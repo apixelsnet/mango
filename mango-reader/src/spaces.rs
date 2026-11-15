@@ -14,7 +14,7 @@ use crate::{
     downloads::Downloads,
     error::{AppError, Result},
     host::Host,
-    images::Images,
+    images::{CacheBudget, Images},
     import::Importer,
     local::Local,
     notify::Notifier,
@@ -40,7 +40,8 @@ pub struct Shared {
     pub host: Arc<Host>,
     pub local: Local,
     pub data_dir: PathBuf,
-    pub cache_mb: u64,
+    /// The page cache cap, shared by every account.
+    pub cache: Arc<CacheBudget>,
     pub stores_refresh_hours: u64,
     pub store_rules: Rules,
     pub blocklist: Arc<Blocklist>,
@@ -52,8 +53,9 @@ pub struct Shared {
 
 struct Open {
     app: AppState,
-    /// The library's background work: the cache sweep, the download queue, the update and
-    /// backup schedules, and keeping its stores and extensions current and clear of the blocklist.
+    /// The library's background work: the download queue, the update and backup schedules,
+    /// and keeping its stores and extensions current and clear of the blocklist. The cache
+    /// sweep is one task for every account (see `CacheBudget`).
     tasks: Vec<JoinHandle<()>>,
 }
 
@@ -69,6 +71,7 @@ impl Spaces {
     /// Opens the library of every account, and clears away what removed accounts left.
     pub fn new(auth: Arc<Auth>, shared: Shared) -> Result<Self> {
         let spaces = Self { auth, shared: Arc::new(shared), fleet: Fleet::default(), open: Arc::default() };
+        tokio::spawn(spaces.shared.cache.clone().sweep_forever());
         let ids = spaces.auth.ids();
         for id in &ids {
             spaces.open(*id)?;
@@ -116,14 +119,13 @@ impl Spaces {
         db.now(|conn| Local::register(conn))?;
         let stores = Stores::new(db.clone(), shared.host.clone(), self.fleet.clone(), id, shared.store_rules, shared.blocklist.clone())?;
         let titles = Titles::new(db.clone(), shared.host.clone(), shared.local.clone());
-        let images = Images::new(db.clone(), shared.host.clone(), shared.local.clone(), &dir, shared.cache_mb);
+        let images = Images::new(db.clone(), shared.host.clone(), shared.local.clone(), &dir, shared.cache.clone());
         let downloads = Downloads::new(db.clone(), images.clone(), &dir, shared.keep_free_mb, shared.hold_file.clone());
         let trackers = Trackers::new(db.clone())?;
         let notifier = Notifier::new(db.clone(), shared.store_rules.local)?;
         let updates = Updates::new(db.clone(), titles.clone(), downloads.clone(), notifier.clone(), trackers.clone());
         let backups = Backups::new(db.clone(), &dir);
         let tasks = vec![
-            tokio::spawn(images.clone().sweep_forever()),
             tokio::spawn(downloads.clone().run()),
             tokio::spawn(updates.clone().schedule()),
             tokio::spawn(backups.clone().schedule()),
@@ -172,6 +174,7 @@ impl Spaces {
         }
         let Some(space) = self.open.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).remove(&id) else { return };
         space.tasks.iter().for_each(JoinHandle::abort);
+        space.app.images.leave_budget();
         // Its extensions leave the host, unless another account has them too.
         space.app.stores.remove_all().await;
         self.fleet.leave(id);

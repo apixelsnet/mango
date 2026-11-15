@@ -151,38 +151,37 @@ async fn load(Me(app): Me, Path(document): Path<String>) -> Result<Json<Value>> 
 }
 
 async fn place(db: &Db, document: String) -> Result<Value> {
-    db
-        .call(move |conn| {
-            let kept = conn
-                .query_row("SELECT progress, percentage, device, device_id, updated_at FROM sync_progress WHERE document = ?1", [&document], |r| {
-                    Ok((r.get::<_, String>(0)?, r.get::<_, f64>(1)?, r.get::<_, String>(2)?, r.get::<_, String>(3)?, r.get::<_, i64>(4)?))
-                })
-                .optional()?;
-            let ours = conn
-                .query_row(
-                    "SELECT c.last_page_read, c.page_count, c.read, c.read_at FROM sync_documents d JOIN chapters c ON c.id = d.chapter_id
-                     WHERE d.document = ?1 AND c.read_at IS NOT NULL",
-                    [&document],
-                    |r| Ok((r.get::<_, i64>(0)?, r.get::<_, Option<i64>>(1)?, r.get::<_, bool>(2)?, r.get::<_, i64>(3)?)),
-                )
-                .optional()?;
-            Ok(match (kept, ours) {
-                (kept, Some((last, count, read, at))) if kept.as_ref().is_none_or(|kept| at > kept.4) => {
-                    let count = count.filter(|count| *count > 0);
-                    let page = match count {
-                        Some(count) if read => count,
-                        _ => last + 1,
-                    };
-                    let percentage = count.map_or(0.0, |count| (page as f64 / count as f64).min(1.0));
-                    json!({ "document": document, "progress": page.to_string(), "percentage": percentage, "device": DEVICE, "device_id": DEVICE_ID, "timestamp": at })
-                }
-                (Some((progress, percentage, device, device_id, at)), _) => {
-                    json!({ "document": document, "progress": progress, "percentage": percentage, "device": device, "device_id": device_id, "timestamp": at })
-                }
-                (None, _) => json!({}),
+    db.call(move |conn| {
+        let kept = conn
+            .query_row("SELECT progress, percentage, device, device_id, updated_at FROM sync_progress WHERE document = ?1", [&document], |r| {
+                Ok((r.get::<_, String>(0)?, r.get::<_, f64>(1)?, r.get::<_, String>(2)?, r.get::<_, String>(3)?, r.get::<_, i64>(4)?))
             })
+            .optional()?;
+        let ours = conn
+            .query_row(
+                "SELECT c.last_page_read, c.page_count, c.read, c.read_at FROM sync_documents d JOIN chapters c ON c.id = d.chapter_id
+                     WHERE d.document = ?1 AND c.read_at IS NOT NULL",
+                [&document],
+                |r| Ok((r.get::<_, i64>(0)?, r.get::<_, Option<i64>>(1)?, r.get::<_, bool>(2)?, r.get::<_, i64>(3)?)),
+            )
+            .optional()?;
+        Ok(match (kept, ours) {
+            (kept, Some((last, count, read, at))) if kept.as_ref().is_none_or(|kept| at > kept.4) => {
+                let count = count.filter(|count| *count > 0);
+                let page = match count {
+                    Some(count) if read => count,
+                    _ => last + 1,
+                };
+                let percentage = count.map_or(0.0, |count| (page as f64 / count as f64).min(1.0));
+                json!({ "document": document, "progress": page.to_string(), "percentage": percentage, "device": DEVICE, "device_id": DEVICE_ID, "timestamp": at })
+            }
+            (Some((progress, percentage, device, device_id, at)), _) => {
+                json!({ "document": document, "progress": progress, "percentage": percentage, "device": device, "device_id": device_id, "timestamp": at })
+            }
+            (None, _) => json!({}),
         })
-        .await
+    })
+    .await
 }
 
 /// KOReader's mark for a file's bytes: the MD5 of 1 KB read at 0 and at 1 KB × 4^i for

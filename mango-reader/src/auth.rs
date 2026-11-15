@@ -408,9 +408,8 @@ fn too_many(wait: i64) -> AppError {
 
 fn accounts(conn: &Connection) -> Result<Vec<Account>> {
     let mut stmt = conn.prepare("SELECT id, name, admin, created_at, password IS NOT NULL, totp IS NOT NULL FROM users ORDER BY id")?;
-    let rows = stmt.query_map([], |r| {
-        Ok(Account { id: r.get(0)?, name: r.get(1)?, admin: r.get(2)?, created_at: r.get(3)?, has_password: r.get(4)?, two_step: r.get(5)? })
-    })?;
+    let rows = stmt
+        .query_map([], |r| Ok(Account { id: r.get(0)?, name: r.get(1)?, admin: r.get(2)?, created_at: r.get(3)?, has_password: r.get(4)?, two_step: r.get(5)? }))?;
     Ok(rows.collect::<rusqlite::Result<_>>()?)
 }
 
@@ -826,7 +825,9 @@ impl Auth {
         let found = self
             .db
             .call(move |conn| {
-                let row = conn.query_row("SELECT id, user_id FROM app_passwords WHERE hash = ?1 AND api = 1", [hash], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, i64>(1)?))).optional()?;
+                let row = conn
+                    .query_row("SELECT id, user_id FROM app_passwords WHERE hash = ?1 AND api = 1", [hash], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, i64>(1)?)))
+                    .optional()?;
                 if let Some((id, _)) = row {
                     conn.execute("UPDATE app_passwords SET used_at = ?2 WHERE id = ?1", params![id, db::now()])?;
                 }
@@ -877,9 +878,8 @@ impl Auth {
         let mine = self.token(headers).map(|token| token_hash(&token));
         self.db
             .call(move |conn| {
-                let mut stmt = conn.prepare(
-                    "SELECT token_hash, agent, created_at, seen_at FROM sessions WHERE user_id = ?1 AND expires_at > ?2 ORDER BY seen_at DESC",
-                )?;
+                let mut stmt =
+                    conn.prepare("SELECT token_hash, agent, created_at, seen_at FROM sessions WHERE user_id = ?1 AND expires_at > ?2 ORDER BY seen_at DESC")?;
                 let rows = stmt.query_map(params![who.id, db::now()], |r| {
                     let hash: String = r.get(0)?;
                     Ok(Device { id: device_id(&hash), this: mine.as_deref() == Some(hash.as_str()), agent: r.get(1)?, created_at: r.get(2)?, seen_at: r.get(3)? })
@@ -1166,7 +1166,8 @@ impl Auth {
     }
 
     async fn verify(&self, user: i64, password: String) -> Result<bool> {
-        let stored = self.db.call(move |conn| Ok(conn.query_row("SELECT password FROM users WHERE id = ?1", [user], |r| r.get::<_, Option<String>>(0)).optional()?)).await?;
+        let stored =
+            self.db.call(move |conn| Ok(conn.query_row("SELECT password FROM users WHERE id = ?1", [user], |r| r.get::<_, Option<String>>(0)).optional()?)).await?;
         let _one = self.hashing.lock().await;
         tokio::task::spawn_blocking(move || match stored.flatten() {
             Some(stored) => PasswordHash::new(&stored).is_ok_and(|hash| Argon2::default().verify_password(password.as_bytes(), &hash).is_ok()),
@@ -1409,32 +1410,17 @@ fn with_cookie(auth: &Auth, token: &str, headers: &HeaderMap) -> Response {
     ([(header::SET_COOKIE, auth.cookie_for(token, headers))], Json(json!({ "ok": true }))).into_response()
 }
 
-async fn status(
-    State(server): State<Spaces>,
-    ConnectInfo(peer): ConnectInfo<SocketAddr>,
-    Query(asked): Query<Asked>,
-    headers: HeaderMap,
-) -> Json<Status> {
+async fn status(State(server): State<Spaces>, ConnectInfo(peer): ConnectInfo<SocketAddr>, Query(asked): Query<Asked>, headers: HeaderMap) -> Json<Status> {
     Json(server.auth.status(&headers, Auth::local(peer.ip(), &headers), asked.challenge.as_deref()))
 }
 
-async fn setup(
-    State(server): State<Spaces>,
-    ConnectInfo(peer): ConnectInfo<SocketAddr>,
-    headers: HeaderMap,
-    Json(body): Json<Password>,
-) -> Result<Response> {
+async fn setup(State(server): State<Spaces>, ConnectInfo(peer): ConnectInfo<SocketAddr>, headers: HeaderMap, Json(body): Json<Password>) -> Result<Response> {
     let local = Auth::local(peer.ip(), &headers);
     let token = server.auth.setup(body.password, &body.code, local, agent(&headers)).await?;
     Ok(with_cookie(&server.auth, &token, &headers))
 }
 
-async fn login(
-    State(server): State<Spaces>,
-    ConnectInfo(peer): ConnectInfo<SocketAddr>,
-    headers: HeaderMap,
-    Json(body): Json<Password>,
-) -> Result<Response> {
+async fn login(State(server): State<Spaces>, ConnectInfo(peer): ConnectInfo<SocketAddr>, headers: HeaderMap, Json(body): Json<Password>) -> Result<Response> {
     let from = server.auth.caller(peer.ip(), &headers);
     let token = server.auth.login(from, &body.name, body.password, &body.code, agent(&headers)).await?;
     Ok(with_cookie(&server.auth, &token, &headers))
@@ -1508,12 +1494,7 @@ async fn remove_app(State(server): State<Spaces>, headers: HeaderMap, Path(id): 
 }
 
 /// Makes an account for the holder of an invitation and signs them in.
-async fn signup(
-    State(server): State<Spaces>,
-    ConnectInfo(peer): ConnectInfo<SocketAddr>,
-    headers: HeaderMap,
-    Json(body): Json<Password>,
-) -> Result<Response> {
+async fn signup(State(server): State<Spaces>, ConnectInfo(peer): ConnectInfo<SocketAddr>, headers: HeaderMap, Json(body): Json<Password>) -> Result<Response> {
     let auth = &server.auth;
     let account = auth.join(auth.caller(peer.ip(), &headers), &body.name, body.password, &body.code).await?;
     // A new account starts with an empty library and no stores.

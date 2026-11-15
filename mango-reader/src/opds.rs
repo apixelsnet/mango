@@ -169,7 +169,13 @@ async fn catalog_at(app: AppState, at: &str) -> Result<Response> {
     feed.entry("library", "Library", now, "Every title in the library", &subsection("library"));
     feed.entry("unread", "Unread", now, "Titles with chapters left to read", &subsection("library?unread=1"));
     for category in categories {
-        feed.entry(&format!("category:{}", category.id), &category.name, now, "A category of the library", &subsection(&format!("library?category={}", category.id)));
+        feed.entry(
+            &format!("category:{}", category.id),
+            &category.name,
+            now,
+            "A category of the library",
+            &subsection(&format!("library?category={}", category.id)),
+        );
     }
     Ok(feed.done())
 }
@@ -200,7 +206,11 @@ impl Wanted {
         if page > 1 {
             parts.push(format!("page={page}"));
         }
-        if parts.is_empty() { String::new() } else { format!("?{}", parts.join("&")) }
+        if parts.is_empty() {
+            String::new()
+        } else {
+            format!("?{}", parts.join("&"))
+        }
     }
 }
 

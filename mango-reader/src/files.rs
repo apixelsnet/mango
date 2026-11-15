@@ -163,8 +163,7 @@ pub fn write(titles: &[Title], out: impl Write) -> io::Result<()> {
             let name = clean(&path.file_name().map(|name| name.to_string_lossy().into_owned()).unwrap_or_default());
             // A chapter saved as a folder goes in as one, which the local sources read too.
             if path.is_dir() {
-                let mut pages: Vec<PathBuf> =
-                    fs::read_dir(path).into_iter().flatten().flatten().map(|entry| entry.path()).filter(|page| page.is_file()).collect();
+                let mut pages: Vec<PathBuf> = fs::read_dir(path).into_iter().flatten().flatten().map(|entry| entry.path()).filter(|page| page.is_file()).collect();
                 pages.sort();
                 for page in pages {
                     let Ok(mut file) = File::open(&page) else { continue };
@@ -412,7 +411,16 @@ mod tests {
         let names: Vec<String> = (0..zip.len()).map(|i| zip.by_index(i).unwrap().name().unwrap().into_owned()).collect();
         assert_eq!(
             names,
-            ["Salt Wind/ComicInfo.xml", "Salt Wind/cover.png", "Salt Wind/Chapter 1.cbz", "Salt Wind/Chapter 2.cbz", "Ünïcode ✓/ComicInfo.xml", "Ünïcode ✓/Ch 1.cbz", "Ünïcode ✓/Ch. 2/001.png", "Ünïcode ✓/Ch. 2/002.png"]
+            [
+                "Salt Wind/ComicInfo.xml",
+                "Salt Wind/cover.png",
+                "Salt Wind/Chapter 1.cbz",
+                "Salt Wind/Chapter 2.cbz",
+                "Ünïcode ✓/ComicInfo.xml",
+                "Ünïcode ✓/Ch 1.cbz",
+                "Ünïcode ✓/Ch. 2/001.png",
+                "Ünïcode ✓/Ch. 2/002.png"
+            ]
         );
         let mut read = |name: &str| {
             let mut bytes = Vec::new();

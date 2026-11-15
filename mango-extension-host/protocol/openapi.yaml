@@ -1,9 +1,14 @@
 openapi: 3.1.0
 info:
   title: Mango extension host
-  version: "6"
+  version: "7"
   description: |
-    Contract between the Rust core and the extension host. Protocol version 6.
+    Contract between the Rust core and the extension host. Protocol version 7.
+
+    Version 7 differs from 6 in one place: `/extensions/install` takes `jar`, the
+    extension file itself (base64), in place of `url`. The core has downloaded and
+    checked the file already, so the host no longer downloads it a second time.
+    `url` is still taken when `jar` is left out.
 
     Version 6 differs from 5 in one place: `/sources/{id}/manga` answers `webUrl`
     as well, the title's page on the source's site as the source makes it, or null
@@ -30,7 +35,7 @@ info:
     - Every request carries `Authorization: Bearer <token>`. The core chooses the
       token and hands it to the host when it starts it.
     - Bodies are JSON. Source ids are 64-bit, so they travel as strings.
-    - Every response carries `X-Mango-Protocol: 6`.
+    - Every response carries `X-Mango-Protocol: 7`.
     - Failures return `{"error": {"code", "message"}}`.
 
     Changing a field or a status code means a new protocol version.
@@ -66,16 +71,17 @@ paths:
                     items: { $ref: "#/components/schemas/Extension" }
   /extensions/install:
     post:
-      summary: Download, verify and load an extension. Replaces an older version of the same package.
+      summary: Verify and load an extension, given as a file or downloaded. Replaces an older version of the same package.
       requestBody:
         required: true
         content:
           application/json:
             schema:
               type: object
-              required: [url, sha256]
+              required: [sha256]
               properties:
-                url: { type: string, description: "URL of the extension .jar" }
+                jar: { type: string, description: "The extension .jar itself, base64. Taken over url when both are given" }
+                url: { type: string, description: "URL of the extension .jar, downloaded when jar is left out" }
                 sha256: { type: string, description: "Expected hash, hex" }
                 pkg: { type: string, description: "The package asked for. A file that declares another is refused: bad_extension" }
                 versionCode: { type: integer, description: "The version the store lists. A file that declares a lower one is refused: bad_extension" }
@@ -84,6 +90,7 @@ paths:
           content:
             application/json:
               schema: { $ref: "#/components/schemas/Extension" }
+        "400": { description: "bad_request: neither jar nor url, or jar is not base64" }
         "422": { description: "sha256_mismatch or bad_extension" }
         "501": { description: "apk_not_supported: only .jar in this host version" }
         "502": { description: "download_failed" }

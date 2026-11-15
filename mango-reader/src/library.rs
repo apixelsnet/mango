@@ -129,7 +129,10 @@ pub enum Bulk {
     /// Takes the titles out of the library. Their chapters and progress stay.
     Remove,
     /// Adds the titles to these categories; with `replace`, takes them out of all others.
-    Categories { ids: Vec<i64>, replace: bool },
+    Categories {
+        ids: Vec<i64>,
+        replace: bool,
+    },
 }
 
 /// The whole library in one answer. Sorting and filtering happen on screen. A title counts
@@ -182,9 +185,8 @@ pub fn read(conn: &Connection) -> Result<LibraryView> {
 }
 
 fn resume(conn: &Connection) -> Result<Option<Resume>> {
-    let last: Option<(i64, i64)> = conn
-        .query_row("SELECT manga_id, chapter_id FROM history ORDER BY read_at DESC LIMIT 1", [], |r| Ok((r.get(0)?, r.get(1)?)))
-        .optional()?;
+    let last: Option<(i64, i64)> =
+        conn.query_row("SELECT manga_id, chapter_id FROM history ORDER BY read_at DESC LIMIT 1", [], |r| Ok((r.get(0)?, r.get(1)?))).optional()?;
     let Some((manga, chapter)) = last else { return Ok(None) };
     // The chapter last opened if it is unfinished; else the oldest unread one of that title,
     // which with titles merged into it goes by number.
@@ -223,8 +225,7 @@ fn resume(conn: &Connection) -> Result<Option<Resume>> {
 
 pub fn categories(conn: &Connection) -> Result<Vec<Category>> {
     let mut stmt = conn.prepare("SELECT id, name, parent_id FROM categories ORDER BY position, id")?;
-    let categories =
-        stmt.query_map([], |r| Ok(Category { id: r.get(0)?, name: r.get(1)?, parent: r.get(2)? }))?.collect::<rusqlite::Result<Vec<_>>>()?;
+    let categories = stmt.query_map([], |r| Ok(Category { id: r.get(0)?, name: r.get(1)?, parent: r.get(2)? }))?.collect::<rusqlite::Result<Vec<_>>>()?;
     Ok(categories)
 }
 
@@ -464,7 +465,8 @@ pub fn stats(conn: &Connection, east: i64) -> Result<Stats> {
     }
 
     let (mut sources, mut genres, mut statuses) = (HashMap::new(), HashMap::new(), HashMap::new());
-    let mut stmt = conn.prepare("SELECT COALESCE(s.name, 'Not installed'), m.genre, m.status FROM manga m LEFT JOIN sources s ON s.id = m.source_id WHERE m.in_library = 1")?;
+    let mut stmt =
+        conn.prepare("SELECT COALESCE(s.name, 'Not installed'), m.genre, m.status FROM manga m LEFT JOIN sources s ON s.id = m.source_id WHERE m.in_library = 1")?;
     let mut rows = stmt.query([])?;
     while let Some(r) = rows.next()? {
         *sources.entry(r.get::<_, String>(0)?).or_insert(0) += 1;

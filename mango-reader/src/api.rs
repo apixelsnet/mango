@@ -4,13 +4,11 @@
 use crate::{
     auth::{self, Account, AccountChange, Auth, Invite, Who},
     backups::{Backups, Saved},
+    config::ProxySetting,
     db::Db,
     downloads::{Downloads, Orphan, QueueView, ReadFiles},
-    updates::{Status, Updates, UpdatesView},
-    version::{self, Releases},
     error::{AppError, Result},
     export, files,
-    config::ProxySetting,
     host::{Host, Proxy, Solver},
     images::{Image, Images, MAX_COVER},
     import::{self, Importer, Preview},
@@ -23,6 +21,8 @@ use crate::{
     titles::{Browse, Edit, Listing, Namesake, PageMark, ReaderView, TitleView, Titles},
     trackers::{self, Change, Credentials, Kind, Pick, Track, Trackers},
     ui,
+    updates::{Status, Updates, UpdatesView},
+    version::{self, Releases},
 };
 use axum::{
     body::{to_bytes, Body, Bytes},
@@ -153,7 +153,7 @@ pub fn router(state: Spaces) -> Router {
         .route("/chapters/{id}/file", get(chapter_file))
         .route("/manga/{id}/auto-download", put(set_auto_download))
         .route("/manga/{id}/migrate/{to}", get(compare_titles).post(migrate_title))
-        .route("/import",get(import_status).post(start_import).layer(DefaultBodyLimit::max(import::MAX_UPLOAD)))
+        .route("/import", get(import_status).post(start_import).layer(DefaultBodyLimit::max(import::MAX_UPLOAD)))
         .route("/import/preview", post(preview_import).layer(DefaultBodyLimit::max(import::MAX_UPLOAD)))
         .route("/export", get(export_library))
         .route("/export/files", get(export_files))
@@ -328,14 +328,15 @@ fn done() -> Json<Value> {
 /// keeps them apart. Not `Vary: Cookie`, which would throw away every page kept whenever a
 /// cookie in front of Mango changes. A cover's address carries a mark of its picture already.
 fn picture(image: Image, cache: &'static str) -> Response {
-    let headers =
-        [(header::CONTENT_TYPE, image.content_type), (header::CACHE_CONTROL, cache), (header::X_CONTENT_TYPE_OPTIONS, "nosniff")];
+    let headers = [(header::CONTENT_TYPE, image.content_type), (header::CACHE_CONTROL, cache), (header::X_CONTENT_TYPE_OPTIONS, "nosniff")];
     (headers, image.bytes).into_response()
 }
 
 async fn health(Me(app): Me) -> Json<Value> {
     let anyone_installs = app.stores.anyone_installs();
-    Json(json!({ "version": version::VERSION, "host": app.host.status(), "localDir": app.local_dir, "anyoneInstalls": anyone_installs, "proxySetting": app.host.proxy_setting().as_str() }))
+    Json(
+        json!({ "version": version::VERSION, "host": app.host.status(), "localDir": app.local_dir, "anyoneInstalls": anyone_installs, "proxySetting": app.host.proxy_setting().as_str() }),
+    )
 }
 
 /// This Mango's version and what the release list said when it was last asked.
@@ -1047,17 +1048,19 @@ async fn compare_titles(Me(app): Me, Path((id, to)): Path<(i64, i64)>) -> Result
 
 /// Moves a title's place in the library, its progress, categories and tracker links to
 /// another title, or copies them. Its source is only asked when it never was.
-async fn migrate_title(
-    Me(app): Me,
-    Path((id, to)): Path<(i64, i64)>,
-    Json(options): Json<migrate::Options>,
-) -> Result<Json<Outcome>> {
+async fn migrate_title(Me(app): Me, Path((id, to)): Path<(i64, i64)>, Json(options): Json<migrate::Options>) -> Result<Json<Outcome>> {
     let target = app.titles.get(to).await?;
     if id != to && target.chapters_at.is_none() {
         app.titles.fetch(to, !target.initialized, true).await?;
     }
     // A cover set by hand is a file of the old title's: the new one gets a copy before it is named there.
-    let custom = app.db.call(move |conn| Ok(rusqlite::OptionalExtension::optional(conn.query_row("SELECT thumbnail_url FROM manga WHERE id = ?1", [id], |r| r.get::<_, Option<String>>(0)))?.flatten())).await?;
+    let custom = app
+        .db
+        .call(move |conn| {
+            Ok(rusqlite::OptionalExtension::optional(conn.query_row("SELECT thumbnail_url FROM manga WHERE id = ?1", [id], |r| r.get::<_, Option<String>>(0)))?
+                .flatten())
+        })
+        .await?;
     if let Some(mark) = custom.as_deref().and_then(|url| url.strip_prefix(crate::titles::CUSTOM_COVER)).filter(|_| id != to) {
         // A cover file that is gone does not stop the move; the new title shows it gone too.
         if let Err(e) = app.images.copy_cover(id, to, mark).await {
@@ -1071,13 +1074,13 @@ async fn migrate_title(
 
 /// What a backup from a Mihon-compatible app holds. The body is the `.tachibk` file itself.
 async fn preview_import(Me(app): Me, file: Bytes) -> Result<Json<Preview>> {
-    Ok(Json(app.importer.preview(file.to_vec()).await?))
+    Ok(Json(app.importer.preview(file).await?))
 }
 
 /// Starts importing the backup in the body or, with no body, the one just previewed.
 /// Answers at once; `GET /import` follows it.
 async fn start_import(Me(app): Me, file: Bytes) -> Result<Json<import::Status>> {
-    Ok(Json(app.importer.start(file.to_vec())?))
+    Ok(Json(app.importer.start(file)?))
 }
 
 async fn import_status(Me(app): Me) -> Json<import::Status> {
@@ -1380,5 +1383,28 @@ mod tests {
         assert!(names("*", mark));
         assert!(!names("\"abd\"", mark));
         assert!(!names("", mark));
+    }
+
+    /// Every route the server answers is in the API reference, so the reference cannot fall behind.
+    #[test]
+    fn every_route_is_in_the_reference() {
+        let reference = include_str!("../../docs/api.md");
+        let mut missing = Vec::new();
+        for (source, prefix) in [(include_str!("api.rs"), "/api"), (include_str!("auth.rs"), "/api/auth")] {
+            // Only the router's lines: `.route("/path", get(a).put(b))`.
+            for line in source.lines().map(str::trim).filter(|line| line.starts_with(".route(\"")) {
+                let path = line.split('"').nth(1).unwrap();
+                let path = if path == "/" { prefix.to_owned() } else { format!("{prefix}{path}") };
+                for method in ["get", "post", "put", "delete"] {
+                    if line.contains(&format!("{method}(")) {
+                        let listed = format!("`{} {path}`", method.to_uppercase());
+                        if !reference.contains(&listed) {
+                            missing.push(listed);
+                        }
+                    }
+                }
+            }
+        }
+        assert!(missing.is_empty(), "not in docs/api.md: {missing:?}");
     }
 }

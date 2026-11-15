@@ -16,11 +16,7 @@ const RESERVED: [&str; 3] = [crate::host::Solver::KEY, crate::host::Proxy::KEY, 
 pub fn all(conn: &Connection) -> Result<Map<String, Value>> {
     let mut stmt = conn.prepare("SELECT key, value FROM settings")?;
     let rows = stmt.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))?.collect::<rusqlite::Result<Vec<_>>>()?;
-    Ok(rows
-        .into_iter()
-        .filter(|(key, _)| !RESERVED.contains(&key.as_str()))
-        .filter_map(|(key, value)| Some((key, serde_json::from_str(&value).ok()?)))
-        .collect())
+    Ok(rows.into_iter().filter(|(key, _)| !RESERVED.contains(&key.as_str())).filter_map(|(key, value)| Some((key, serde_json::from_str(&value).ok()?))).collect())
 }
 
 /// Stores the given keys. A null value removes the key.
@@ -47,6 +43,46 @@ pub fn put(conn: &mut Connection, values: &Map<String, Value>) -> Result<()> {
     Ok(())
 }
 
+/// Keys a backup leaves out and an import never takes. This Mango's own state rather than a
+/// choice (when updates and backups last ran, tracker changes waiting, a paused queue); keys
+/// that name rows by their number here (the update category lists); and keys that are not
+/// the reader's alone to carry across. The update interval is one: a hosted plan may hold
+/// it to a minimum, which is checked where settings are changed, not in a backup.
+const NOT_BACKED_UP: [&str; 7] =
+    ["backup.lastRun", "updates.lastRun", "tracker.pending", "updates.categories", "updates.excluded", "downloads.paused", "updates.hours"];
+
+/// Where notifications go is left out of a backup and never taken from one: a file someone
+/// else made would otherwise send this account's notices to its maker.
+const NOT_BACKED_UP_PREFIX: &str = "notify.";
+
+fn carried(key: &str) -> bool {
+    !NOT_BACKED_UP.contains(&key) && !key.starts_with(NOT_BACKED_UP_PREFIX) && !RESERVED.contains(&key)
+}
+
+/// The settings a backup carries: the reader's choices, without the reserved keys and
+/// without this Mango's own state.
+pub fn backed_up(conn: &Connection) -> Result<Map<String, Value>> {
+    let mut values = all(conn)?;
+    values.retain(|key, _| carried(key));
+    Ok(values)
+}
+
+/// Takes settings from a backup. Like the rest of an import it never overwrites: only keys
+/// this Mango has no value for are set. The checks `put` makes hold, and what does not
+/// pass is left out rather than failing the import. Answers how many were set.
+pub fn restore(conn: &Connection, values: &Map<String, Value>) -> Result<usize> {
+    let mut set_now = 0;
+    for (key, value) in values {
+        let fit = !key.is_empty() && key.len() <= 64 && key.bytes().all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'_' | b'-'));
+        let text = value.to_string();
+        if !fit || value.is_null() || !carried(key) || text.len() > MAX_VALUE {
+            continue;
+        }
+        set_now += conn.execute("INSERT OR IGNORE INTO settings (key, value) VALUES (?1, ?2)", params![key, text])?;
+    }
+    Ok(set_now)
+}
+
 /// Removes one key, without the checks `put` makes on what comes from outside.
 pub fn forget(conn: &Connection, key: &str) -> Result<()> {
     conn.execute("DELETE FROM settings WHERE key = ?1", [key])?;
@@ -55,10 +91,7 @@ pub fn forget(conn: &Connection, key: &str) -> Result<()> {
 
 /// Stores one value, without the checks `put` makes on what comes from outside.
 pub fn set(conn: &Connection, key: &str, value: &Value) -> Result<()> {
-    conn.execute(
-        "INSERT INTO settings (key, value) VALUES (?1, ?2) ON CONFLICT(key) DO UPDATE SET value = excluded.value",
-        params![key, value.to_string()],
-    )?;
+    conn.execute("INSERT INTO settings (key, value) VALUES (?1, ?2) ON CONFLICT(key) DO UPDATE SET value = excluded.value", params![key, value.to_string()])?;
     Ok(())
 }
 
@@ -101,5 +134,18 @@ mod tests {
             assert!(put(&mut conn, json!({ key: { "url": "http://10.0.0.1" } }).as_object().unwrap()).is_err(), "{key}");
         }
         assert_eq!(get::<Value>(&conn, "proxy").unwrap()["password"], "secret", "its own route still reads it");
+    }
+
+    #[test]
+    fn a_backup_never_brings_where_notices_go() {
+        let mut conn = Connection::open_in_memory().unwrap();
+        crate::db::migrate(&mut conn).unwrap();
+        let from_a_file = json!({
+            "notify.url": "https://ntfy.example.org/someone-else", "notify.kind": "webhook", "updates.hours": 1,
+            "solver": { "url": "http://10.0.0.1" }, "reader.mode": "rtl", "bad key!": 1
+        });
+        assert_eq!(restore(&conn, from_a_file.as_object().unwrap()).unwrap(), 1, "only the reading mode is taken");
+        assert!(get::<String>(&conn, "notify.url").is_none() && get::<i64>(&conn, "updates.hours").is_none());
+        assert_eq!(get::<String>(&conn, "reader.mode").as_deref(), Some("rtl"));
     }
 }

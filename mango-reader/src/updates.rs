@@ -243,13 +243,7 @@ impl Updates {
             status.finished_at = Some(now());
         });
         let status = self.status();
-        tracing::info!(
-            "library update: {} titles, {} not due, {} new chapters, {} failed",
-            status.total,
-            status.waiting,
-            status.found,
-            status.failed
-        );
+        tracing::info!("library update: {} titles, {} not due, {} new chapters, {} failed", status.total, status.waiting, status.found, status.failed);
     }
 
     /// Notes a title not asked about this run, because its source failed for the ones before.
@@ -450,9 +444,8 @@ fn list(conn: &Connection, limit: i64) -> Result<(Vec<UpdateItem>, Vec<UpdateErr
         "SELECT e.manga_id, m.title, e.error, e.at FROM update_errors e JOIN manga m ON m.id = e.manga_id
          WHERE {FOLLOWED} ORDER BY m.title COLLATE NOCASE"
     ))?;
-    let errors = stmt
-        .query_map([], |r| Ok(UpdateError { manga_id: r.get(0)?, title: r.get(1)?, error: r.get(2)?, at: r.get(3)? }))?
-        .collect::<rusqlite::Result<Vec<_>>>()?;
+    let errors =
+        stmt.query_map([], |r| Ok(UpdateError { manga_id: r.get(0)?, title: r.get(1)?, error: r.get(2)?, at: r.get(3)? }))?.collect::<rusqlite::Result<Vec<_>>>()?;
     Ok((items, errors))
 }
 
@@ -586,8 +579,11 @@ mod tests {
         assert_eq!(planned_on(&conn, TODAY + 6), (vec![(7, vec![1, 2]), (8, vec![6])], 0), "the day before it is expected");
         // A chapter dated next year is not believed.
         conn.execute("UPDATE chapters SET date_upload = ?1 WHERE id = 14", [(TODAY + 365) * 86_400_000]).unwrap();
-        conn.execute("INSERT INTO chapters (id, manga_id, url, name, source_order, fetched_at, date_upload) VALUES (15, 1, 'e', 'Dated', 15, 50, ?1)", [(TODAY - 21) * 86_400_000])
-            .unwrap();
+        conn.execute(
+            "INSERT INTO chapters (id, manga_id, url, name, source_order, fetched_at, date_upload) VALUES (15, 1, 'e', 'Dated', 15, 50, ?1)",
+            [(TODAY - 21) * 86_400_000],
+        )
+        .unwrap();
         assert_eq!(planned_on(&conn, TODAY + 6).1, 0);
     }
 
