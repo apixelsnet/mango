@@ -91,6 +91,13 @@ jobs:
             exit 1
           fi
 
+          # The release notes start with the version's section of CHANGELOG.md. Stop
+          # here, before anything is tagged or built, when it has none to give.
+          if ! awk -v v="$version" '$1 == "##" && ($2 == v || $2 == "Unreleased") { on = 1; next } /^## / { on = 0 } on && NF { found = 1 } END { exit !found }' CHANGELOG.md; then
+            echo "::error::CHANGELOG.md has neither a section '## $version' nor anything under '## Unreleased'."
+            exit 1
+          fi
+
           tag=v$version
           if [ "$GITHUB_REF_TYPE" != tag ]; then
             at=$(git rev-list -n 1 "refs/tags/$tag" 2>/dev/null || true)
@@ -331,6 +338,51 @@ jobs:
           path: dist
           merge-multiple: true
 
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.version.outputs.tag }}
+          path: source
+          sparse-checkout: CHANGELOG.md
+          sparse-checkout-cone-mode: false
+          persist-credentials: false
+
+      # The notes: what to download, then the version's section of CHANGELOG.md (or
+      # its Unreleased section), in words for readers, then the list of pull requests
+      # GitHub writes.
+      - name: Write the release notes
+        run: |
+          set -euo pipefail
+          section() {
+            awk -v v="$1" '
+              $1 == "##" { if (found) exit; if ($2 == v) { found = 1; next } }
+              found { print }
+            ' source/CHANGELOG.md | sed '/./,$!d'
+          }
+          section "$VERSION" > changes.md
+          if ! grep -q . changes.md; then section Unreleased > changes.md; fi
+          image=ghcr.io/${GITHUB_REPOSITORY,,}
+          {
+            echo "## Downloads"
+            echo
+            echo "| File | What it is |"
+            echo "| --- | --- |"
+            echo "| **mango-$VERSION-windows-x86_64.zip** | **Windows 10 or 11.** Unpack it into a folder of your own and start \`mango-desktop.exe\`. |"
+            echo "| mango-$VERSION-macos-aarch64.tar.gz | A Mac with an Apple chip (M1 or later). |"
+            echo "| mango-$VERSION-macos-x86_64.tar.gz | A Mac with an Intel chip. |"
+            echo "| mango-$VERSION-linux-x86_64.tar.gz | A Linux PC or server, with the desktop app. |"
+            echo "| mango-$VERSION-linux-aarch64.tar.gz | Linux on ARM, such as a Raspberry Pi: the server, without the desktop app. |"
+            echo "| \`$image:$VERSION\` | The Docker image, for a server. \`$VERSION-full\` can also open a source's own page, for sites that ask for a check. |"
+            echo "| SHA256SUMS | Checksums of the files, to check a download (optional). |"
+            echo
+            echo "Each archive has \`HOW-TO-START.txt\`. Extensions need Java 21 or newer, except in Docker."
+            echo
+            echo "## Changes"
+            echo
+            cat changes.md
+            echo
+          } > notes.md
+          cat notes.md
+
       - name: Publish the release
         working-directory: dist
         run: |
@@ -341,7 +393,7 @@ jobs:
             # Run again for a release that is there already: put the new files in its place.
             gh release upload "$TAG" ./* --clobber --repo "$GITHUB_REPOSITORY"
           else
-            flags=(--title "Mango $VERSION" --generate-notes --verify-tag)
+            flags=(--title "Mango $VERSION" --notes-file ../notes.md --generate-notes --verify-tag)
             if [ "$PRERELEASE" = true ]; then flags+=(--prerelease); fi
             gh release create "$TAG" ./* "${flags[@]}" --repo "$GITHUB_REPOSITORY"
           fi
