@@ -25,7 +25,7 @@ use tray_icon::{
     menu::{Menu, MenuEvent, MenuId, MenuItem, PredefinedMenuItem},
     MouseButton, MouseButtonState, TrayIcon, TrayIconBuilder, TrayIconEvent,
 };
-use wry::{WebContext, WebViewBuilder};
+use wry::{NewWindowResponse, WebContext, WebViewBuilder};
 
 const CORE: &str = if cfg!(windows) { "mango.exe" } else { "mango" };
 /// How long Mango gets to answer after it was started.
@@ -211,12 +211,12 @@ fn main() {
 
     // The browser inside the window keeps its cookies here, so a sign-in lasts.
     let mut context = WebContext::new(Some(home().join("webview")));
-    let builder = WebViewBuilder::with_web_context(&mut context)
+    let builder = WebViewBuilder::new_with_web_context(&mut context)
         .with_url(page("Starting Mango", "One moment."))
         // A link that wants a window of its own belongs in the system's browser.
-        .with_new_window_req_handler(|address| {
+        .with_new_window_req_handler(|address, _| {
             browse(&address);
-            false
+            NewWindowResponse::Deny
         });
     #[cfg(not(target_os = "linux"))]
     let webview = builder.build(&window).expect("a web view");

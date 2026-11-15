@@ -10,9 +10,9 @@ name = "mango-desktop"
 path = "src/main.rs"
 
 [dependencies]
-tao = "0.30"
-wry = "0.47"
-tray-icon = "0.19"
+tao = "0.37"
+wry = "0.57"
+tray-icon = "0.26"
 
 [profile.release]
 opt-level = "s"
