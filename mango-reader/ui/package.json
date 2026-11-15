@@ -14,7 +14,7 @@
     "@fontsource/dela-gothic-one": "^5.0.0",
     "@fontsource/zen-kaku-gothic-new": "^5.3.1",
     "@playwright/test": "1.65.0",
-    "@sveltejs/vite-plugin-svelte": "^5.0.0",
+    "@sveltejs/vite-plugin-svelte": "^7.3.1",
     "deepmerge": "file:./vendor/deepmerge",
     "qrcode-generator": "^2.0.4",
     "svelte": "^5.57.3",
