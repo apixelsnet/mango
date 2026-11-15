@@ -33,8 +33,8 @@ The newest release. Older ones are not patched: the fix is to move up.
   trusts it. Problems in an extension go to whoever makes it.
 - A Mango started with `MANGO_LOGIN=off`, `MANGO_STORES_LOCAL=on` or
   `MANGO_ANYONE_INSTALLS=on` doing what those switches open.
-- Problems in the Suwayomi-Server runtime the extension host is built on. Those
-  go to Suwayomi-Server; do say so here as well when a Mango release should move
+- Problems in the runtime the extension host is built on. Those go to that
+  runtime's own project; do say so here as well when a Mango release should move
   to a fixed version.
 
 Why the defaults are what they are is written down in

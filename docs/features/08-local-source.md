@@ -40,3 +40,11 @@ Checked by unit tests, and end to end on Linux and Windows: chapter 12.5 "The Re
 ## Done when
 
 A folder of CBZ files shows up as titles and reads in every reader mode with the extension host absent.
+
+## Archives kept open (2026-11-14)
+
+A chapter in a CBZ or ZIP was opened, and its page names listed and sorted, for every page read. The last 8 archives read now stay open with their page names, and are opened again when their file's size or time of change differs. A refresh looks for every chapter's ComicInfo.xml, and every library update refreshes local titles: what each archive held is remembered by the file's size and time of change, so an archive is opened again only when it changed.
+
+## One folder for every account
+
+Every account's local source is the same folder (`MANGO_LOCAL`): each account sees all of it, and keeps its own reading of it. What one account reads there, the others do not see read. Give accounts folders of their own by running a Mango each.

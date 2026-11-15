@@ -55,7 +55,7 @@
     {
       icon: 'download',
       title: 'Keep it, take it with you',
-      text: 'Download chapters to read when a source is slow or gone; they wait here. A backup to and from Mihon or Suwayomi is under Settings.',
+      text: 'Download chapters to read when a source is slow or gone; they wait here. A backup to and from other Mihon-compatible apps is under Settings.',
       to: '/downloads',
       where: 'Downloads',
     },

@@ -8,7 +8,7 @@ Keep reading progress in step with a tracking site: AniList, MyAnimeList, Kitsu,
 - On a title's page, search the tracker and link the title to its entry there.
 - Change the status, the chapter reached and the score from that page.
 - Finishing a chapter, or marking chapters read, moves the entry along. Never back.
-- Links that came in with a Mihon or Suwayomi backup work as soon as someone signs in, and go out again with an export.
+- Links that came in with a backup from a Mihon-compatible app work as soon as someone signs in, and go out again with an export.
 
 ## Signing in
 
@@ -25,7 +25,7 @@ A password is sent to the tracker once and not kept. Tokens are kept in the `sta
 
 ## Data
 
-Table `tracks` (migration 005, `error` added in 007), one row per title and tracker. Tracker ids, statuses and scores are stored as Mihon stores them, so a backup's links need no translation: tracker 1 MyAnimeList, 2 AniList, 3 Kitsu, 7 MangaUpdates. Scores are shown out of ten everywhere; AniList's are stored out of 100.
+Table `tracks` (migration 005, `error` added in 007), one row per title and tracker. Tracker ids, statuses and scores are stored as the backup format carries them, so a backup's links need no translation: tracker 1 MyAnimeList, 2 AniList, 3 Kitsu, 7 MangaUpdates. Scores are shown out of ten everywhere; AniList's are stored out of 100.
 
 ## API
 
@@ -59,8 +59,14 @@ Checked on Linux and Windows by `smoke.py` (109 checks in all) and in a browser:
 - The title page: status, chapter and score fields, a failed sending's reason, the search panel, and a refusal when the tracker rejects the token. A link whose address is not a web address is shown as text.
 - No token appears in the settings API.
 
-Not checked, for want of an account on any of the four: a sign-in that succeeds, MyAnimeList's search, linking, changing an entry, the push after a chapter is read, and the renewal of a token. These follow each tracker's published API and Mihon's use of it; expect the first real sign-in to find something.
+Not checked, for want of an account on any of the four: a sign-in that succeeds, MyAnimeList's search, linking, changing an entry, the push after a chapter is read, and the renewal of a token. These follow each tracker's published API and how other apps use it; expect the first real sign-in to find something.
 
 ## Two-way synchronization (2026-10-25)
 
 Refreshing a tracker link marks as read every numbered chapter up to the last chapter the tracker reports as read, so progress made in other applications is reflected in Mango. When "Take in what was read elsewhere" is enabled (`trackers.pull`), the links of every library title are refreshed after each library update, two seconds apart. Chapters of merged sources count toward the title they belong to. Verification: unit tests only; no tracker account was used.
+
+## The clients against a stand-in (2026-11-14)
+
+The four clients are tested against a stand-in on the same machine (`trackers/wire.rs`): signing in, search, finding the entry and saving it, with the answers in the shapes each tracker documents, and that a token that ran out reads as signed out. In tests every tracker address goes to the stand-in (`at` in `trackers/mod.rs`). Signing in to the real trackers is still not checked.
+
+What a refresh takes in: progress on a tracker is the highest chapter read, and a refresh marks every chapter up to it read. Reading the newest chapter first and refreshing marks the ones skipped. This is kept as it is, since a tracker knows only one number.

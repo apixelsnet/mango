@@ -1,6 +1,6 @@
 //! Store index: `repo.json` and the protobuf `index.pb` it points to.
 //!
-//! Field numbers are from the Mihon store format; see docs/features/01-extension-host.md.
+//! Field numbers are from the format Mihon-compatible stores publish; see docs/features/01-extension-host.md.
 //! Fields the core does not use (mirrors, messages, contact links) are left out and skipped.
 
 use crate::error::{AppError, Result};

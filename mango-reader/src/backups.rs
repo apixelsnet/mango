@@ -1,5 +1,9 @@
 //! Backups made by themselves: the library exported as a `.tachibk` on a schedule, into
 //! `<data>/backups`, the newest few kept. Off until an account picks how often.
+//!
+//! They count against the room an account has, so they are kept small: a backup with the
+//! same content as the newest one is not written again, the file is packed as tightly as
+//! gzip goes, and three are kept unless the account picks otherwise.
 
 use crate::{
     db::{now, Db},
@@ -18,7 +22,7 @@ pub const HOURS: &str = "backup.hours";
 /// How many backups are kept; an older one goes when a new one is made.
 pub const KEEP: &str = "backup.keep";
 const LAST_RUN: &str = "backup.lastRun";
-const DEFAULT_KEEP: usize = 7;
+const DEFAULT_KEEP: usize = 3;
 const MOST_KEPT: usize = 60;
 
 /// A backup on disk.
@@ -29,6 +33,9 @@ pub struct Saved {
     pub bytes: u64,
     /// Epoch seconds.
     pub made_at: i64,
+    /// Nothing had changed since this backup, the newest, so no new one was written.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub unchanged: bool,
 }
 
 #[derive(Clone)]
@@ -77,16 +84,21 @@ impl Backups {
         tokio::task::spawn_blocking(move || -> Result<Saved> {
             fs::create_dir_all(&dir)?;
             crate::db::owner_only(&dir);
+            if let Some(newest) = listed(&dir).into_iter().next() {
+                if same_content(&dir.join(&newest.name), &file) {
+                    // Fewer kept than before lets go of the rest now, not at the next change.
+                    prune(&dir, keep);
+                    return Ok(Saved { unchanged: true, ..newest });
+                }
+            }
             let made_at = now();
             let name = name_for(made_at);
             let part = dir.join(format!("{name}.part"));
             crate::db::write_private(&part, "")?;
             fs::write(&part, &file)?;
             fs::rename(&part, dir.join(&name))?;
-            for old in listed(&dir).into_iter().skip(keep) {
-                let _ = fs::remove_file(dir.join(old.name));
-            }
-            Ok(Saved { name, bytes: file.len() as u64, made_at })
+            prune(&dir, keep);
+            Ok(Saved { name, bytes: file.len() as u64, made_at, unchanged: false })
         })
         .await
         .map_err(|e| AppError::internal(e.to_string()))?
@@ -142,6 +154,23 @@ fn proper(name: &str) -> bool {
         && name.bytes().all(|b| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'.'))
 }
 
+/// Deletes the oldest backups beyond the newest `keep`.
+fn prune(dir: &Path, keep: usize) {
+    for old in listed(dir).into_iter().skip(keep) {
+        let _ = fs::remove_file(dir.join(old.name));
+    }
+}
+
+/// Whether a backup on disk holds what a new one would. Compared unpacked, so a change in
+/// how the file is packed is no change.
+fn same_content(path: &Path, file: &[u8]) -> bool {
+    let Ok(old) = fs::read(path) else { return false };
+    if old == file {
+        return true;
+    }
+    matches!((crate::import::unpack(&old), crate::import::unpack(file)), (Ok(a), Ok(b)) if a == b)
+}
+
 fn listed(dir: &Path) -> Vec<Saved> {
     let mut found: Vec<Saved> = fs::read_dir(dir)
         .into_iter()
@@ -151,7 +180,7 @@ fn listed(dir: &Path) -> Vec<Saved> {
             let name = entry.file_name().into_string().ok().filter(|name| proper(name))?;
             let meta = entry.metadata().ok()?;
             let made_at = meta.modified().ok()?.duration_since(std::time::UNIX_EPOCH).ok()?.as_secs() as i64;
-            Some(Saved { name, bytes: meta.len(), made_at })
+            Some(Saved { name, bytes: meta.len(), made_at, unchanged: false })
         })
         .collect();
     // The name carries the time, so it sorts as the time does.
@@ -185,6 +214,15 @@ mod tests {
             fs::write(backups.dir.join(old), b"old").unwrap();
         }
         let made = backups.make().await.unwrap();
+        assert!(!made.unchanged);
+        let again = backups.make().await.unwrap();
+        assert!(again.unchanged, "nothing changed: no second file");
+        assert_eq!(again.name, made.name);
+        backups.db.call(|conn| settings::set(conn, KEEP, &1.into())).await.unwrap();
+        backups.make().await.unwrap();
+        assert_eq!(backups.list().await.len(), 1, "keeping fewer lets go of the rest, changed or not");
+        backups.db.call(|conn| settings::set(conn, KEEP, &2.into())).await.unwrap();
+        fs::write(backups.dir.join("mango-20210101-000000.tachibk"), b"old").unwrap();
         let names: Vec<String> = backups.list().await.into_iter().map(|saved| saved.name).collect();
         assert_eq!(names, [made.name.clone(), "mango-20210101-000000.tachibk".to_owned()]);
         assert!(backups.file("../x").is_err());

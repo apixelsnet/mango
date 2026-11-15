@@ -20,6 +20,8 @@ export function startWorker() {
 
 /** Puts a title's page and chapters on this device. `done` hears of each page saved. Answers how many chapters were kept. */
 export async function keep(title: number, chapters: number[], done?: (pages: number) => void): Promise<number> {
+  // Kept chapters are only safe from a browser short of room once it was asked to keep them.
+  await navigator.storage?.persist?.().catch(() => false);
   const cache = await caches.open(cacheName());
   const put = async (path: string) => {
     const answer = await fetch(path);
@@ -41,13 +43,33 @@ export async function keep(title: number, chapters: number[], done?: (pages: num
     if (!counted.ok) continue;
     const { count } = (await counted.clone().json()) as { count: number };
     await cache.put(`api/chapters/${chapter}/pages`, counted);
-    for (let page = 0; page < count; page++) {
-      await put(`api/chapters/${chapter}/pages/${page}`);
-      done?.(++pages);
-    }
+    // A few pages at a time, as the reader asks for them.
+    let next = 0;
+    const worker = async () => {
+      while (next < count) {
+        const page = next++;
+        // With the account's number, as the reader asks: the browser's own cache keeps pages apart by it.
+        await put(`api/chapters/${chapter}/pages/${page}?a=${session.id ?? 0}`);
+        done?.(++pages);
+      }
+    };
+    await Promise.all(Array.from({ length: Math.min(PAGES_AT_ONCE, count) }, worker));
     saved++;
   }
   return saved;
+}
+
+/** How many pages are fetched side by side while chapters are kept. */
+const PAGES_AT_ONCE = 3;
+
+/**
+ * The room this site takes on the device, in bytes, and whether the browser promised to keep
+ * it when short of room. Null where the browser does not say.
+ */
+export async function roomTaken(): Promise<{ bytes: number; lasting: boolean } | null> {
+  if (!canKeep || !navigator.storage?.estimate) return null;
+  const [estimate, lasting] = await Promise.all([navigator.storage.estimate(), navigator.storage.persisted?.() ?? false]);
+  return { bytes: estimate.usage ?? 0, lasting };
 }
 
 /** The chapters kept on this device. */
@@ -71,5 +93,20 @@ export async function forget(chapters: number[]) {
 /** Empties every account's kept chapters on this device: for signing out, so the next one sees none of them. */
 export async function forgetAll() {
   if (!canKeep) return;
+  await caches.delete(WHO);
   for (const name of await caches.keys()) if (name.startsWith(PREFIX)) await caches.delete(name);
+}
+
+/** The cache public/sw.js reads to learn whose kept chapters it may answer with. */
+const WHO = 'mango-who';
+
+/**
+ * Tells the service worker which account is signed in here, or that none is. It answers
+ * only from that account's kept chapters: chapter numbers repeat from one account to the next.
+ */
+export async function noteWho(signedIn: boolean) {
+  if (!canKeep) return;
+  const where = new URL('who', document.baseURI).href;
+  if (signedIn) await (await caches.open(WHO)).put(where, new Response(cacheName()));
+  else await caches.delete(WHO);
 }

@@ -78,6 +78,11 @@ export function undo() {
 
 // Leaving the page sends what is held: api.ts marks a call made then to outlive the page.
 addEventListener('pagehide', settle);
+// Phone browsers often say only that the page went out of view when another app comes up,
+// and may then throw the page away without a pagehide: that sends what is held too.
+document.addEventListener('visibilitychange', () => {
+  if (document.visibilityState === 'hidden' && held) settle();
+});
 // So does going to another screen, before that screen asks for anything: its reads then
 // wait for the change (api.ts), so they show it.
 addEventListener('hashchange', () => {

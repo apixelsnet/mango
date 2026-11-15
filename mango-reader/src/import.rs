@@ -1,4 +1,4 @@
-//! Import of a Mihon or Suwayomi backup: a `.tachibk`, which is a gzipped protobuf.
+//! Import of a backup from a Mihon-compatible app: a `.tachibk`, which is a gzipped protobuf.
 //! Both apps write the same format. Pure Rust; the extension host is not needed.
 //!
 //! The file is untrusted. Its unpacked size and its lists are capped, and nothing in
@@ -28,14 +28,25 @@ use std::{
 
 /// Cap on the upload, and on what it may unpack to.
 pub const MAX_UPLOAD: usize = 128 << 20;
-const MAX_UNPACKED: u64 = 768 << 20;
+/// What a backup may unpack to, in bytes: 768 MB unless `MANGO_IMPORT_MAX_MB` says otherwise.
+/// It sits in memory whole while it is read, so a small server sets it lower.
+static MAX_UNPACKED: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(768 << 20);
+
+/// Sets what a backup may unpack to, from the configuration, before anything is imported.
+pub fn set_unpack_cap(mb: u64) {
+    MAX_UNPACKED.store(mb.max(1) << 20, std::sync::atomic::Ordering::Relaxed);
+}
+
+/// Held while a backup sits unpacked in memory: one at a time on the whole server, not one
+/// per account, so that many accounts reading backups at once take one backup's memory.
+static UNPACKED: Mutex<()> = Mutex::new(());
 const MAX_TITLES: usize = 200_000;
 const MAX_CHAPTERS: usize = 100_000;
 const MAX_CATEGORIES: usize = 10_000;
 /// Reasons listed in a report; beyond this only the count grows.
 const MAX_SKIPPED: usize = 200;
 
-// ---------- the backup's shape (Mihon's `Backup*` classes, by field number) ----------
+// ---------- the backup's shape (the format's `Backup*` messages, by field number) ----------
 
 #[derive(Clone, PartialEq, Message)]
 pub struct BackupManga {
@@ -216,13 +227,17 @@ pub struct Status {
 pub struct Importer {
     db: Db,
     status: Arc<Mutex<Status>>,
-    /// Held while a backup is unpacked to be looked at: one at a time, since it sits in memory whole.
-    reading: Arc<tokio::sync::Mutex<()>>,
+    /// The file last looked at, for a while: the import that follows a preview takes it
+    /// from here instead of having it sent again.
+    previewed: Arc<Mutex<Option<(Vec<u8>, std::time::Instant)>>>,
 }
+
+/// How long a previewed file waits for its import.
+const PREVIEW_KEPT: std::time::Duration = std::time::Duration::from_secs(30 * 60);
 
 impl Importer {
     pub fn new(db: Db) -> Self {
-        Self { db, status: Arc::default(), reading: Arc::default() }
+        Self { db, status: Arc::default(), previewed: Arc::default() }
     }
 
     pub fn status(&self) -> Status {
@@ -231,10 +246,24 @@ impl Importer {
 
     /// What the file holds, without changing anything.
     pub async fn preview(&self, file: Vec<u8>) -> Result<Preview> {
-        let Ok(_one_at_a_time) = self.reading.try_lock() else {
-            return Err(AppError::new(409, "import_running", "Another backup is being read. Try again when it is done."));
-        };
-        let tally = crate::local::blocking(move || tally(&unpack(&file)?)).await?;
+        let (tally, file) = crate::local::blocking(move || {
+            let Ok(_one_at_a_time) = UNPACKED.try_lock() else {
+                return Err(AppError::new(409, "import_running", "Another backup is being read. Try again when it is done."));
+            };
+            Ok((tally(&unpack(&file)?)?, file))
+        })
+        .await?;
+        // Held for the import that follows, and let go after a while if none does.
+        let at = std::time::Instant::now();
+        *self.previewed.lock().unwrap_or_else(|e| e.into_inner()) = Some((file, at));
+        let held = self.previewed.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(PREVIEW_KEPT).await;
+            let mut held = held.lock().unwrap_or_else(|e| e.into_inner());
+            if held.as_ref().is_some_and(|(_, when)| *when == at) {
+                *held = None;
+            }
+        });
         let sources = self.db.call(move |conn| needs(conn, &tally.per_source, &tally.source_names).map(|sources| (sources, tally))).await?;
         let (sources, tally) = sources;
         Ok(Preview {
@@ -251,7 +280,17 @@ impl Importer {
 
     /// Starts the import in the background. It works on a connection of its own, in one
     /// transaction: readers carry on meanwhile, and a failure leaves the library as it was.
+    /// Starts importing `file` or, when it is empty, the file looked at last.
     pub fn start(&self, file: Vec<u8>) -> Result<Status> {
+        let file = if file.is_empty() {
+            let held = self.previewed.lock().unwrap_or_else(|e| e.into_inner()).take();
+            match held {
+                Some((file, at)) if at.elapsed() < PREVIEW_KEPT => file,
+                _ => return Err(AppError::new(409, "preview_gone", "Choose the file again: the one looked at is no longer held")),
+            }
+        } else {
+            file
+        };
         {
             let mut status = self.status.lock().unwrap_or_else(|e| e.into_inner());
             if status.running {
@@ -283,7 +322,7 @@ impl Importer {
 // ---------- reading the file ----------
 
 fn damaged(_: prost::DecodeError) -> AppError {
-    AppError::new(422, "bad_backup", "This file is not a readable Mihon or Suwayomi backup")
+    AppError::new(422, "bad_backup", "This file is not a readable backup from a Mihon-compatible app")
 }
 
 /// Undoes the gzip, up to the cap.
@@ -291,12 +330,13 @@ pub(crate) fn unpack(file: &[u8]) -> Result<Vec<u8>> {
     if !file.starts_with(&[0x1f, 0x8b]) {
         return Err(AppError::new(422, "bad_backup", "This is not a .tachibk backup: it is not gzip-compressed"));
     }
+    let cap = MAX_UNPACKED.load(std::sync::atomic::Ordering::Relaxed);
     let mut data = Vec::new();
     flate2::read::GzDecoder::new(file)
-        .take(MAX_UNPACKED + 1)
+        .take(cap + 1)
         .read_to_end(&mut data)
         .map_err(|_| AppError::new(422, "bad_backup", "This backup is damaged: it does not unpack"))?;
-    if data.len() as u64 > MAX_UNPACKED {
+    if data.len() as u64 > cap {
         return Err(AppError::new(422, "bad_backup", "This backup unpacks to more than Mango accepts"));
     }
     Ok(data)
@@ -433,6 +473,7 @@ fn reader_mode(viewer_flags: Option<i32>) -> Option<&'static str> {
 
 /// Imports the whole file in one transaction. `progress` is told `(titles done, titles in all)`.
 pub fn run(conn: &mut Connection, file: &[u8], progress: &dyn Fn(usize, usize)) -> Result<Report> {
+    let _one_at_a_time = UNPACKED.lock().unwrap_or_else(|e| e.into_inner());
     let data = unpack(file)?;
     let mut total = 0;
     fields(&data, 1, |_| {
@@ -643,7 +684,7 @@ mod tests {
     use super::*;
     use std::io::Write;
 
-    /// Mihon's whole backup. The importer never decodes it in one piece; the tests build it this way.
+    /// The whole backup. The importer never decodes it in one piece; the tests build it this way.
     #[derive(Clone, PartialEq, Message)]
     struct Backup {
         #[prost(message, repeated, tag = "1")]

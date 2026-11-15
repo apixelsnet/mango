@@ -39,7 +39,7 @@ Under `/api`. Errors are `{"error": {"code", "message"}}`.
 
 ## Result (2026-10-10) — core passed on Linux and Windows
 
-18 unit tests, then `smoke.py` (26 checks) against a real Mihon extension store, with the real host. A few runs each.
+18 unit tests, then `smoke.py` (26 checks) against a real Mihon-compatible extension store, with the real host. A few runs each.
 
 | | Linux (Docker) | Windows (native) |
 |---|---|---|
@@ -99,8 +99,8 @@ Checked by unit tests of the file's reading, and on Linux against the real store
 
 ## Done when
 
-A fresh install can add a Mihon extension store, find an extension by name, install it and see its sources under Browse.
+A fresh install can add a Mihon-compatible extension store, find an extension by name, install it and see its sources under Browse.
 
 ## Terminology: repositories (2026-10-25)
 
-The user interface now refers to extension stores as "repositories", consistent with Mihon and its forks. The change applies to the Extensions screen, Settings, the guided tour, the issue forms, the README, the installation guide and the error messages returned by the server. Internal names are unchanged: the API (`/api/stores`), the source code, the database schema and the `MANGO_STORES_LOCAL` setting continue to use "store", so existing scripts, backups and hosted instances are not affected.
+The user interface now refers to extension stores as "repositories", consistent with other Mihon-compatible apps. The change applies to the Extensions screen, Settings, the guided tour, the issue forms, the README, the installation guide and the error messages returned by the server. Internal names are unchanged: the API (`/api/stores`), the source code, the database schema and the `MANGO_STORES_LOCAL` setting continue to use "store", so existing scripts, backups and hosted instances are not affected.

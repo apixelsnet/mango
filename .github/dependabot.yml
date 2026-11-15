@@ -1,0 +1,36 @@
+# Weekly pull requests for newer dependencies: the UI's packages, the core's and the desktop
+# shell's crates, and the actions the workflows use. Minor and patch updates of one
+# ecosystem come as one pull request, so a week brings a few, not dozens.
+version: 2
+updates:
+  - package-ecosystem: npm
+    directory: /mango-reader/ui
+    schedule:
+      interval: weekly
+    groups:
+      ui:
+        update-types: [minor, patch]
+
+  - package-ecosystem: cargo
+    directory: /mango-reader
+    schedule:
+      interval: weekly
+    groups:
+      core:
+        update-types: [minor, patch]
+
+  - package-ecosystem: cargo
+    directory: /mango-desktop
+    schedule:
+      interval: weekly
+    groups:
+      shell:
+        update-types: [minor, patch]
+
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    groups:
+      actions:
+        update-types: [minor, patch]

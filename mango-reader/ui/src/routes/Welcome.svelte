@@ -9,7 +9,7 @@
 
   // What the main page says Mango does: the README's list, shortened.
   const FEATURES = [
-    { name: 'Every source, one shelf', text: 'Browse and search the sources that Mihon extensions bring, and keep what you follow in one library with categories.' },
+    { name: 'Every source, one shelf', text: 'Browse and search the sources that Mihon-compatible extensions bring, and keep what you follow in one library with categories.' },
     { name: 'A reader for each kind', text: 'Paged in either direction, vertical, or one long strip for webtoons. It opens at the page you left.' },
     { name: 'New chapters find you', text: 'Your library is checked on a schedule, and what you have not read is counted for you.' },
     { name: 'Read with no network', text: 'Chapters download as CBZ files and open without the source.' },

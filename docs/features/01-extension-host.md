@@ -1,10 +1,10 @@
 # 01 — Extension host
 
-Runs Mihon extensions for the Rust core. Lives in `mango-extension-host/`.
+Runs Mihon-compatible extensions for the Rust core. Lives in `mango-extension-host/`.
 
 ## Why a JVM
 
-Extensions are compiled Kotlin. They call OkHttp, Jsoup, kotlinx.serialization and Android APIs. They cannot be parsed into data or run from Rust. Suwayomi-Server already solved this with an Android compatibility layer; we take that part and nothing else.
+Extensions are compiled Kotlin. They call OkHttp, Jsoup, kotlinx.serialization and Android APIs. They cannot be parsed into data or run from Rust. An existing open-source server already solved this with an Android compatibility layer; we take that part and nothing else.
 
 ## Facts (checked 2026-10)
 
@@ -27,20 +27,22 @@ Extensions are compiled Kotlin. They call OkHttp, Jsoup, kotlinx.serialization a
 | WebView | 39, plus 1 shared theme |
 | JS engine | 10, plus 1 shared theme |
 
-## How the runtime is taken from Suwayomi-Server
+## How the runtime is taken
 
-Not by copying source. The build downloads Suwayomi-Server's release jar at a pinned version and sha256, deletes the parts the host never touches, and ships the rest as `runtime.jar`. Our own code is one small jar beside it.
+Not by copying source. The build downloads that server's release jar (named in the `Dockerfile` and `NOTICE`) at a pinned version and sha256, deletes the parts the host never touches, and ships the rest as `runtime.jar`. Our own code is one small jar beside it.
 
 - Removed: embedded browser (JCEF), web server, GraphQL, databases, web UI, tray, Android framework resources. 183 MB becomes 135 MB. Until host 0.7.1 the JS engine (GraalVM) went too, and it was 99 MB. Bouncy Castle goes too, for its signed jar beside it (see below).
 - Kept and used: Android compatibility layer, source API, network stack, extension loaders, config.
-- Our code (`mango-extension-host/src/`) starts only that runtime and serves the protocol. It never starts Suwayomi's server.
-- Upgrading Suwayomi is a version and hash bump in the `Dockerfile` (at the repository root since step 9; `--target host` builds the host alone, `--target jars` its two jars), followed by the smoke test.
-- Cost: our code calls Suwayomi internals (`PackageTools`, `AndroidManifestParser`, `createAppModule`, `ServerConfig`). A Suwayomi release can rename them; the smoke test catches that.
+- Our code (`mango-extension-host/src/`) starts only that runtime and serves the protocol. It never starts that server.
+- Upgrading the runtime is a version and hash bump in the `Dockerfile` (at the repository root since step 9; `--target host` builds the host alone, `--target jars` its two jars), followed by the smoke test.
+- Cost: our code calls the runtime's internals (`PackageTools`, `AndroidManifestParser`, `createAppModule`, `ServerConfig`). A new release of it can rename them; the smoke test catches that.
 - The strip list is by trial: removing a package that something still references fails at start-up or on first use. Extend it only with the smoke test passing.
 
-License: the Suwayomi jar is MPL-2.0, some parts Apache-2.0. We ship it unmodified apart from deleted entries and point to its source tag.
+License: the runtime jar is MPL-2.0, some parts Apache-2.0. We ship it unmodified apart from deleted entries and point to its source tag.
 
-## Protocol v3 (frozen)
+## Protocol (version 6, frozen)
+
+The protocol is at version 6 (2026-10-28); each version after 3 has a section of its own below: 4 under "Install says what was asked for", 5 under "Filters", 6 under "A title's own address". A change to it is a new version, made on both sides at once.
 
 Version 3 (2026-10-11, host 0.5.0) changed one thing: preferences answer and take a change, where they were reserved; see below.
 
@@ -78,7 +80,7 @@ Pass: the host stays under 400 MB while awake, or we know exactly which part bre
 
 ## Spike result (2026-10-10, Linux, in Docker) — passed
 
-The spike's code is no longer in the repository; the host replaced it. It used Suwayomi-Server v2.4.2366 classes as a library and ran only the minimal start-up path (compat layer and dependency injection; no web server, database, GraphQL or WebView). One run per setting.
+The spike's code is no longer in the repository; the host replaced it. It used the runtime's classes (release v2.4.2366) as a library and ran only the minimal start-up path (compat layer and dependency injection; no web server, database, GraphQL or WebView). One run per setting.
 
 | Checkpoint | Default JVM | Tuned JVM |
 |---|---|---|
@@ -92,7 +94,7 @@ Tuned = `-XX:+UseSerialGC -Xmx256m -Xss512k -XX:TieredStopAtLevel=1`. Memory is 
 
 Calls through a real extension: load 0.1 s, popular 0.4 s, details and chapters 0.9 s, one 7 MB image 0.5 s. The JAR's sha256 matched `release-assets.json`.
 
-For comparison, the full Suwayomi-Server sat at 1.05 GiB idle with 11 extensions.
+For comparison, the full server the runtime comes from sat at 1.05 GiB idle with 11 extensions.
 
 What this settles:
 - The "host awake under 400 MB" target holds with room to spare; about 180 MB is realistic.
@@ -136,14 +138,14 @@ The core's side is `mango-reader/src/host.rs`. It starts the host with a fresh t
 - The HTTP contract did not change. `smoke.py` passes on 0.1.1.
 
 Still open:
-- A failed update loses the old version: the host unloads the installed jar before it has loaded the new one.
+- A failed update lost the old version: the host unloaded the installed jar before it had loaded the new one. Fixed 2026-11-14: the new jar is loaded first, and the installed one is let go only once it has loaded; a new jar that does not load is deleted and the installed version stays, with its sources.
 - The host's `runtime` field reads `unknown` outside its own image.
 
 ## Cloudflare solver (2026-10-10, host 0.3.0)
 
 A source that meets a Cloudflare check hands it to a FlareSolverr, or anything that answers like one. Mango does not run one: an admin gives its address under Settings, Sources (`GET | PUT /api/solver`, `{url, timeoutSecs}`; an empty address means none).
 
-- The runtime taken from Suwayomi-Server already knows how: its network stack notices the check, asks the solver, keeps the cookie it gets and tries again. The host only switches that on.
+- The runtime already knows how: its network stack notices the check, asks the solver, keeps the cookie it gets and tries again. The host only switches that on.
 - The core starts the host with `MANGO_HOST_SOLVER_URL` and `MANGO_HOST_SOLVER_TIMEOUT_SECONDS`. A change stops a running host, and the next call starts one that knows. The HTTP contract did not change: still protocol 2.
 - Without a solver, such a source fails with the runtime's own message, as before.
 
@@ -162,7 +164,7 @@ Checked on Linux: the host's `smoke.py` has a third stand-in step where the solv
 Some sites turn away the address a server goes out from, a cloud host's for one, while they let others in. An admin can name a proxy the sources reach such sites through, under Settings, Sources (`GET | PUT /api/proxy`, `{url, sites, username, password}`).
 
 - The address is `http://host:port` (CONNECT for HTTPS) or `socks5://host:port`. Empty: none.
-- A SOCKS5 proxy can take a name and password (`username`, `password`), each one line of at most 255 bytes. An HTTP proxy cannot: the runtime's HTTP client answers no proxy's password question, while Java's SOCKS client asks the default authenticator, which the host sets to answer that proxy alone. A name or password in the address itself is refused. The password is kept in the settings as typed and never sent back: a read says `hasPassword`, and a password left empty keeps the one there for the same name. No proxy keeps no name or password.
+- A SOCKS5 proxy can take a name and password (`username`, `password`), each one line of at most 255 bytes. An HTTP proxy cannot: the runtime's HTTP client answers no proxy's password question, while Java's SOCKS client asks the default authenticator, which the host sets to answer that proxy alone. A name or password in the address itself is refused. The password is kept in the settings as typed and never sent back: a read says `hasPassword`, and a password left empty keeps the one there for the same name. Until 2026-11-14 the general `GET /api/settings` still returned the stored proxy with its password (and `PUT /api/settings` could write `proxy` and `solver` past their checks); both keys are now left out of that read and refused by that write, so only their own routes handle them. No proxy keeps no name or password.
 - `sites` are names such as `example.org`, each with its subdomains. The core tidies what is typed (a whole address, `*.`, capitals) down to the name. Empty: every site.
 - The core starts the host with `MANGO_HOST_PROXY_URL`, `MANGO_HOST_PROXY_SITES` (comma-separated), `MANGO_HOST_PROXY_USERNAME` and `MANGO_HOST_PROXY_PASSWORD`. A change stops a running host, as the solver's does. The host sets Java's default proxy selector before the runtime builds its HTTP client, so every request a source makes asks it. This machine and the solver are always reached directly. Downloading an extension's file does not go through it.
 - Who sets it is `MANGO_PROXY_SETTING`: `admin` (the default); `anyone`, every account, for whoever runs a Mango for each reader; or `off`, no one, and one set before stays saved but the host starts without it. `/api/health` says which as `proxySetting`, and the card in Settings shows for whoever may set it. Where a hosted reader's plan says `proxy: false` (`/api/plan`), the card is locked instead.
@@ -179,7 +181,7 @@ Name and password (2026-10-29), checked on Linux. Core tests check what is refus
 
 ## Web view (2026-10-11, host 0.4.0)
 
-About 40 extensions open a web view. The runtime taken from Suwayomi-Server has one, built on a Chromium (JCEF from the JetBrains runtime) that draws without a window. The host keeps the classes that drive it (6 MB more in `runtime.jar`) and switches it on.
+About 40 extensions open a web view. The runtime has one, built on a Chromium (JCEF from the JetBrains runtime) that draws without a window. The host keeps the classes that drive it (6 MB more in `runtime.jar`) and switches it on.
 
 - The browser starts with the first web view a source opens, not with the host. The first time, the runtime downloads it into the host's data folder (`host/bin/kcef`, about 550 MB). A call that waits for the download runs into its time limit; the next one finds the browser there.
 - It runs for as long as the host does, and stops with it. The host clears the lock a browser leaves behind when it was cut short, or the next one would refuse its profile.
@@ -215,9 +217,9 @@ Not checked: an extension whose screen changes between calls, and one that refus
 
 `GET /sources/{id}/filters` lists what a source's search can be narrowed by; `POST /sources/{id}/search` takes `filters`, a list of `{position, state}`.
 
-- The kinds are Mihon's: `header`, `separator`, `select`, `text`, `checkbox`, `tristate` (0 either way, 1 with it, 2 without it), `sort` (`{index, ascending}` or null) and `group`, which holds filters of its own.
-- Nothing is kept between the read and the search, as Suwayomi does it now: the source makes its list anew for each search, and the changes are set on that. A filter is named by its place; a group's state is the changes inside it. A place that is not there, or a state of the wrong kind, is refused with 400.
-- A search without `filters` carries the source's list as the source makes it, where it carried an empty one. That is what Mihon hands a source, and what extensions are written against.
+- The kinds are those of the extension API: `header`, `separator`, `select`, `text`, `checkbox`, `tristate` (0 either way, 1 with it, 2 without it), `sort` (`{index, ascending}` or null) and `group`, which holds filters of its own.
+- Nothing is kept between the read and the search, as the runtime's own server does it now: the source makes its list anew for each search, and the changes are set on that. A filter is named by its place; a group's state is the changes inside it. A place that is not there, or a state of the wrong kind, is refused with 400.
+- A search without `filters` carries the source's list as the source makes it, where it carried an empty one. That is what Mihon-compatible apps hand a source, and what extensions are written against.
 
 Checked on Linux with `smoke.py` against a real extension: 12 filters read in 4 ms, one of each kind it has set (checkbox, select, sort, tri-state) and searched by, with another list than without them; a change for a place that is not there was refused. Then one source from each of 19 extensions: 9 list filters, of every kind, and 10 have none. A search by filters answered on all but two, and those two are sources for a server of the reader's own, with no address set.
 
@@ -248,3 +250,7 @@ Checked: the smoke test against the real repository passes with the new jars; a 
 ## Done when
 
 The core installs an extension from the store and reads a chapter through the host, on Linux and on Windows.
+
+## Covers at public addresses only (2026-11-14)
+
+A cover's address comes from the source's site and was fetched as given, with the source's client. It is now held to public addresses: the socket refuses to connect to this machine, a private network or a shared one, before anything is sent, after each redirect too, and for a name that resolves to such an address (`PublicSockets` in `Main.kt`). The source's own site is let through, since a source that reads a server on the owner's own network has its covers there, and so is the proxy the owner set. Checked on Linux: covers named at 127.0.0.1, 169.254.169.254 and 10.0.0.1 were refused with "Not a public address", and real covers still came.

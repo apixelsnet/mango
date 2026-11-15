@@ -134,7 +134,8 @@
       return x === y ? a.title.localeCompare(b.title) : (x < y ? -1 : 1) * turn;
     });
   });
-  const chosen = $derived(Object.keys(picked).filter((id) => picked[Number(id)]).map(Number));
+  // Only what is shown: a title picked, then hidden by narrowing the list, is left alone, as on the title page.
+  const chosen = $derived(shown.filter((item) => picked[item.id]).map((item) => item.id));
   const filtering = $derived(view.unread || view.downloaded || view.completed || !!source);
   const size = $derived(display.value.pages);
   const pages = $derived(size ? Math.max(1, Math.ceil(shown.length / size)) : 1);

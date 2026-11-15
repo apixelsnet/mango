@@ -9,7 +9,7 @@ Mango on a narrow screen, and as an app on a phone's home screen. All of it is i
 - Every bar that touches an edge keeps clear of the notch and the home bar (`--safe-*` in `app.css`). The reader starts below the clock.
 - On a home screen iOS measures the page as if the clock still took its room, so on a short page the tabs stopped short of the bottom by the clock's height. `html` is made as tall as the screen there (`display-mode: standalone` in `app.css`).
 - A phone fetches the icon and the manifest without cookies. Behind a proxy that asks for a sign-in first, `/icons/`, `/manifest.webmanifest` and `/apple-touch-icon.png` have to be let through, or the home screen shows a letter instead of the mark.
-- There is no service worker: Mango needs its server for everything it shows.
+- A service worker (`public/sw.js`) serves chapters kept on the device when Mango cannot be reached; see "Offline reading" below. Everything else needs the server.
 
 ## Getting around
 
@@ -43,9 +43,15 @@ Not checked: a real iPhone. The band behind the clock, the notch and home-bar sp
 
 ## Offline reading, e-ink support and incognito mode (2026-10-25)
 
-- **Offline reading.** From a chapter's menu or the selection bar, chapters can be saved to the browser's cache (`lib/offline.ts`), together with the data the title page and the reader request, the session, the settings and the reader's code. The service worker (`public/sw.js`) serves this copy when Mango cannot be reached, and serves saved pages from it first. The application shell is cached by the service worker as it is fetched. Other pages under the same host name are not cached, because the hosted service shares its host name with the account pages. Signing out clears the saved chapters of every account. Browsers provide this cache only over HTTPS or on the local machine.
+- **Offline reading.** From a chapter's menu or the selection bar, chapters can be saved to the browser's cache (`lib/offline.ts`), together with the data the title page and the reader request, the session, the settings and the reader's code. The service worker (`public/sw.js`) serves this copy when Mango cannot be reached, and serves saved pages from it first. The application shell is cached by the service worker as it is fetched. Other pages under the same host name are not cached, because the hosted service shares its host name with the account pages. Each account has its own cache, and the service worker serves only the cache of the account signed in, which the page records in a `mango-who` cache on every load. Chapter numbers repeat from one account to the next, so before 2026-11-14 an account signed in after another one whose session had simply expired could be shown the other account's saved pages for the same chapter number. Signing out clears the saved chapters of every account, before the sign-out request is sent, so they are cleared even with no connection. The same repeat of numbers reached the browser's own cache: pages are kept for a year under addresses such as `api/chapters/5/pages/0`, so after a change of account the browser could show the other account's page without asking Mango (found in a browser on 2026-11-14). The reader and `keep` now ask for pages with the account's number in the address (`?a=<id>`, from `GET /api/auth`), which Mango ignores, so the browser keeps each account's pages apart. `Vary: Cookie` was tried first and dropped: it throws away every kept page whenever any cookie in front of Mango changes. Covers need nothing: their address carries a mark of the picture. Browsers provide this cache only over HTTPS or on the local machine.
 - **E-ink and privacy.** "Still screen", "Library in pages" and "Incognito" are available in Settings › Appearance and are stored per device.
 
 Verification in Chromium against a Linux build: a chapter was saved, the network was disabled, the page was reloaded and all four pages of the chapter were displayed.
 
 Not verified: a real phone and a real e-ink device.
+
+## Keeping chapters, faster and for good (2026-11-14)
+
+Keeping chapters on the device fetches three pages at a time, where it fetched one. The first keep asks the browser to keep the site's storage for good (`navigator.storage.persist`), so a browser short of room does not clear kept chapters, and the title page says how much room Mango takes on the device and whether the browser may still clear it.
+
+**Fetch pages again** (a chapter's menu): Mango forgets the chapter's pages and their list, fetches them from the source, and the page asks for each one past what the browser keeps; a copy kept on the device takes the new one. For a source that fixed a page. A downloaded or local chapter is its file, and is refused.

@@ -9,7 +9,7 @@ use serde_json::json;
 const API: &str = "https://api.mangaupdates.com/v1";
 
 pub(super) async fn login(http: &Client, username: &str, password: &str) -> Result<Account> {
-    let body = sign_in(Kind::MangaUpdates, http.put(format!("{API}/account/login")).json(&json!({ "username": username, "password": password }))).await?;
+    let body = sign_in(Kind::MangaUpdates, http.put(format!("{base}/account/login", base = super::at(API))).json(&json!({ "username": username, "password": password }))).await?;
     let context = &body["context"];
     let token = context["session_token"].as_str().ok_or_else(|| tracker_error("MangaUpdates sent no token".into()))?;
     Ok(Account {
@@ -22,7 +22,7 @@ pub(super) async fn login(http: &Client, username: &str, password: &str) -> Resu
 
 /// Open to everyone.
 pub(super) async fn search(http: &Client, query: &str) -> Result<Vec<Found>> {
-    let body = call(Kind::MangaUpdates, http.post(format!("{API}/series/search")).json(&json!({ "search": query, "perpage": 20 }))).await?;
+    let body = call(Kind::MangaUpdates, http.post(format!("{base}/series/search", base = super::at(API))).json(&json!({ "search": query, "perpage": 20 }))).await?;
     let found = body["results"].as_array().into_iter().flatten().filter_map(|item| {
         let record = &item["record"];
         Some(Found {
@@ -40,13 +40,13 @@ pub(super) async fn search(http: &Client, query: &str) -> Result<Vec<Found>> {
 }
 
 pub(super) async fn find(http: &Client, account: &Account, media: i64) -> Result<Option<Entry>> {
-    let (status, body) = ask(Kind::MangaUpdates, http.get(format!("{API}/lists/series/{media}")).bearer_auth(&account.token)).await?;
+    let (status, body) = ask(Kind::MangaUpdates, http.get(format!("{base}/lists/series/{media}", base = super::at(API))).bearer_auth(&account.token)).await?;
     if status == StatusCode::NOT_FOUND {
         return Ok(None);
     }
     let body = judge(Kind::MangaUpdates, status, body)?;
     // The rating is kept apart from the lists, and missing until one is given.
-    let (rated, rating) = ask(Kind::MangaUpdates, http.get(format!("{API}/series/{media}/rating")).bearer_auth(&account.token)).await?;
+    let (rated, rating) = ask(Kind::MangaUpdates, http.get(format!("{base}/series/{media}/rating", base = super::at(API))).bearer_auth(&account.token)).await?;
     Ok(Some(Entry {
         // There is no id for an entry apart from the series'.
         library_id: media,
@@ -61,11 +61,11 @@ pub(super) async fn save(http: &Client, account: &Account, track: &Track) -> Res
     let series = json!({ "id": track.media_id });
     if track.library_id == 0 {
         let item = json!([{ "series": series, "list_id": track.status }]);
-        call(Kind::MangaUpdates, http.post(format!("{API}/lists/series")).bearer_auth(&account.token).json(&item)).await?;
+        call(Kind::MangaUpdates, http.post(format!("{base}/lists/series", base = super::at(API))).bearer_auth(&account.token).json(&item)).await?;
     }
     let item = json!([{ "series": series, "list_id": track.status, "status": { "chapter": track.last_chapter_read as i64 } }]);
-    call(Kind::MangaUpdates, http.post(format!("{API}/lists/series/update")).bearer_auth(&account.token).json(&item)).await?;
-    let rating = format!("{API}/series/{}/rating", track.media_id);
+    call(Kind::MangaUpdates, http.post(format!("{base}/lists/series/update", base = super::at(API))).bearer_auth(&account.token).json(&item)).await?;
+    let rating = format!("{base}/series/{}/rating", track.media_id, base = super::at(API));
     if track.score > 0.0 {
         call(Kind::MangaUpdates, http.put(rating).bearer_auth(&account.token).json(&json!({ "rating": track.score }))).await?;
     } else {

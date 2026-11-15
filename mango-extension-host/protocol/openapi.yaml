@@ -335,7 +335,7 @@ components:
       properties:
         protocol: { type: integer }
         host: { type: string }
-        runtime: { type: string, description: "Version of the bundled Suwayomi runtime" }
+        runtime: { type: string, description: "Version of the bundled runtime" }
         installedExtensions: { type: integer }
         loadedExtensions: { type: integer }
         loadedSources: { type: integer }

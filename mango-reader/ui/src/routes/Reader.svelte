@@ -4,9 +4,12 @@
 </script>
 
 <script lang="ts">
+  import { lightParam } from '../lib/saver';
   import { name } from '../lib/named.svelte';
   import { flushSync, untrack } from 'svelte';
   import { get, message, send, type PageMark, type ReaderInfo } from '../lib/api';
+  import { hold, sent } from '../lib/unsent';
+  import { session } from '../lib/session.svelte';
   import { DEVICES, display, thisDevice } from '../lib/display.svelte';
   import Icon from '../lib/Icon.svelte';
   import { makeOver, type Part } from '../lib/pages';
@@ -195,7 +198,11 @@
   });
 
   /** Where a page of the run is fetched from: its own chapter, by its number there. */
-  const src = (i: number) => `api/chapters/${linkOf(i)?.id ?? first}/pages/${num(i) - 1}${tries[i] ? `?try=${tries[i]}` : ''}`;
+  // The account's number goes along: chapter numbers repeat from one account to the next, and the
+  // browser keeps pages for a year by their address (api.rs, `picture`).
+  // The account's number, and with data saver on this device, the smaller page.
+  const mine = `a=${session.id ?? 0}${lightParam()}`;
+  const src = (i: number) => `api/chapters/${linkOf(i)?.id ?? first}/pages/${num(i) - 1}?${mine}${tries[i] ? `&try=${tries[i]}` : ''}`;
   const clamp = (z: number) => Math.min(4, Math.max(0.5, z));
   const between = (value: number, low: number, high: number) => Math.min(high, Math.max(low, value));
 
@@ -269,7 +276,10 @@
         : chapter.read
           ? 0
           : Math.min(Math.max(chapter.lastPageRead, 0), pages - 1);
-    saved.set(first, `${index}:${index >= pages - 1}`);
+    // Opening on a page is no reading of it yet: kept as Mango has it, so a chapter not read
+    // that opens on its last page (one of a single page, or one entered from its end) is
+    // still sent as finished.
+    saved.set(first, `${index}:${index >= pages - 1 && chapter.read}`);
     ready = true;
   }
 
@@ -443,9 +453,8 @@
   function fetchAhead(info: ReaderInfo) {
     const ahead = pref<number>('reader.downloadAhead', 0);
     if (!ahead || !info.inLibrary || incognito) return;
-    // Newest first, so the chapters after this one are those listed above it.
-    const at = info.chapters.findIndex((chapter) => chapter.id === info.chapter.id);
-    const next = info.chapters.slice(Math.max(0, at - ahead), Math.max(0, at)).map((chapter) => chapter.id);
+    // The chapters reading goes on to, as Mango follows the group being read.
+    const next = (info.ahead ?? []).slice(0, ahead);
     if (next.length) send('POST', '/downloads', { chapters: next }).catch(() => {});
   }
 
@@ -583,8 +592,11 @@
     if (!due) return;
     saved.set(due.chapter, `${due.page}:${due.read}`);
     const body = due.read ? { page: due.page, read: true } : { page: due.page };
-    // keepalive lets the request finish while the page is closing.
-    fetch(`api/chapters/${due.chapter}/progress`, { method: 'PUT', keepalive: true, headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) }).catch(() => {});
+    // keepalive lets the request finish while the page is closing. A place Mango did not take
+    // in, with no connection or with Mango down, waits in this browser for the next chance.
+    fetch(`api/chapters/${due.chapter}/progress`, { method: 'PUT', keepalive: true, headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) })
+      .then((answer) => (answer.ok ? sent(due.chapter) : answer.status >= 500 && hold(due.chapter, due.page, due.read)))
+      .catch(() => hold(due.chapter, due.page, due.read));
   }
 
   /**
@@ -655,7 +667,7 @@
     if (after && !p.chain && !warmed && reached >= start + count - 3) {
       warmed = true;
       get(`/chapters/${after}/pages`)
-        .then(() => [0, 1].forEach((i) => (new Image().src = `api/chapters/${after}/pages/${i}`)))
+        .then(() => [0, 1].forEach((i) => (new Image().src = `api/chapters/${after}/pages/${i}?${mine}`)))
         .catch(() => {});
     }
   });
@@ -1019,6 +1031,11 @@
 
   // ---------- input ----------
 
+  // A tap in the middle waits a moment for a second one: two zoom in there, or back out.
+  // Taps at the sides turn the page at once.
+  const DOUBLE_TAP_MS = 300;
+  let lastTap: { at: number; x: number; y: number; timer: ReturnType<typeof setTimeout> } | null = null;
+
   function tap(event: MouseEvent) {
     if ((event.target as HTMLElement).closest('button, a, input, select')) return;
     if (panel) {
@@ -1034,6 +1051,16 @@
         else prev();
         return;
       }
+      if (lastTap && Date.now() - lastTap.at < DOUBLE_TAP_MS && Math.hypot(event.clientX - lastTap.x, event.clientY - lastTap.y) < 40) {
+        clearTimeout(lastTap.timer);
+        lastTap = null;
+        zoomAt(zoom > 1 ? 1 : 2, event.clientX - box.left, event.clientY - box.top);
+        say(`Zoom ${Math.round(zoom * 100)}%`);
+        return;
+      }
+      if (lastTap) clearTimeout(lastTap.timer);
+      lastTap = { at: Date.now(), x: event.clientX, y: event.clientY, timer: setTimeout(() => ((lastTap = null), (overlay = !overlay)), DOUBLE_TAP_MS) };
+      return;
     }
     overlay = !overlay;
   }

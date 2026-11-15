@@ -13,8 +13,9 @@
   import { route } from '../lib/router.svelte';
   import { session, signOut } from '../lib/session.svelte';
   import Storage from '../lib/Storage.svelte';
+  import { savingData, setSavingData } from '../lib/saver';
   import { againTour } from '../lib/guide.svelte';
-  import { ago } from '../lib/util';
+  import { ago, copyText } from '../lib/util';
   import { checkVersion, version as about } from '../lib/version.svelte';
   import { activeName, contrast, isHex, palette, PRESETS, saveTheme, sound, SPOTS, theme, type Theme } from '../lib/theme.svelte';
 
@@ -94,7 +95,11 @@
   const exported = $derived(JSON.stringify(t, null, 2));
 
   async function copy() {
-    await navigator.clipboard.writeText(exported).catch(() => {});
+    // The browser's clipboard is offered over HTTPS only; copyText also copies the old way.
+    if (!(await copyText(exported))) {
+      error = 'The theme could not be copied from here. Select the text and copy it by hand.';
+      return;
+    }
     copied = true;
     setTimeout(() => (copied = false), 2000);
   }
@@ -294,7 +299,7 @@
   // ---------- two-factor authentication and app passwords ----------
 
   type TwoStep = { on: boolean; codesLeft: number };
-  type AppPassword = { id: number; name: string; createdAt: number; usedAt: number | null; password?: string };
+  type AppPassword = { id: number; name: string; api: boolean; createdAt: number; usedAt: number | null; password?: string };
 
   let twoStep = $state<TwoStep | null>(null);
   /** The authenticator being set up: its key, its link, and the link as a picture to scan. */
@@ -307,9 +312,35 @@
 
   let apps = $state<AppPassword[]>([]);
   let appName = $state('');
+  /** The next app password is an API token, for scripts calling /api. */
+  let appApi = $state(false);
   /** The app password just made, with the password, shown this once. */
   let madeApp = $state<AppPassword | null>(null);
   let appsError = $state<string | null>(null);
+
+  /** The browsers signed in to this account. */
+  type SignedIn = { id: string; agent: string; createdAt: number; seenAt: number; this: boolean };
+  let devices = $state<SignedIn[]>([]);
+  /** Data saver, which is this device's own. */
+  let saver = $state(savingData());
+  let devicesError = $state<string | null>(null);
+
+  async function withDevices(work: () => Promise<unknown>) {
+    devicesError = null;
+    try {
+      await work();
+      devices = (await get<{ devices: SignedIn[] }>('/auth/devices')).devices;
+    } catch (e) {
+      devicesError = message(e);
+    }
+  }
+
+  /** A browser's name for itself, cut down to what a person tells it by. */
+  function browserName(agent: string) {
+    const browser = /Edg\//.test(agent) ? 'Edge' : /Firefox\//.test(agent) ? 'Firefox' : /Chrome\//.test(agent) ? 'Chrome' : /Safari\//.test(agent) ? 'Safari' : '';
+    const system = /iPhone|iPad/.test(agent) ? 'iOS' : /Android/.test(agent) ? 'Android' : /Windows/.test(agent) ? 'Windows' : /Mac OS X/.test(agent) ? 'macOS' : /Linux/.test(agent) ? 'Linux' : '';
+    return [browser, system].filter(Boolean).join(' on ') || agent.slice(0, 60) || 'A browser';
+  }
 
   async function withTwoStep(work: () => Promise<unknown>) {
     twoStepError = null;
@@ -376,8 +407,9 @@
   function addApp(event: SubmitEvent) {
     event.preventDefault();
     withApps(async () => {
-      madeApp = await send<AppPassword>('POST', '/auth/apps', { name: appName });
+      madeApp = await send<AppPassword>('POST', '/auth/apps', { name: appName, api: appApi });
       appName = '';
+      appApi = false;
     });
   }
 
@@ -394,6 +426,7 @@
     askedSignIn = true;
     withTwoStep(async () => {});
     withApps(async () => {});
+    withDevices(async () => {});
   });
 
   // ---------- accounts, for an admin ----------
@@ -508,12 +541,8 @@
   }
 
   async function copyInvite() {
-    try {
-      await navigator.clipboard.writeText(inviteLink);
-      linkCopied = true;
-    } catch {
-      invitesError = 'The link could not be copied from here. Select it and copy it by hand.';
-    }
+    if (await copyText(inviteLink)) linkCopied = true;
+    else invitesError = 'The link could not be copied from here. Select it and copy it by hand.';
   }
 
   function inviteState(invite: Invite): string {
@@ -711,6 +740,29 @@
 
   let notifyNote = $state('');
 
+  // The header that signs notifications in: only its name comes back, never its value.
+  let notifyHeader = $state<string | null>(null);
+  let headerText = $state('');
+  let askedHeader = false;
+  $effect(() => {
+    if (tab.id !== 'library' || askedHeader) return;
+    askedHeader = true;
+    get<{ name: string | null }>('/notify/header')
+      .then((answer) => (notifyHeader = answer.name))
+      .catch(() => {});
+  });
+
+  async function saveHeader(event: SubmitEvent | null, text: string) {
+    event?.preventDefault();
+    notifyNote = '';
+    try {
+      notifyHeader = (await send<{ name: string | null }>('PUT', '/notify/header', { header: text })).name;
+      headerText = '';
+    } catch (e) {
+      notifyNote = message(e);
+    }
+  }
+
   async function testNotify() {
     notifyNote = 'Sending…';
     try {
@@ -779,11 +831,14 @@
     if (tab.id === 'sources') loadBackups().catch(() => {});
   });
 
+  let backupNote = $state<string | null>(null);
+
   async function backUpNow() {
     backingUp = true;
     error = null;
     try {
-      await send('POST', '/backups');
+      const made = await send<{ unchanged?: boolean }>('POST', '/backups');
+      backupNote = made.unchanged ? 'Nothing changed since the last backup, so it was kept and no new one was made.' : null;
       await loadBackups();
     } catch (e) {
       error = message(e);
@@ -1085,6 +1140,13 @@
         <section class="card">
           <h3>While reading</h3>
           <div class="set">
+            <div class="what">
+              <strong>Data saver on this device</strong>
+              <span>Pages come smaller, no wider than a phone shows them, for reading on mobile data. Only this browser asks for them so; Mango makes each one the first time.</span>
+            </div>
+            <div class="how">{@render toggle(saver, 'Data saver on this device', () => setSavingData((saver = !saver)))}</div>
+          </div>
+          <div class="set">
             <div class="what"><strong>Download ahead</strong><span>Opening a chapter of a library title queues the next few for download, so they read with no wait or no connection.</span></div>
             <div class="how">
               <select class="btn" aria-label="Chapters downloaded ahead" value={String(pref('reader.downloadAhead', 0))} onchange={(e) => setPref('reader.downloadAhead', Number(e.currentTarget.value))}>
@@ -1220,6 +1282,29 @@
           </div>
           <div class="set stack">
             <div class="what">
+              <strong>Sign-in for the address</strong>
+              <span>
+                For an address that asks for a key, such as an ntfy topic behind an access token: a header sent with each message, written as
+                <code>Name: value</code>. Mango keeps it and never shows it again.
+              </span>
+            </div>
+            {#if notifyHeader}
+              <div class="how">
+                <span>Sent with each message: <strong>{notifyHeader}</strong></span>
+                <button class="btn" onclick={() => saveHeader(null, '')}>Remove</button>
+              </div>
+            {:else}
+              <form class="how" onsubmit={(e) => saveHeader(e, headerText)}>
+                <label class="field grow">
+                  <span class="sr">Header sent with notifications</span>
+                  <input type="password" bind:value={headerText} placeholder="Authorization: Bearer tk_..." autocomplete="off" required />
+                </label>
+                <button class="btn">Save</button>
+              </form>
+            {/if}
+          </div>
+          <div class="set stack">
+            <div class="what">
               <strong>Notify this device</strong>
               <span>
                 After each check that finds new chapters, this browser shows a notification, with Mango closed too. Each device turns it on or off for itself{#if pushDevices > 0}; {pushDevices}
@@ -1266,6 +1351,14 @@
             <div class="how">{@render toggle(pref('downloads.deleteAfterReading', false), "Delete a chapter's file once it is read", () => flip('downloads.deleteAfterReading'))}</div>
           </div>
           <div class="set">
+            <div class="what"><strong>Pages at a time</strong><span>How many pages of a chapter are fetched side by side. Fewer for a source that turns away quick readers, more for a fast one.</span></div>
+            <div class="how">
+              <select class="btn" aria-label="Pages fetched at a time" value={String(pref('downloads.pagesAtOnce', 2))} onchange={(e) => setPref('downloads.pagesAtOnce', Number(e.currentTarget.value)).catch((er) => (error = message(er)))}>
+                {#each [1, 2, 3, 4, 6] as n (n)}<option value={String(n)}>{n}</option>{/each}
+              </select>
+            </div>
+          </div>
+          <div class="set">
             <div class="what"><strong>Download queue</strong><span>What is being saved now, and what waits.</span></div>
             <div class="how"><a class="btn" href="#/downloads"><Icon name="download" size={18} />Open the queue</a></div>
           </div>
@@ -1273,7 +1366,7 @@
             <div class="what">
               <strong>Export my files</strong>
               <span>
-                Every downloaded chapter in one .zip, a folder for each title. Unzip it into the local folder of Mihon, Suwayomi or Mango to read them
+                Every downloaded chapter in one .zip, a folder for each title. Unzip it into the local folder of Mango or another Mihon-compatible app to read them
                 there.
                 {#if files?.chapters}{counted(files.chapters, 'chapter')} of {counted(files.titles, 'title')}, {sized(files.bytes)}.{:else if files}Nothing
                   is downloaded yet.{/if}
@@ -1493,18 +1586,18 @@
         <section class="card">
           <h3>Backup</h3>
           <div class="set">
-            <div class="what"><strong>From Mihon or Suwayomi</strong><span>Bring a library, its categories and reading progress in from a backup file.</span></div>
+            <div class="what"><strong>From a Mihon-compatible app</strong><span>Bring a library, its categories and reading progress in from a backup file.</span></div>
             <div class="how"><a class="btn" href="#/import"><Icon name="download" size={18} />Import a backup</a></div>
           </div>
           <div class="set">
             <div class="what">
               <strong>Export the library</strong>
-              <span>A .tachibk file with the library, its categories, reading progress, history and tracker links. Mihon and Suwayomi read it too.</span>
+              <span>A .tachibk file with the library, its categories, reading progress, history and tracker links. Mihon-compatible apps read it too.</span>
             </div>
             <div class="how"><a class="btn" href="api/export" download><Icon name="upload" size={18} />Export a backup</a></div>
           </div>
           <div class="set">
-            <div class="what"><strong>Back up by itself</strong><span>The same file, made on a schedule and kept on this server. The oldest go as new ones come.</span></div>
+            <div class="what"><strong>Back up by itself</strong><span>The same file, made on a schedule and kept on this server. The oldest go as new ones come. When nothing changed since the last one, no new one is made, so they take little room.</span>{#if backupNote}<span role="status">{backupNote}</span>{/if}</div>
             <div class="how">
               <select class="btn" aria-label="How often to back up" value={String(pref('backup.hours', 0))} onchange={(e) => setPref('backup.hours', Number(e.currentTarget.value))}>
                 <option value="0">Never</option>
@@ -1512,8 +1605,8 @@
                 <option value="72">Every 3 days</option>
                 <option value="168">Once a week</option>
               </select>
-              <select class="btn" aria-label="How many backups to keep" value={String(pref('backup.keep', 7))} onchange={(e) => setPref('backup.keep', Number(e.currentTarget.value))}>
-                {#each [3, 7, 14, 30] as n (n)}<option value={String(n)}>Keep {n}</option>{/each}
+              <select class="btn" aria-label="How many backups to keep" value={String(pref('backup.keep', 3))} onchange={(e) => setPref('backup.keep', Number(e.currentTarget.value))}>
+                {#each [1, 3, 7, 14, 30] as n (n)}<option value={String(n)}>Keep {n}</option>{/each}
               </select>
               <button class="btn" disabled={backingUp} onclick={backUpNow}>{backingUp ? 'Backing up…' : 'Back up now'}</button>
             </div>
@@ -1769,6 +1862,29 @@
           </section>
 
           <section class="card">
+            <h3>Signed-in devices</h3>
+            <div class="set stack">
+              <div class="what"><span>Every browser signed in to your account. Signing one out sends it back to the sign-in page.</span></div>
+            </div>
+            {#if devices.length}
+              <ul class="rows">
+                {#each devices as device (device.id)}
+                  <li>
+                    <span class="main">
+                      <strong>{browserName(device.agent)}{device.this ? ' · this one' : ''}</strong>
+                      <span>Signed in {ago(device.createdAt)} · last used {ago(device.seenAt)}</span>
+                    </span>
+                    {#if !device.this}
+                      <span class="tools"><button class="btn" onclick={() => withDevices(() => send('DELETE', `/auth/devices/${device.id}`))}>Sign out</button></span>
+                    {/if}
+                  </li>
+                {/each}
+              </ul>
+            {/if}
+            {#if devicesError}<div class="set stack"><Notice error={devicesError} /></div>{/if}
+          </section>
+
+          <section class="card">
             <h3>App passwords</h3>
             <div class="set stack">
               <div class="what">
@@ -1780,7 +1896,12 @@
             </div>
             {#if madeApp?.password}
               <div class="set stack">
-                <div class="what"><strong>The password for {madeApp.name}</strong><span>Type it into the app now: Mango shows it only this once.</span></div>
+                <div class="what">
+                  <strong>The {madeApp.api ? 'token' : 'password'} for {madeApp.name}</strong>
+                  <span>
+                    {madeApp.api ? 'Send it as Authorization: Bearer with each call to /api.' : 'Type it into the app now.'} Mango shows it only this once.
+                  </span>
+                </div>
                 <Secret values={[madeApp.password]} label="The password for {madeApp.name}" />
               </div>
             {/if}
@@ -1788,7 +1909,7 @@
               <ul class="rows">
                 {#each apps as app (app.id)}
                   <li>
-                    <span class="main"><strong>{app.name}</strong><span>Made {ago(app.createdAt)} · {app.usedAt ? `last used ${ago(app.usedAt)}` : 'not used yet'}</span></span>
+                    <span class="main"><strong>{app.name}{app.api ? ' · API token' : ''}</strong><span>Made {ago(app.createdAt)} · {app.usedAt ? `last used ${ago(app.usedAt)}` : 'not used yet'}</span></span>
                     <span class="tools"><button class="btn" onclick={() => removeApp(app.id)} title="The app that uses this password can no longer sign in">Revoke</button></span>
                   </li>
                 {/each}
@@ -1799,7 +1920,10 @@
                 <span class="sr">What the password is for</span>
                 <input type="text" bind:value={appName} placeholder="What it is for, such as KOReader" autocomplete="off" maxlength="80" required />
               </label>
-              <button class="btn ink">Make a password</button>
+              <button class="btn" type="button" aria-pressed={appApi} onclick={() => (appApi = !appApi)} title="A script sends it as Authorization: Bearer, and may do all this account can">
+                {#if appApi}<Icon name="check" size={18} stroke={3} />{/if}For scripts (API)
+              </button>
+              <button class="btn ink">{appApi ? 'Make a token' : 'Make a password'}</button>
             </form>
             {#if appsError}<div class="set stack"><Notice error={appsError} /></div>{/if}
           </section>

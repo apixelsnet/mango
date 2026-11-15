@@ -1,4 +1,4 @@
-//! Export of the library as a `.tachibk`: the backup Mihon and Suwayomi read, and the
+//! Export of the library as a `.tachibk`: the backup Mihon-compatible apps read, and the
 //! one `import.rs` takes in. A gzipped protobuf.
 //!
 //! Library titles go out with their chapters, read state, categories, history and
@@ -23,7 +23,7 @@ fn nest(to: &mut Vec<u8>, field: u32, body: &[u8]) {
     to.extend_from_slice(body);
 }
 
-/// Writes a zero that would otherwise be left out. Mihon refuses a message that lacks
+/// Writes a zero that would otherwise be left out. The apps refuse a message that lacks
 /// a field it requires, and a local title's source id or an unsent link's entry id is 0.
 fn zero(to: &mut Vec<u8>, field: u32) {
     encode_key(field, WireType::Varint, to);
@@ -42,7 +42,7 @@ fn viewer_flags(mode: Option<&str>) -> Option<i32> {
 
 /// The library as a backup file.
 pub fn write(conn: &Connection) -> Result<Vec<u8>> {
-    let mut out = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
+    let mut out = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::best());
     let mut field = Vec::new();
 
     // A title names its categories by their `order`: here, the place in the list.
@@ -93,7 +93,7 @@ pub fn write(conn: &Connection) -> Result<Vec<u8>> {
                     let url: String = c.get(0)?;
                     let name: String = c.get(1)?;
                     Ok(BackupChapter {
-                        // Mihon requires a name.
+                        // The apps require a name.
                         name: if name.is_empty() { url.clone() } else { name },
                         url,
                         scanlator: c.get(2)?,
@@ -127,7 +127,7 @@ pub fn write(conn: &Connection) -> Result<Vec<u8>> {
                 Ok(BackupTracking {
                     sync_id: t.get(0)?,
                     library_id: t.get(1)?,
-                    // The older, narrower field. Mihon reads it first when it is set.
+                    // The older, narrower field. The apps read it first when it is set.
                     media_id_int: i32::try_from(media).unwrap_or(0),
                     tracking_url: t.get(3)?,
                     title: t.get(4)?,
@@ -277,7 +277,7 @@ mod tests {
 
     #[test]
     fn required_zeros_are_written() {
-        /// Reads the fields Mihon requires as "set or not", which the importer's own shapes cannot tell.
+        /// Reads the fields the apps require as "set or not", which the importer's own shapes cannot tell.
         #[derive(Clone, PartialEq, Message)]
         struct Probe {
             #[prost(int64, optional, tag = "1")]

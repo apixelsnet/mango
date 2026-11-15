@@ -1280,7 +1280,7 @@ dependencies = [
 
 [[package]]
 name = "mango-desktop"
-version = "1.0.0"
+version = "1.5.1"
 dependencies = [
  "tao",
  "tray-icon",

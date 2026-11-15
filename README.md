@@ -98,9 +98,9 @@
 
 [![The library][library-screenshot]][library-screenshot]
 
-Mango reads manga and manhwa from the sources Mihon reads them from, and from
-your own files. It runs extensions made for Mihon unchanged, so a source that
-works in Mihon works here.
+Mango reads manga and manhwa from the sources that Mihon-compatible extensions
+bring, and from your own files. It runs those extensions unchanged, so a source
+that works in another Mihon-compatible app works here.
 
 It is built to stay small. The server is one Rust binary with the web UI inside
 it. Extensions need Java, so they run in a separate process that starts when an
@@ -129,10 +129,10 @@ it does, how it was built, and what was and was not tried.
 * **Library and history.** Categories, unread counts, and what you read last.
   A title's chapters can be sorted, filtered and bookmarked.
 * **Updates and downloads.** New chapters are found on a schedule. Chapters save
-  as CBZ and read with no network, and leave again as one zip that Mihon,
-  Suwayomi or Mango reads as a local source.
+  as CBZ and read with no network, and leave again as one zip that Mango and
+  other Mihon-compatible apps read as a local source.
 * **Local source.** A folder of CBZ files or image folders, read without Java.
-* **Import and export.** A Mihon or Suwayomi backup (`.tachibk`) brings your
+* **Import and export.** A backup from a Mihon-compatible app (`.tachibk`) brings your
   library, read state and history across, and Mango writes one they read.
 * **Trackers.** AniList, MyAnimeList, Kitsu and MangaUpdates follow along as you
   read.

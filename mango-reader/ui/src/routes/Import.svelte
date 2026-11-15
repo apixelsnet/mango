@@ -31,9 +31,12 @@
   const sources = $derived(report?.sources ?? preview?.sources ?? []);
   const missing = $derived(sources.filter((s) => !s.installed));
 
-  /** The file goes up as it is, not as JSON. */
-  async function upload<T>(path: string): Promise<T> {
-    const response = await fetch('api' + path, { method: 'POST', body: file });
+  /** What Mango takes, as `import::MAX_UPLOAD` says: a bigger file is turned down before it goes up. */
+  const MAX_BYTES = 128 << 20;
+
+  /** The file goes up as it is, not as JSON. With `held`, nothing goes: Mango kept it from the preview. */
+  async function upload<T>(path: string, held = false): Promise<T> {
+    const response = await fetch('api' + path, { method: 'POST', body: held ? null : file });
     const answer = await response.json().catch(() => null);
     if (!response.ok) throw new ApiError(response.status, answer?.error?.code ?? 'error', answer?.error?.message ?? `Mango answered ${response.status}`);
     return answer as T;
@@ -45,6 +48,10 @@
     status = null;
     error = null;
     if (!file) return;
+    if (file.size > MAX_BYTES) {
+      error = `This file is ${Math.ceil(file.size / (1 << 20))} MB. Mango takes backups of up to 128 MB.`;
+      return;
+    }
     busy = true;
     try {
       preview = await upload<Preview>('/import/preview');
@@ -57,7 +64,11 @@
   async function start() {
     error = null;
     try {
-      status = await upload<Status>('/import');
+      // Mango holds the file it previewed; it is sent again only when that copy is gone.
+      status = await upload<Status>('/import', true).catch((e) => {
+        if (e instanceof ApiError && e.code === 'preview_gone') return upload<Status>('/import');
+        throw e;
+      });
     } catch (e) {
       error = message(e);
     }
@@ -91,7 +102,7 @@
   </div>
 
   <p class="lead">
-    Bring a library over from Mihon or Suwayomi. Make a backup there, then pick the <code>.tachibk</code> file here. Titles, categories, read
+    Bring a library over from a Mihon-compatible app. Make a backup there, then pick the <code>.tachibk</code> file here. Titles, categories, read
     chapters, bookmarks, history and tracker links come across. Nothing you already have in Mango is overwritten: a chapter read on either side
     stays read.
   </p>

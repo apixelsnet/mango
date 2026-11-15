@@ -29,9 +29,9 @@ fn account(tokens: &Value) -> Result<Account> {
 
 pub(super) async fn login(http: &Client, username: &str, password: &str) -> Result<Account> {
     let form = [("grant_type", "password"), ("username", username), ("password", password), ("client_id", CLIENT_ID), ("client_secret", CLIENT_SECRET)];
-    let tokens = sign_in(Kind::Kitsu, http.post(OAUTH).form(&form)).await?;
+    let tokens = sign_in(Kind::Kitsu, http.post(super::at(OAUTH)).form(&form)).await?;
     let mut account = account(&tokens)?;
-    let request = http.get(format!("{API}/users")).bearer_auth(&account.token).header(ACCEPT, JSON_API).query(&[("filter[self]", "true")]);
+    let request = http.get(format!("{base}/users", base = super::at(API))).bearer_auth(&account.token).header(ACCEPT, JSON_API).query(&[("filter[self]", "true")]);
     let me = call(Kind::Kitsu, request).await?;
     let user = &me["data"][0];
     account.user_id = text(&user["id"]);
@@ -44,7 +44,7 @@ pub(super) async fn login(http: &Client, username: &str, password: &str) -> Resu
 
 pub(super) async fn renew(http: &Client, old: &Account) -> Result<Account> {
     let form = [("grant_type", "refresh_token"), ("refresh_token", old.refresh.as_str()), ("client_id", CLIENT_ID), ("client_secret", CLIENT_SECRET)];
-    let tokens = renewal(Kind::Kitsu, http.post(OAUTH).form(&form)).await?;
+    let tokens = renewal(Kind::Kitsu, http.post(super::at(OAUTH)).form(&form)).await?;
     let mut renewed = account(&tokens)?;
     if renewed.refresh.is_empty() {
         renewed.refresh = old.refresh.clone();
@@ -57,7 +57,7 @@ pub(super) async fn renew(http: &Client, old: &Account) -> Result<Account> {
 /// Open to everyone.
 pub(super) async fn search(http: &Client, query: &str) -> Result<Vec<Found>> {
     let params = [("filter[text]", query), ("page[limit]", "20"), ("fields[manga]", "canonicalTitle,chapterCount,synopsis,subtype,startDate,slug")];
-    let body = call(Kind::Kitsu, http.get(format!("{API}/manga")).header(ACCEPT, JSON_API).query(&params)).await?;
+    let body = call(Kind::Kitsu, http.get(format!("{base}/manga", base = super::at(API))).header(ACCEPT, JSON_API).query(&params)).await?;
     let found = body["data"].as_array().into_iter().flatten().filter_map(|item| {
         let (media_id, about) = (whole(&item["id"]), &item["attributes"]);
         let slug = about["slug"].as_str().map_or_else(|| media_id.to_string(), str::to_owned);
@@ -76,7 +76,7 @@ pub(super) async fn search(http: &Client, query: &str) -> Result<Vec<Found>> {
 
 pub(super) async fn find(http: &Client, account: &Account, media: i64) -> Result<Option<Entry>> {
     let params = [("filter[manga_id]", media.to_string()), ("filter[user_id]", account.user_id.clone()), ("include", "manga".into()), ("page[limit]", "1".into())];
-    let request = http.get(format!("{API}/library-entries")).bearer_auth(&account.token).header(ACCEPT, JSON_API).query(&params);
+    let request = http.get(format!("{base}/library-entries", base = super::at(API))).bearer_auth(&account.token).header(ACCEPT, JSON_API).query(&params);
     let body = call(Kind::Kitsu, request).await?;
     let entry = &body["data"][0];
     if entry.is_null() {
@@ -104,7 +104,7 @@ pub(super) async fn save(http: &Client, account: &Account, track: &Track) -> Res
     let attributes = json!({ "status": status, "progress": track.last_chapter_read as i64, "ratingTwenty": rating });
     if track.library_id > 0 {
         let body = json!({ "data": { "type": "libraryEntries", "id": track.library_id.to_string(), "attributes": attributes } });
-        call(Kind::Kitsu, write(http.patch(format!("{API}/library-entries/{}", track.library_id)), account, body)).await?;
+        call(Kind::Kitsu, write(http.patch(format!("{base}/library-entries/{}", track.library_id, base = super::at(API))), account, body)).await?;
         return Ok(track.library_id);
     }
     let body = json!({ "data": {
@@ -115,7 +115,7 @@ pub(super) async fn save(http: &Client, account: &Account, track: &Track) -> Res
             "media": { "data": { "type": "manga", "id": track.media_id.to_string() } },
         },
     } });
-    let made = call(Kind::Kitsu, write(http.post(format!("{API}/library-entries")), account, body)).await?;
+    let made = call(Kind::Kitsu, write(http.post(format!("{base}/library-entries", base = super::at(API))), account, body)).await?;
     match whole(&made["data"]["id"]) {
         0 => Err(tracker_error("Kitsu did not confirm the new entry".into())),
         id => Ok(id),

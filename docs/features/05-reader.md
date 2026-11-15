@@ -142,3 +142,8 @@ In visible browser windows (2026-11-13):
 - Firefox and WebKit ran `chapters.spec.ts` headed: all pass. WebKit's Windows build draws no scrollbar, so a real drag there does not scroll.
 
 Not checked: a real phone; Safari itself (macOS); an online source. One Firefox run of the auto-scroll test stalled while its window was covered (animation frames are slowed in a hidden window); it passed three times alone.
+
+## Double-tap, and data saver (2026-11-14)
+
+- **Double-tap to zoom**: two taps in the middle of the page zoom to 200% at that spot, two more back to the page's size. A tap in the middle now waits 300 ms for a second one before it shows or hides the bars; taps at the sides turn the page at once, as before.
+- **Data saver on this device** (Settings › Reader): pages come as JPEGs no wider than 1080 pixels, at quality 70 (`?light=1`, `Images::lighter_page`). Mango makes each the first time and keeps it beside the page; a page that would come out no smaller comes as it is. It is this browser's setting, kept in its own storage, since a phone on mobile data wants it and a computer at home does not. Checked by the unit test `lighter_pages_are_narrower_and_smaller`.

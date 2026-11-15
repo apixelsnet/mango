@@ -8,10 +8,19 @@ use serde_json::{Map, Value};
 
 const MAX_VALUE: usize = 64 * 1024;
 
+/// Keys kept in this table that are not the UI's: the solver and the proxy, with the
+/// proxy's password, and the header that signs notifications in. Only their own routes read
+/// and write them, with their checks; `all` leaves them out and `put` refuses them.
+const RESERVED: [&str; 3] = [crate::host::Solver::KEY, crate::host::Proxy::KEY, crate::notify::HEADER];
+
 pub fn all(conn: &Connection) -> Result<Map<String, Value>> {
     let mut stmt = conn.prepare("SELECT key, value FROM settings")?;
     let rows = stmt.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))?.collect::<rusqlite::Result<Vec<_>>>()?;
-    Ok(rows.into_iter().filter_map(|(key, value)| Some((key, serde_json::from_str(&value).ok()?))).collect())
+    Ok(rows
+        .into_iter()
+        .filter(|(key, _)| !RESERVED.contains(&key.as_str()))
+        .filter_map(|(key, value)| Some((key, serde_json::from_str(&value).ok()?)))
+        .collect())
 }
 
 /// Stores the given keys. A null value removes the key.
@@ -20,6 +29,9 @@ pub fn put(conn: &mut Connection, values: &Map<String, Value>) -> Result<()> {
     for (key, value) in values {
         if key.is_empty() || key.len() > 64 || !key.bytes().all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'_' | b'-')) {
             return Err(AppError::bad_request(format!("Not a setting name: {key}")));
+        }
+        if RESERVED.contains(&key.as_str()) {
+            return Err(AppError::bad_request(format!("{key} is set on its own page")));
         }
         if value.is_null() {
             tx.execute("DELETE FROM settings WHERE key = ?1", [key])?;
@@ -32,6 +44,12 @@ pub fn put(conn: &mut Connection, values: &Map<String, Value>) -> Result<()> {
         tx.execute("INSERT INTO settings (key, value) VALUES (?1, ?2) ON CONFLICT(key) DO UPDATE SET value = excluded.value", params![key, text])?;
     }
     tx.commit()?;
+    Ok(())
+}
+
+/// Removes one key, without the checks `put` makes on what comes from outside.
+pub fn forget(conn: &Connection, key: &str) -> Result<()> {
+    conn.execute("DELETE FROM settings WHERE key = ?1", [key])?;
     Ok(())
 }
 
@@ -68,5 +86,20 @@ mod tests {
         put(&mut conn, json!({ "updates.hours": null }).as_object().unwrap()).unwrap();
         assert_eq!(get::<i64>(&conn, "updates.hours"), None);
         assert!(put(&mut conn, json!({ "bad key": 1 }).as_object().unwrap()).is_err());
+    }
+
+    #[test]
+    fn proxy_and_solver_stay_out() {
+        let mut conn = Connection::open_in_memory().unwrap();
+        crate::db::migrate(&mut conn).unwrap();
+        set(&conn, "proxy", &json!({ "url": "socks5://p:1080", "username": "u", "password": "secret" })).unwrap();
+        set(&conn, "solver", &json!({ "url": "http://solver:8191" })).unwrap();
+        set(&conn, "theme", &json!("dark")).unwrap();
+        let shown = all(&conn).unwrap();
+        assert_eq!(shown.keys().collect::<Vec<_>>(), ["theme"], "the proxy's password never leaves through the settings");
+        for key in ["proxy", "solver"] {
+            assert!(put(&mut conn, json!({ key: { "url": "http://10.0.0.1" } }).as_object().unwrap()).is_err(), "{key}");
+        }
+        assert_eq!(get::<Value>(&conn, "proxy").unwrap()["password"], "secret", "its own route still reads it");
     }
 }

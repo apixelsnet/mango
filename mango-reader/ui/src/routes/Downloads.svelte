@@ -25,9 +25,14 @@
   }
   load();
 
-  // The queue changes by itself: chapters finish, and updates add new ones. So the
-  // screen looks again every two seconds while it is open and in view.
-  $effect(() => every(2000, load));
+  // The queue changes by itself while chapters in it can still move on: the screen looks
+  // again every two seconds then, while it is open and in view. Empty, paused or held, it
+  // asks nothing more, as the title page and Updates do, so an idle hosted Mango can sleep;
+  // chapters an update adds show when the screen is opened again.
+  const busy = $derived(!data?.paused && !data?.held && queue.some((q) => q.state !== 'failed'));
+  $effect(() => {
+    if (busy) return every(2000, load);
+  });
 
   async function act(method: string, path: string, body?: unknown) {
     try {

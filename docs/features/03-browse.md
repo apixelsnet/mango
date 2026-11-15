@@ -33,14 +33,14 @@ Not built:
 
 ## Filters (2026-10-12)
 
-A source's page has a Filter button beside its lists. It opens the source's own filters, the ones Mihon shows for it: `GET /api/sources/{id}/filters`.
+A source's page has a Filter button beside its lists. It opens the source's own filters, the ones other Mihon-compatible apps show for it: `GET /api/sources/{id}/filters`.
 
 - Code: `mango-reader/ui/src/lib/SourceFilters.svelte`, `Titles::filters` and `browse` in `titles.rs`. The host's side is in feature 01.
 - The list is asked for when the panel is first opened, not with the page. It is kept, with what was set in it, while the page stays open.
 - A checkbox is a pill, a tri-state a pill that goes round with it, without it, either way. Select and sort are drop-downs, sort with a direction beside it. A group is folded, with a count of what is switched on inside.
 - Search sends only the filters that were set to something else, as `filters=[{position, state}]` on the search address, with the words typed if there are any. A search by filters alone shows as "Filtered".
 - Reset asks the source for its list again, since some sources fill theirs in only after a first look at the site, and goes back to Popular.
-- Global search and migration send no filters: the source's own list as it makes it, as in Mihon.
+- Global search and migration send no filters: the source's own list as it makes it, as in other Mihon-compatible apps.
 
 Checked on Linux and Windows by `smoke.py`, and by hand in a browser against a real source with all the kinds but text: a tag set with and without, words and filters together, close and open again, Reset, and a phone's width.
 
@@ -54,7 +54,7 @@ The title page's list can be put in order, narrowed and bookmarked. Code: `route
 - Order: the source's own, by chapter number, or by upload date, each either way round. It is one setting for every title, kept on the server (`title.view`) like the library's.
 - Filter: all chapters, or only the unread, the downloaded or the bookmarked, one at a time; and one scanlation group when the title has more than one. It lasts as long as the page is open.
 - A row keeps to two buttons: download, and one that opens the chapter's own menu, where it is marked read or unread and bookmarked. "Mark read up to here" also marks every older chapter, in the source's order and whatever the filter shows; only the unread ones are sent, so chapters already read keep their read date.
-- Selecting, after Mihon: a long press on a row, "Select" in the head or in a chapter's menu, or a shift-click starts it. While selecting, a tap picks one chapter, and a long press or shift-click on another picks every chapter shown between the two. The dock turns into the actions: all shown, invert, mark read or unread, mark read up to here (one chapter picked), bookmark, download, delete the saved files (asked twice). Only the chapters shown count; Escape stops. Each action sends only the chapters it changes. Deleting is one `DELETE /api/chapters/{id}/download` per chapter; there is no bulk address for it. A bookmarked chapter carries a small mark before its name.
+- Selecting, as in other readers: a long press on a row, "Select" in the head or in a chapter's menu, or a shift-click starts it. While selecting, a tap picks one chapter, and a long press or shift-click on another picks every chapter shown between the two. The dock turns into the actions: all shown, invert, mark read or unread, mark read up to here (one chapter picked), bookmark, download, delete the saved files (asked twice). Only the chapters shown count; Escape stops. Each action sends only the chapters it changes. Deleting is one `DELETE /api/chapters/{id}/download` per chapter; there is no bulk address for it. A bookmarked chapter carries a small mark before its name.
 - A bookmark is `PUT /api/manga/{id}/chapters` with `{ids, bookmark}`, the address that marks chapters read. Bookmarks already came in with a backup and went out with one; now they show.
 - The order and the filter are for looking. Reading goes on in the source's order: Resume and the reader's next chapter do not follow them.
 

@@ -81,8 +81,14 @@ async fn main() -> ExitCode {
         Some("health") => health(),
         Some("address") => here().map(|(addr, _)| println!("http://{addr}")),
         Some("reset-password") => reset_password(),
-        Some("version" | "--version" | "-V") => Ok(println!("mango {}", version::describe())),
-        Some("help" | "--help" | "-h") => Ok(println!("{USAGE}")),
+        Some("version" | "--version" | "-V") => {
+            println!("mango {}", version::describe());
+            Ok(())
+        }
+        Some("help" | "--help" | "-h") => {
+            println!("{USAGE}");
+            Ok(())
+        }
         Some(other) => Err(format!("unknown command {other:?}\n\n{USAGE}")),
     };
     match outcome {
@@ -101,7 +107,8 @@ async fn run() -> Result<(), String> {
 
     std::fs::create_dir_all(&cfg.data_dir).map_err(|e| format!("cannot create {}: {e}", cfg.data_dir.display()))?;
     let db = db::Db::open(&cfg.data_dir.join("mango.db")).map_err(|e| e.to_string())?;
-    let front = auth::Front { hosts: cfg.hosts.clone(), proxied: cfg.proxied, signup: cfg.signup, account: cfg.account_url.clone() };
+    import::set_unpack_cap(cfg.import_max_mb);
+    let front = auth::Front { hosts: cfg.hosts.clone(), proxied: cfg.proxied, hops: cfg.proxy_hops as usize, signup: cfg.signup, account: cfg.account_url.clone() };
     let auth = auth::Auth::open(db.clone(), cfg.login, cfg.port()?, cfg.first_password.clone(), front).await.map_err(|e| e.to_string())?;
     let private = |name: &str, text: &str| db::write_private(&cfg.data_dir.join(name), text).map_err(|e| format!("cannot write {name} in {}: {e}", cfg.data_dir.display()));
     private(INSTANCE, auth.instance())?;

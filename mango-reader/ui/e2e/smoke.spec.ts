@@ -137,7 +137,8 @@ test('the reader names the chapter, says why a page failed and lists its keys', 
   await expect(page).toHaveURL(/#\/read\/1$/);
 });
 
-test('two fingers zoom the page, not the app, and turn nothing', async ({ page }) => {
+test('two fingers zoom the page, not the app, and turn nothing', async ({ page, browserName }) => {
+  test.skip(browserName === 'firefox', 'Firefox on a desktop has no touch events to send.');
   await page.goto('/#/read/1');
   await expect(page.getByRole('img', { name: 'Page 1 of 10' })).toBeVisible();
   const stage = page.locator('.stage');

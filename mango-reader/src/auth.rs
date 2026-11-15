@@ -123,12 +123,28 @@ pub struct AccountChange {
     two_step: Option<bool>,
 }
 
+/// A browser signed in to an account.
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Device {
+    /// Stands for the session without giving away what opens it.
+    pub id: String,
+    /// The browser's name for itself.
+    agent: String,
+    created_at: i64,
+    seen_at: i64,
+    /// The browser asking.
+    this: bool,
+}
+
 /// A password Mango made for one reading app.
 #[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AppPassword {
     pub id: i64,
     name: String,
+    /// An API token: it opens /api too, sent as `Authorization: Bearer`.
+    api: bool,
     created_at: i64,
     used_at: Option<i64>,
     /// The password. Only the answer that makes it carries it: Mango keeps its hashes.
@@ -175,6 +191,8 @@ pub struct Front {
     pub hosts: Vec<String>,
     /// A proxy stands in front and writes each caller's address into `X-Forwarded-For`.
     pub proxied: bool,
+    /// How many proxies in a row write into it; the first of them saw the caller.
+    pub hops: usize,
     /// Whoever holds an admin's invitation may make an account; see `Auth::join`.
     pub signup: bool,
     /// Where a reader's account is kept, for whoever runs this Mango for others.
@@ -225,6 +243,10 @@ pub struct Status {
     /// More than one account exists, so signing in takes a name.
     named: bool,
     name: Option<String>,
+    /// The signed-in account's number. Numbers repeat titles and chapters from one account to
+    /// the next, so the page puts this one in the addresses of what the browser keeps.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    id: Option<i64>,
     admin: bool,
     /// Where the signed-in reader's account is kept, when whoever runs this Mango keeps one.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -240,6 +262,12 @@ fn locked<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
 
 fn token_hash(token: &str) -> String {
     hex::encode(Sha256::digest(token.as_bytes()))
+}
+
+/// What a session is shown as: a hash of its hash, so the list gives nothing away that the
+/// sessions table holds.
+fn device_id(hash: &str) -> String {
+    token_hash(hash)[..16].to_owned()
 }
 
 fn random<const N: usize>() -> Result<[u8; N]> {
@@ -493,12 +521,15 @@ impl Auth {
         bucket(peer).is_loopback() && !relayed
     }
 
-    /// The address a call comes from: the one that connected or, behind a proxy the
-    /// owner vouched for, the last one the proxy wrote down.
+    /// The address a call comes from: the one that connected or, behind proxies the owner
+    /// vouched for, the one the first of them wrote down. Each proxy adds the address it was
+    /// called from at the end, so with two (a CDN, then the owner's own) the caller is the
+    /// last but one; what comes before it the caller could have written itself.
     pub fn caller(&self, peer: IpAddr, headers: &HeaderMap) -> IpAddr {
         let written = || {
             let lines = headers.get_all("x-forwarded-for").iter().filter_map(|value| value.to_str().ok());
-            lines.flat_map(|line| line.split(',')).filter_map(|address| address.trim().parse::<IpAddr>().ok()).last()
+            let all: Vec<IpAddr> = lines.flat_map(|line| line.split(',')).filter_map(|address| address.trim().parse::<IpAddr>().ok()).collect();
+            all.iter().rev().nth(self.front.hops.max(1) - 1).or(all.first()).copied()
         };
         self.front.proxied.then(written).flatten().unwrap_or(peer)
     }
@@ -530,6 +561,7 @@ impl Auth {
             named: self.on && locked(&self.accounts).len() > 1,
             admin: who.as_ref().is_some_and(|who| who.admin),
             account: who.as_ref().and(self.front.account.clone()),
+            id: who.as_ref().map(|who| who.id),
             name: who.map(|who| who.name),
         }
     }
@@ -708,15 +740,18 @@ impl Auth {
         let who = self.session(headers).ok_or_else(signed_out)?;
         self.db
             .call(move |conn| {
-                let mut stmt = conn.prepare("SELECT id, name, created_at, used_at FROM app_passwords WHERE user_id = ?1 ORDER BY id DESC")?;
-                let rows = stmt.query_map([who.id], |r| Ok(AppPassword { id: r.get(0)?, name: r.get(1)?, created_at: r.get(2)?, used_at: r.get(3)?, password: None }))?;
+                let mut stmt = conn.prepare("SELECT id, name, created_at, used_at, api FROM app_passwords WHERE user_id = ?1 ORDER BY id DESC")?;
+                let rows = stmt.query_map([who.id], |r| {
+                    Ok(AppPassword { id: r.get(0)?, name: r.get(1)?, created_at: r.get(2)?, used_at: r.get(3)?, api: r.get(4)?, password: None })
+                })?;
                 Ok(rows.collect::<rusqlite::Result<_>>()?)
             })
             .await
     }
 
-    /// Makes a password for one reading app. It is in this answer and nowhere else.
-    pub async fn add_app(&self, headers: &HeaderMap, name: &str) -> Result<AppPassword> {
+    /// Makes a password for one reading app, or with `api` a token for scripts. It is in this
+    /// answer and nowhere else.
+    pub async fn add_app(&self, headers: &HeaderMap, name: &str, api: bool) -> Result<AppPassword> {
         let who = self.session(headers).ok_or_else(signed_out)?;
         let name: String = name.trim().chars().filter(|c| !c.is_control()).take(MAX_NOTE).collect();
         if name.is_empty() {
@@ -733,13 +768,13 @@ impl Auth {
                     return Err(AppError::bad_request(format!("An account has at most {MAX_APPS} app passwords. Revoke one first.")));
                 }
                 conn.execute(
-                    "INSERT INTO app_passwords (user_id, name, hash, md5_hash, created_at) VALUES (?1, ?2, ?3, ?4, ?5)",
-                    params![who.id, kept, hash, md5_hash, now],
+                    "INSERT INTO app_passwords (user_id, name, hash, md5_hash, created_at, api) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                    params![who.id, kept, hash, md5_hash, now, api],
                 )?;
                 Ok(conn.last_insert_rowid())
             })
             .await?;
-        Ok(AppPassword { id, name, created_at: now, used_at: None, password: Some(password) })
+        Ok(AppPassword { id, name, api, created_at: now, used_at: None, password: Some(password) })
     }
 
     /// Takes an app password back. The app it was for is out from its next call.
@@ -771,7 +806,45 @@ impl Auth {
         let Some(account) = found.and_then(|user| self.account(user).ok()) else { return Ok(None) };
         let name = name.trim();
         let fits = if name.is_empty() { locked(&self.accounts).len() == 1 } else { account.name.eq_ignore_ascii_case(name) };
-        Ok(fits.then(|| Who { id: account.id, name: account.name, admin: account.admin }))
+        Ok(fits.then_some(Who { id: account.id, name: account.name, admin: account.admin }))
+    }
+
+    /// Who a script calling /api is: an API token in `Authorization: Bearer`. A wrong one
+    /// slows its sender down. A right one is not looked up again for a while.
+    pub async fn bearer(&self, from: IpAddr, headers: &HeaderMap) -> Option<Who> {
+        let given = headers.get(header::AUTHORIZATION).and_then(|value| value.to_str().ok()).and_then(|value| value.strip_prefix("Bearer "))?;
+        let (key, now) = (format!("bearer:{}", token_hash(given.trim())), db::now());
+        let known = locked(&self.basics).get(&key).copied().filter(|(_, until)| *until > now);
+        if let Some(account) = known.and_then(|(user, _)| self.account(user).ok()) {
+            return Some(Who { id: account.id, name: account.name, admin: account.admin });
+        }
+        let from = bucket(from);
+        if wait_in(&self.strikes, &from) > 0 {
+            return None;
+        }
+        let hash = token_hash(given.trim());
+        let found = self
+            .db
+            .call(move |conn| {
+                let row = conn.query_row("SELECT id, user_id FROM app_passwords WHERE hash = ?1 AND api = 1", [hash], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, i64>(1)?))).optional()?;
+                if let Some((id, _)) = row {
+                    conn.execute("UPDATE app_passwords SET used_at = ?2 WHERE id = ?1", params![id, db::now()])?;
+                }
+                Ok(row.map(|(_, user)| user))
+            })
+            .await
+            .ok()
+            .flatten();
+        let Some(account) = found.and_then(|user| self.account(user).ok()) else {
+            strike_in(&self.strikes, from);
+            return None;
+        };
+        let mut basics = locked(&self.basics);
+        if basics.len() > 256 {
+            basics.retain(|_, (_, until)| *until > now);
+        }
+        basics.insert(key, (account.id, now + BASIC_SECS));
+        Some(Who { id: account.id, name: account.name, admin: account.admin })
     }
 
     /// Who KOReader's sync comes from: it sends the account's name and the MD5 of an app
@@ -795,6 +868,42 @@ impl Auth {
         let Some(hash) = self.token(headers).map(|token| token_hash(&token)) else { return Ok(()) };
         locked(&self.sessions).remove(&hash);
         self.db.call(move |conn| Ok(conn.execute("DELETE FROM sessions WHERE token_hash = ?1", [hash])?)).await?;
+        Ok(())
+    }
+
+    /// The browsers signed in to the caller's account, the one used last first.
+    pub async fn devices(&self, headers: &HeaderMap) -> Result<Vec<Device>> {
+        let who = self.session(headers).ok_or_else(signed_out)?;
+        let mine = self.token(headers).map(|token| token_hash(&token));
+        self.db
+            .call(move |conn| {
+                let mut stmt = conn.prepare(
+                    "SELECT token_hash, agent, created_at, seen_at FROM sessions WHERE user_id = ?1 AND expires_at > ?2 ORDER BY seen_at DESC",
+                )?;
+                let rows = stmt.query_map(params![who.id, db::now()], |r| {
+                    let hash: String = r.get(0)?;
+                    Ok(Device { id: device_id(&hash), this: mine.as_deref() == Some(hash.as_str()), agent: r.get(1)?, created_at: r.get(2)?, seen_at: r.get(3)? })
+                })?;
+                Ok(rows.collect::<rusqlite::Result<_>>()?)
+            })
+            .await
+    }
+
+    /// Signs one of the caller's browsers out, by the id `devices` gave it.
+    pub async fn drop_device(&self, headers: &HeaderMap, id: String) -> Result<()> {
+        let who = self.session(headers).ok_or_else(signed_out)?;
+        let found = self
+            .db
+            .call(move |conn| {
+                let mut stmt = conn.prepare("SELECT token_hash FROM sessions WHERE user_id = ?1")?;
+                let hashes = stmt.query_map([who.id], |r| r.get::<_, String>(0))?.collect::<rusqlite::Result<Vec<_>>>()?;
+                let Some(hash) = hashes.into_iter().find(|hash| device_id(hash) == id) else { return Ok(None) };
+                conn.execute("DELETE FROM sessions WHERE token_hash = ?1", [&hash])?;
+                Ok(Some(hash))
+            })
+            .await?;
+        let hash = found.ok_or_else(|| AppError::not_found("No such device"))?;
+        locked(&self.sessions).remove(&hash);
         Ok(())
     }
 
@@ -1235,9 +1344,14 @@ fn bad_invite() -> AppError {
 
 /// Lets a request through to the API only from a signed-in browser, and hands it
 /// the library of the account that browser belongs to.
-pub async fn require(State(server): State<Spaces>, mut request: Request, next: Next) -> Response {
+pub async fn require(State(server): State<Spaces>, ConnectInfo(peer): ConnectInfo<std::net::SocketAddr>, mut request: Request, next: Next) -> Response {
     let auth = &server.auth;
-    let Some(who) = auth.who(request.headers()) else {
+    let who = match auth.who(request.headers()) {
+        Some(who) => Some(who),
+        // A script sends an API token in place of a browser's session.
+        None => auth.bearer(auth.caller(peer.ip(), request.headers()), request.headers()).await,
+    };
+    let Some(who) = who else {
         return if auth.has_password() { signed_out() } else { setup_required() }.into_response();
     };
     match server.of(who) {
@@ -1262,6 +1376,8 @@ pub fn routes() -> Router<Spaces> {
         .route("/two-step/codes", post(new_codes))
         .route("/apps", get(apps).post(add_app))
         .route("/apps/{id}", delete(remove_app))
+        .route("/devices", get(devices))
+        .route("/devices/{id}", delete(drop_device))
 }
 
 #[derive(Deserialize)]
@@ -1334,6 +1450,9 @@ async fn enrol(State(server): State<Spaces>, headers: HeaderMap) -> Result<Json<
 
 #[derive(Deserialize)]
 struct Typed {
+    /// For a new app password: an API token, which opens /api too.
+    #[serde(default)]
+    api: bool,
     #[serde(default)]
     code: String,
     #[serde(default)]
@@ -1366,12 +1485,21 @@ async fn leave_two_step(
     Ok(Json(json!({ "ok": true })))
 }
 
+async fn devices(State(server): State<Spaces>, headers: HeaderMap) -> Result<Json<serde_json::Value>> {
+    Ok(Json(json!({ "devices": server.auth.devices(&headers).await? })))
+}
+
+async fn drop_device(State(server): State<Spaces>, headers: HeaderMap, Path(id): Path<String>) -> Result<Json<serde_json::Value>> {
+    server.auth.drop_device(&headers, id).await?;
+    Ok(Json(json!({ "ok": true })))
+}
+
 async fn apps(State(server): State<Spaces>, headers: HeaderMap) -> Result<Json<serde_json::Value>> {
     Ok(Json(json!({ "apps": server.auth.apps(&headers).await? })))
 }
 
 async fn add_app(State(server): State<Spaces>, headers: HeaderMap, Json(body): Json<Typed>) -> Result<Json<AppPassword>> {
-    Ok(Json(server.auth.add_app(&headers, &body.name).await?))
+    Ok(Json(server.auth.add_app(&headers, &body.name, body.api).await?))
 }
 
 async fn remove_app(State(server): State<Spaces>, headers: HeaderMap, Path(id): Path<i64>) -> Result<Json<serde_json::Value>> {
@@ -1441,6 +1569,10 @@ mod tests {
         assert!(given.setup_code().is_none());
     }
 
+    fn relayed_once() -> HeaderMap {
+        [(header::HeaderName::from_static("x-forwarded-for"), "203.0.113.9".parse().unwrap())].into_iter().collect()
+    }
+
     #[tokio::test]
     async fn callers_are_told_apart_by_network() {
         let peer: IpAddr = "10.0.0.1".parse().unwrap();
@@ -1451,6 +1583,12 @@ mod tests {
         let proxied = Auth::open(Db::open(Path::new(":memory:")).unwrap(), true, 8787, None, front).await.unwrap();
         assert_eq!(proxied.caller(peer, &written), "203.0.113.9".parse::<IpAddr>().unwrap(), "the proxy's own entry is the last");
         assert_eq!(proxied.caller(peer, &HeaderMap::new()), peer);
+        // Behind a CDN and a proxy, the CDN's entry is the last but one: everyone does not share the CDN's wait.
+        let two = Front { proxied: true, hops: 2, ..Front::default() };
+        let two = Auth::open(Db::open(Path::new(":memory:")).unwrap(), true, 8787, None, two).await.unwrap();
+        let chain: HeaderMap = [(header::HeaderName::from_static("x-forwarded-for"), "1.2.3.4, 198.51.100.7, 203.0.113.9".parse().unwrap())].into_iter().collect();
+        assert_eq!(two.caller(peer, &chain), "198.51.100.7".parse::<IpAddr>().unwrap(), "what the caller wrote before it counts for nothing");
+        assert_eq!(two.caller(peer, &relayed_once()), "203.0.113.9".parse::<IpAddr>().unwrap(), "fewer entries than proxies: the first there is");
 
         // One holder of an IPv6 network has all of its addresses, and one wait.
         let bucket_of = |text: &str| bucket(text.parse().unwrap());
@@ -1721,8 +1859,19 @@ mod tests {
         // tries come from elsewhere, so that they do not hold up the holder's.
         let there: IpAddr = [10, 0, 0, 9].into();
         assert_eq!(auth.basic(here, &basic("owner:correct horse")).await.unwrap_err().code, "app_password_required");
-        let app = auth.add_app(&headers, " KOReader ").await.unwrap();
+        let app = auth.add_app(&headers, " KOReader ", false).await.unwrap();
         let password = app.password.clone().unwrap();
+        // An app password is not an API token: it opens no /api call.
+        let bearer = |token: &str| -> HeaderMap { [(header::AUTHORIZATION, format!("Bearer {token}").parse().unwrap())].into_iter().collect() };
+        assert!(auth.bearer(here, &bearer(&password)).await.is_none());
+        let token = auth.add_app(&headers, "Script", true).await.unwrap();
+        let secret = token.password.clone().unwrap();
+        assert!(token.api);
+        assert_eq!(auth.bearer(here, &bearer(&secret)).await.map(|who| who.id), Some(OWNER), "an API token opens /api");
+        assert_eq!(auth.bearer(here, &bearer(&secret)).await.map(|who| who.id), Some(OWNER), "and again, from memory");
+        assert!(auth.bearer(there, &bearer("not-a-token")).await.is_none());
+        auth.remove_app(&headers, token.id).await.unwrap();
+        assert!(auth.bearer(here, &bearer(&secret)).await.is_none(), "revoked, it opens nothing, though it was remembered");
         assert_eq!((app.name.as_str(), password.len()), ("KOReader", APP_LENGTH));
         assert!(auth.apps(&headers).await.unwrap().iter().all(|kept| kept.password.is_none()), "the password is not kept");
         assert_eq!(auth.basic(here, &basic(&format!("Owner:{password}"))).await.unwrap().id, OWNER);

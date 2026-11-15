@@ -46,12 +46,20 @@
     return false;
   }
 
+  // The search the list shows, and a count of searches started. An answer to an older search,
+  // slower than a newer one, is dropped; "load more" asks for more of the search shown, never
+  // of a filter typed since.
+  let shownQuery = '';
+  let searches = 0;
+
   async function loadCatalog(fresh: boolean) {
     const offset = fresh ? 0 : items.length;
     const content = nsfw ? '&content=safe,mixed,nsfw' : '';
-    const page = await get<{ items: CatalogItem[]; total: number }>(
-      `/catalog?state=available&limit=${PAGE}&offset=${offset}&q=${encodeURIComponent(text)}&lang=${encodeURIComponent(lang.trim())}${content}`,
-    );
+    const query = fresh ? `q=${encodeURIComponent(text)}&lang=${encodeURIComponent(lang.trim())}${content}` : shownQuery;
+    const mine = fresh ? ++searches : searches;
+    const page = await get<{ items: CatalogItem[]; total: number }>(`/catalog?state=available&limit=${PAGE}&offset=${offset}&${query}`);
+    if (mine !== searches) return;
+    shownQuery = query;
     items = fresh ? page.items : [...items, ...page.items];
     total = page.total;
   }

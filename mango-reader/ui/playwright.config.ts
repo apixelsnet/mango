@@ -16,6 +16,8 @@ export default defineConfig({
   projects: [
     { name: 'desktop', use: { ...devices['Desktop Chrome'] } },
     { name: 'phone', use: { ...devices['Pixel 7'] } },
+    // The same paths in another engine, at a desktop size.
+    { name: 'firefox', use: { ...devices['Desktop Firefox'] } },
   ],
   webServer: [
     { command: 'node e2e/mock.mjs', url: 'http://127.0.0.1:8787/__writes', reuseExistingServer: !process.env.CI },

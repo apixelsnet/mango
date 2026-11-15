@@ -12,6 +12,7 @@
   import { loadSession, session } from './lib/session.svelte';
   import StorageFull from './lib/StorageFull.svelte';
   import Undo from './lib/Undo.svelte';
+  import { lazy } from './lib/lazy';
   import { loadVersion, version } from './lib/version.svelte';
   import SignIn from './routes/SignIn.svelte';
   import Downloads from './routes/Downloads.svelte';
@@ -24,16 +25,17 @@
   import Title from './routes/Title.svelte';
 
   // Screens not every visit opens are fetched when first opened, so the first paint waits for less.
+  // One that cannot be fetched reloads the page once, then says so (lib/lazy.ts).
   const later = {
-    reader: () => import('./routes/Reader.svelte'),
-    settings: () => import('./routes/Settings.svelte'),
-    extensions: () => import('./routes/Extensions.svelte'),
-    extension: () => import('./routes/Extension.svelte'),
-    import: () => import('./routes/Import.svelte'),
-    migrate: () => import('./routes/Migrate.svelte'),
-    migrateMany: () => import('./routes/MigrateMany.svelte'),
-    stats: () => import('./routes/Stats.svelte'),
-    welcome: () => import('./routes/Welcome.svelte'),
+    reader: lazy(() => import('./routes/Reader.svelte')),
+    settings: lazy(() => import('./routes/Settings.svelte')),
+    extensions: lazy(() => import('./routes/Extensions.svelte')),
+    extension: lazy(() => import('./routes/Extension.svelte')),
+    import: lazy(() => import('./routes/Import.svelte')),
+    migrate: lazy(() => import('./routes/Migrate.svelte')),
+    migrateMany: lazy(() => import('./routes/MigrateMany.svelte')),
+    stats: lazy(() => import('./routes/Stats.svelte')),
+    welcome: lazy(() => import('./routes/Welcome.svelte')),
   };
 
   // `under` lists the first path segments that light the entry up.

@@ -1,13 +1,13 @@
 name: Extension problem
-description: A source works in Mihon but not in Mango, or an extension will not install or update.
+description: A source works in another Mihon-compatible app but not in Mango, or an extension will not install or update.
 title: "[Extension]: "
 labels: ["bug", "area: extensions", "status: needs triage"]
 body:
   - type: markdown
     attributes:
       value: |
-        Mango runs Mihon extensions unchanged, so a source that works in Mihon
-        should work here. If it is broken in Mihon too, the extension's maker is
+        Mango runs Mihon-compatible extensions unchanged, so a source that works in another such app
+        should work here. If it is broken there too, the extension's maker is
         the one to tell: Mango does not make or fix extensions.
 
   - type: checkboxes
@@ -21,12 +21,12 @@ body:
           required: true
 
   - type: dropdown
-    id: mihon
+    id: elsewhere
     attributes:
-      label: Does the same source work in Mihon?
+      label: Does the same source work in another Mihon-compatible app?
       options:
-        - Yes, it works in Mihon
-        - No, it is broken in Mihon too
+        - Yes, it works there
+        - No, it is broken there too
         - I have not tried
     validations:
       required: true

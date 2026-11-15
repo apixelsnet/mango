@@ -259,6 +259,8 @@ pub struct ReaderView {
     /// The chapter read before this one, and the one read after it.
     pub prev: Option<i64>,
     pub next: Option<i64>,
+    /// The chapters read after this one, in turn, as many as may be downloaded ahead.
+    pub ahead: Vec<i64>,
     /// The scanlation group reading follows, empty for uploads that name none. The reader hands
     /// it on to the chapter it opens next, so reading goes back to it after another group filled in.
     pub group: String,
@@ -341,7 +343,17 @@ impl Titles {
 
     /// A title and its chapters, from the database.
     pub async fn get(&self, id: i64) -> Result<TitleView> {
-        self.db.call(move |conn| read_title(conn, id)).await
+        self.db
+            .call(move |conn| {
+                conn.execute("UPDATE manga SET seen_at = ?2 WHERE id = ?1", params![id, now()])?;
+                read_title(conn, id)
+            })
+            .await
+    }
+
+    /// Lets go of titles nobody needs any more; see `prune`. Answers how many went.
+    pub async fn prune(&self) -> Result<usize> {
+        self.db.call(|conn| prune(conn, now())).await
     }
 
     /// Fetches details and chapters from the source, then answers like `get`.
@@ -440,8 +452,10 @@ impl Titles {
                 let list = id_list(&members(conn, manga)?);
                 conn.execute(
                     &format!(
+                        // A chapter read already keeps when it was read: "mark all read" on a title read
+                        // over two years does not make it all read today in the statistics.
                         "UPDATE chapters SET read = ?1, last_page_read = 0, read_at = CASE WHEN ?1 THEN ?2 ELSE read_at END
-                         WHERE manga_id IN ({list}){only}"
+                         WHERE manga_id IN ({list}){only} AND (NOT ?1 OR read = 0)"
                     ),
                     params![read, now()],
                 )?;
@@ -903,12 +917,14 @@ fn chapter_row(r: &Row) -> rusqlite::Result<ChapterView> {
 /// A title already opened keeps its own name and state; a new one is created.
 fn save_listing(conn: &mut Connection, source: i64, mangas: &[WireManga]) -> Result<Vec<Card>> {
     let tx = conn.transaction()?;
+    let seen = now();
     let mut cards: Vec<Card> = Vec::with_capacity(mangas.len());
     {
         let mut upsert = tx.prepare(
-            "INSERT INTO manga (source_id, url, title, artist, author, description, genre, status, thumbnail_url, update_strategy, memo)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)
+            "INSERT INTO manga (source_id, url, title, artist, author, description, genre, status, thumbnail_url, update_strategy, memo, seen_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)
              ON CONFLICT(source_id, url) DO UPDATE SET
+                 seen_at = excluded.seen_at,
                  title = CASE WHEN manga.initialized OR excluded.title = '' OR manga.locked LIKE '%\"title\"%' THEN manga.title ELSE excluded.title END,
                  thumbnail_url = CASE WHEN manga.locked LIKE '%\"cover\"%' THEN manga.thumbnail_url
                                       ELSE COALESCE(excluded.thumbnail_url, manga.thumbnail_url) END,
@@ -928,7 +944,8 @@ fn save_listing(conn: &mut Connection, source: i64, mangas: &[WireManga]) -> Res
                     manga.status,
                     manga.thumbnail_url.as_deref().filter(|t| !t.is_empty()),
                     manga.update_strategy,
-                    manga.memo.to_string()
+                    manga.memo.to_string(),
+                    seen
                 ],
                 |r| {
                     let id: i64 = r.get(0)?;
@@ -1188,12 +1205,23 @@ fn read_reader(conn: &Connection, chapter: i64, group: Option<String>) -> Result
     // filled in for it, else the open chapter's own.
     let group = group.filter(|wanted| listed.iter().any(|c| group_of(c) == wanted)).unwrap_or_else(|| group_of(&view).to_owned());
     let (next, prev) = (follow(&listed, &view, &group, only, &order, true), follow(&listed, &view, &group, only, &order, false));
+    // The chapters reading goes on to, in turn, for downloading ahead: the group's, as the
+    // reader will open them, not every upload listed after this one.
+    let mut ahead = Vec::new();
+    let mut from = next;
+    while let Some(id) = from.filter(|_| ahead.len() < MOST_AHEAD) {
+        ahead.push(id);
+        from = listed.iter().find(|c| c.id == id).and_then(|c| follow(&listed, c, &group, only, &order, true));
+    }
     // The list shows the uploads the title prefers, and the one open.
     let chapters: Vec<ChapterName> =
         listed.into_iter().filter(|c| !c.duplicate || c.id == chapter).map(|c| ChapterName { id: c.id, name: c.name }).collect();
     let marks = page_marks(conn, &format!("p.chapter_id = {chapter}"))?;
-    Ok(ReaderView { chapter: view, manga_id, title, kind, reader_mode, reader_fit, reader_prefs, in_library, prev, next, group, chapters, marks })
+    Ok(ReaderView { chapter: view, manga_id, title, kind, reader_mode, reader_fit, reader_prefs, in_library, prev, next, ahead, group, chapters, marks })
 }
+
+/// The most chapters downloaded ahead of the one open.
+const MOST_AHEAD: usize = 10;
 
 /// The scanlation group of an upload, empty when the source names none.
 fn group_of(chapter: &ChapterView) -> &str {
@@ -1305,6 +1333,16 @@ pub(crate) fn apply_update(
         let first_fetch = known.is_empty();
         // An empty answer for a title that had chapters is a source hiccup, not a deletion.
         if !chapters.is_empty() {
+            tx.execute("DELETE FROM chapters_left WHERE manga_id = ?1 AND left_at < ?2", params![id, now - LEFT_KEPT_FOR])?;
+            // A chapter the source lists under a new address is the one it had under the old:
+            // the row takes the new address and keeps everything hung on it.
+            if !first_fetch {
+                for (url, existing) in readdressed(&tx, id, &known, chapters)? {
+                    tx.execute("UPDATE chapters SET url = ?2 WHERE id = ?1", params![existing, url])?;
+                    known.retain(|_, row| *row != existing);
+                    known.insert(url, existing);
+                }
+            }
             for (order, chapter) in chapters.iter().enumerate().filter(|(_, c)| !c.url.is_empty()) {
                 let number = if chapter.chapter_number >= 0.0 { chapter.chapter_number } else { number_from_name(&chapter.name) };
                 let memo = chapter.memo.to_string();
@@ -1329,14 +1367,21 @@ pub(crate) fn apply_update(
                              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
                             params![id, chapter.url, chapter.name, chapter.date_upload, number, chapter.scanlator, memo, order as i64, seen],
                         )?;
-                        if inserted == 1 && !first_fetch {
-                            added.push(tx.last_insert_rowid());
+                        if inserted == 1 {
+                            let row = tx.last_insert_rowid();
+                            // A chapter the source left out of an earlier answer comes back as it was.
+                            let back = came_back(&tx, id, row, number, &chapter.name, chapter.scanlator.as_deref())?;
+                            if !back && !first_fetch {
+                                added.push(row);
+                            }
                         }
                     }
                 }
             }
-            // What the source no longer lists goes, unless it is on disk.
+            // What the source no longer lists goes, unless it is on disk. What was read of it is
+            // remembered, for a source that leaves chapters out of one answer and not the next.
             for gone in known.values() {
+                remember_left(&tx, id, *gone, now)?;
                 tx.execute("DELETE FROM chapters WHERE id = ?1 AND download_path IS NULL", [gone])?;
             }
         }
@@ -1344,6 +1389,136 @@ pub(crate) fn apply_update(
     }
     tx.commit()?;
     Ok(added)
+}
+
+/// How long a title shown while browsing, and nothing more, is kept: 90 days.
+const UNSEEN_KEPT_FOR: i64 = 90 * 24 * 3600;
+
+/// Deletes the titles that were only ever shown: every title a source lists while browsing
+/// is stored, and nothing else ever removed one. A title goes when it is not in the library,
+/// was not shown or opened for 90 days, and holds nothing of the reader's: no chapter read,
+/// begun, bookmarked or on disk, no history, notes, categories, tracker links, edits, reader
+/// settings or merges. Its chapters go with it. Then SQLite is let tidy its statistics, and
+/// the file is packed when more than a quarter of it is empty. Answers how many titles went.
+pub(crate) fn prune(conn: &mut Connection, now: i64) -> Result<usize> {
+    let gone = conn.execute(
+        "DELETE FROM manga WHERE in_library = 0 AND COALESCE(seen_at, details_at, chapters_at, 0) < ?1
+             AND locked IS NULL AND reader_mode IS NULL AND reader_fit IS NULL AND reader_prefs IS NULL AND scanlators IS NULL
+             AND auto_download = 0 AND merged_into IS NULL
+             AND NOT EXISTS (SELECT 1 FROM manga other WHERE other.merged_into = manga.id)
+             AND NOT EXISTS (SELECT 1 FROM chapters c WHERE c.manga_id = manga.id
+                 AND (c.read OR c.last_page_read > 0 OR c.bookmark OR c.download_path IS NOT NULL
+                      OR EXISTS (SELECT 1 FROM page_marks p WHERE p.chapter_id = c.id)))
+             AND NOT EXISTS (SELECT 1 FROM history h WHERE h.manga_id = manga.id)
+             AND NOT EXISTS (SELECT 1 FROM manga_categories mc WHERE mc.manga_id = manga.id)
+             AND NOT EXISTS (SELECT 1 FROM tracks t WHERE t.manga_id = manga.id)",
+        [now - UNSEEN_KEPT_FOR],
+    )?;
+    conn.execute_batch("PRAGMA optimize;")?;
+    let (pages, free): (i64, i64) = (conn.query_row("PRAGMA page_count", [], |r| r.get(0))?, conn.query_row("PRAGMA freelist_count", [], |r| r.get(0))?);
+    if free > 1000 && free * 4 > pages {
+        conn.execute_batch("VACUUM;")?;
+    }
+    Ok(gone)
+}
+
+/// How long a chapter a source stopped listing is remembered: 90 days.
+const LEFT_KEPT_FOR: i64 = 90 * 24 * 3600;
+
+/// A chapter's place among the chapters a source stopped listing: its number to the
+/// hundredth or, with none, its name; and its scanlation group.
+fn left_key(number: f64, name: &str, scanlator: Option<&str>) -> (String, String) {
+    let at = match crate::migrate::key(number, name) {
+        crate::migrate::Key::Number(n) => format!("n{n}"),
+        crate::migrate::Key::Name(name) => format!("s{name}"),
+    };
+    (at, scanlator.unwrap_or("").trim().to_lowercase())
+}
+
+/// Notes what was read of a chapter about to be deleted because its source no longer lists it.
+/// A chapter kept on disk is not deleted, so not noted.
+fn remember_left(tx: &Connection, manga: i64, chapter: i64, now: i64) -> Result<()> {
+    type Row = (f64, String, Option<String>, i64, i64, i64, Option<i64>, i64);
+    let row: Option<Row> = tx
+        .query_row(
+            "SELECT chapter_number, name, scanlator, read, last_page_read, bookmark, read_at, fetched_at
+             FROM chapters WHERE id = ?1 AND download_path IS NULL",
+            [chapter],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?, r.get(6)?, r.get(7)?)),
+        )
+        .optional()?;
+    let Some((number, name, scanlator, read, page, bookmark, read_at, fetched_at)) = row else { return Ok(()) };
+    let (at, grp) = left_key(number, &name, scanlator.as_deref());
+    tx.execute(
+        "INSERT INTO chapters_left (manga_id, at, grp, read, last_page_read, bookmark, read_at, fetched_at, left_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+        params![manga, at, grp, read, page, bookmark, read_at, fetched_at, now],
+    )?;
+    Ok(())
+}
+
+/// Gives a chapter just added what was read of it when its source listed it before, and
+/// answers whether it had been listed: a chapter that comes back is not news.
+fn came_back(tx: &Connection, manga: i64, chapter: i64, number: f64, name: &str, scanlator: Option<&str>) -> Result<bool> {
+    let (at, grp) = left_key(number, name, scanlator);
+    let found: Option<(i64, i64, i64, i64, Option<i64>, i64)> = tx
+        .query_row(
+            "SELECT rowid, read, last_page_read, bookmark, read_at, fetched_at FROM chapters_left
+             WHERE manga_id = ?1 AND at = ?2 AND grp = ?3 ORDER BY left_at DESC LIMIT 1",
+            params![manga, at, grp],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?)),
+        )
+        .optional()?;
+    let Some((memory, read, page, bookmark, read_at, fetched_at)) = found else { return Ok(false) };
+    tx.execute(
+        "UPDATE chapters SET read = ?2, last_page_read = ?3, bookmark = ?4, read_at = ?5, fetched_at = ?6 WHERE id = ?1",
+        params![chapter, read, page, bookmark, read_at, fetched_at],
+    )?;
+    tx.execute("DELETE FROM chapters_left WHERE rowid = ?1", [memory])?;
+    Ok(true)
+}
+
+/// Chapters a source now lists under new addresses, matched to the rows they had under the
+/// old ones: new address, row. A site that is redesigned, or uploads its chapters again,
+/// changes every address; without this each old chapter not on disk was deleted, with its
+/// read mark, page, bookmark, history and saved pages, and came back as new and unread,
+/// sending word of the whole back catalog.
+///
+/// A chapter that left and one that arrived in the same answer are the same when their
+/// numbers agree to the hundredth (or, with no number, their names), as when a title moves
+/// to another source (`migrate::key`), and their scanlation groups agree. Only one-to-one
+/// matches count: when two chapters that left, or two that arrived, share a number and a
+/// group, none of them is matched, and they go and come as before.
+fn readdressed(tx: &Connection, manga: i64, known: &HashMap<String, i64>, chapters: &[WireChapter]) -> Result<Vec<(String, i64)>> {
+    use crate::migrate::{key, Key};
+    use std::collections::{hash_map::Entry, HashSet};
+    fn one<T>(map: &mut HashMap<(Key, String), Option<T>>, at: (Key, String), value: T) {
+        match map.entry(at) {
+            Entry::Occupied(mut taken) => *taken.get_mut() = None,
+            Entry::Vacant(free) => drop(free.insert(Some(value))),
+        }
+    }
+    let group = |name: Option<&str>| name.unwrap_or("").trim().to_lowercase();
+    let listed: HashSet<&str> = chapters.iter().map(|c| c.url.as_str()).collect();
+
+    let mut arriving: HashMap<(Key, String), Option<&str>> = HashMap::new();
+    for chapter in chapters.iter().filter(|c| !c.url.is_empty() && !known.contains_key(&c.url)) {
+        let number = if chapter.chapter_number >= 0.0 { chapter.chapter_number } else { number_from_name(&chapter.name) };
+        one(&mut arriving, (key(number, &chapter.name), group(chapter.scanlator.as_deref())), chapter.url.as_str());
+    }
+    if arriving.is_empty() {
+        return Ok(Vec::new());
+    }
+    let mut leaving: HashMap<(Key, String), Option<i64>> = HashMap::new();
+    let mut stmt = tx.prepare("SELECT url, id, chapter_number, name, scanlator FROM chapters WHERE manga_id = ?1")?;
+    let rows = stmt.query_map([manga], |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?, r.get::<_, f64>(2)?, r.get::<_, String>(3)?, r.get::<_, Option<String>>(4)?)))?;
+    for row in rows {
+        let (url, id, number, name, scanlator) = row?;
+        if !listed.contains(url.as_str()) {
+            one(&mut leaving, (key(number, &name), group(scanlator.as_deref())), id);
+        }
+    }
+    Ok(arriving.into_iter().filter_map(|(at, url)| Some((url?.to_owned(), leaving.get(&at).copied().flatten()?))).collect())
 }
 
 #[cfg(test)]
@@ -1414,6 +1589,101 @@ mod tests {
     }
 
     #[test]
+    fn new_addresses_keep_what_was_read() {
+        let mut conn = database();
+        let id = save_listing(&mut conn, 7, &[manga("/a", "Alpha")]).unwrap()[0].id;
+        let old = [chapter("/old/3", "Chapter 3", 0), chapter("/old/2", "Chapter 2", 0), chapter("/old/1", "Chapter 1", 0), chapter("/old/x", "Extra", 0)];
+        apply_update(&mut conn, id, &manga("/a", "Alpha"), &old, false, true).unwrap();
+        conn.execute("UPDATE chapters SET read = 1, read_at = 5, bookmark = 1 WHERE manga_id = ?1 AND url = '/old/1'", [id]).unwrap();
+        conn.execute("UPDATE chapters SET last_page_read = 7 WHERE manga_id = ?1 AND url = '/old/2'", [id]).unwrap();
+        let ids: Vec<i64> = read_title(&conn, id).unwrap().chapters.iter().map(|c| c.id).collect();
+
+        // The site moved every chapter; one more came out; the extra is gone for good.
+        let new = [chapter("/new/4", "Chapter 4", 0), chapter("/new/3", "Ch. 3", 0), chapter("/new/2", "Chapter 2", 0), chapter("/new/1", "Chapter 1", 0)];
+        let added = apply_update(&mut conn, id, &manga("/a", "Alpha"), &new, false, true).unwrap();
+        let title = read_title(&conn, id).unwrap();
+        assert_eq!(title.chapters.len(), 4);
+        assert_eq!(added, [title.chapters[0].id], "only chapter 4 is news");
+        let at = |url: &str| -> (i64, bool, bool, i64, i64) {
+            conn.query_row("SELECT id, read, bookmark, last_page_read, COALESCE(read_at, 0) FROM chapters WHERE manga_id = ?1 AND url = ?2", params![id, url], |r| {
+                Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?))
+            })
+            .unwrap()
+        };
+        let (one, read, bookmark, _, read_at) = at("/new/1");
+        assert!(read && bookmark, "read mark and bookmark come along");
+        assert_eq!(read_at, 5);
+        assert!(ids.contains(&one), "the same row, so history and saved pages stay");
+        assert_eq!(at("/new/2").3, 7);
+
+        // Two arrivals with one number and group match nothing: they come as new, as before.
+        let twice = [chapter("/z/4a", "Chapter 4", 0), chapter("/z/4b", "Chapter 4", 0), chapter("/new/3", "Ch. 3", 0), chapter("/new/2", "Chapter 2", 0), chapter("/new/1", "Chapter 1", 0)];
+        let added = apply_update(&mut conn, id, &manga("/a", "Alpha"), &twice, false, true).unwrap();
+        assert_eq!(added.len(), 2);
+    }
+
+    #[test]
+    fn titles_only_ever_shown_are_let_go() {
+        let mut conn = database();
+        let listed = [manga("/plain", "Plain"), manga("/read", "Read"), manga("/kept", "Kept"), manga("/fresh", "Fresh"), manga("/noted", "Noted")];
+        let ids: Vec<i64> = save_listing(&mut conn, 7, &listed).unwrap().iter().map(|c| c.id).collect();
+        let long_ago = now() - UNSEEN_KEPT_FOR - 10;
+        conn.execute("UPDATE manga SET seen_at = ?1 WHERE url != '/fresh'", [long_ago]).unwrap();
+        for id in [ids[1], ids[4]] {
+            apply_update(&mut conn, id, &manga("/x", "X"), &[chapter("/c1", "Chapter 1", 0)], false, true).unwrap();
+        }
+        conn.execute("UPDATE chapters SET last_page_read = 3 WHERE manga_id = ?1", [ids[1]]).unwrap();
+        conn.execute("INSERT INTO page_marks (chapter_id, page, created_at) SELECT id, 0, 1 FROM chapters WHERE manga_id = ?1", [ids[4]]).unwrap();
+        conn.execute("UPDATE manga SET in_library = 1 WHERE id = ?1", [ids[2]]).unwrap();
+        // The chapters' fetch counts as a look: put it back in the past too.
+        conn.execute("UPDATE manga SET seen_at = ?1, chapters_at = ?1 WHERE url != '/fresh'", [long_ago]).unwrap();
+
+        assert_eq!(prune(&mut conn, now()).unwrap(), 1, "only the plain one goes");
+        let left: Vec<String> = conn.prepare("SELECT url FROM manga ORDER BY id").unwrap().query_map([], |r| r.get(0)).unwrap().map(|r| r.unwrap()).collect();
+        assert_eq!(left, ["/read", "/kept", "/fresh", "/noted"]);
+        assert_eq!(prune(&mut conn, now()).unwrap(), 0);
+    }
+
+    #[test]
+    fn chapters_left_out_of_one_answer_come_back_as_they_were() {
+        let mut conn = database();
+        let id = save_listing(&mut conn, 7, &[manga("/a", "Alpha")]).unwrap()[0].id;
+        let all = [chapter("/3", "Chapter 3", 0), chapter("/2", "Chapter 2", 0), chapter("/1", "Chapter 1", 0)];
+        apply_update(&mut conn, id, &manga("/a", "Alpha"), &all, false, true).unwrap();
+        conn.execute("UPDATE chapters SET read = 1, read_at = 5, bookmark = 1 WHERE url = '/1'", []).unwrap();
+        conn.execute("UPDATE chapters SET last_page_read = 4, fetched_at = 9 WHERE url = '/2'", []).unwrap();
+
+        // One answer leaves chapters 1 and 2 out: they go, and are remembered.
+        apply_update(&mut conn, id, &manga("/a", "Alpha"), &all[..1], false, true).unwrap();
+        assert_eq!(read_title(&conn, id).unwrap().chapters.len(), 1);
+        let left: i64 = conn.query_row("SELECT COUNT(*) FROM chapters_left WHERE manga_id = ?1", [id], |r| r.get(0)).unwrap();
+        assert_eq!(left, 2);
+
+        // The next lists them again, with one that is new: only that one is news.
+        let more = [chapter("/4", "Chapter 4", 0), chapter("/3", "Chapter 3", 0), chapter("/2", "Chapter 2", 0), chapter("/1", "Chapter 1", 0)];
+        let added = apply_update(&mut conn, id, &manga("/a", "Alpha"), &more, false, true).unwrap();
+        let title = read_title(&conn, id).unwrap();
+        assert_eq!(added, [title.chapters[0].id], "only chapter 4 is news");
+        let at = |url: &str| -> (bool, bool, i64, i64, i64) {
+            conn.query_row("SELECT read, bookmark, last_page_read, COALESCE(read_at, 0), fetched_at FROM chapters WHERE url = ?1", [url], |r| {
+                Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?))
+            })
+            .unwrap()
+        };
+        assert!(at("/1").0 && at("/1").1, "read mark and bookmark are back");
+        assert_eq!(at("/1").3, 5);
+        assert_eq!((at("/2").2, at("/2").4), (4, 9), "the page reached and the first-seen time too");
+        let left: i64 = conn.query_row("SELECT COUNT(*) FROM chapters_left", [], |r| r.get(0)).unwrap();
+        assert_eq!(left, 0, "each memory is used once");
+
+        // Memories older than 90 days are let go.
+        conn.execute("INSERT INTO chapters_left VALUES (?1, 'n500', '', 1, 0, 0, NULL, 0, 0)", [id]).unwrap();
+        apply_update(&mut conn, id, &manga("/a", "Alpha"), &more, false, true).unwrap();
+        let left: i64 = conn.query_row("SELECT COUNT(*) FROM chapters_left", [], |r| r.get(0)).unwrap();
+        assert_eq!(left, 0);
+    }
+
+    #[test]
     fn reader_stays_with_the_group() {
         let mut conn = database();
         let id = save_listing(&mut conn, 7, &[manga("/a", "Alpha")]).unwrap()[0].id;
@@ -1436,6 +1706,8 @@ mod tests {
         assert_eq!(ends("/3a", Some("B")), (Some(by_url("/2b")), Some(by_url("/4b"))), "after filling in, back to the group read before");
         assert_eq!(ends("/3a", Some("Nobody")).1, Some(by_url("/4a")), "a group the title does not have is not followed");
         assert_eq!(ends("/4b", None), (Some(by_url("/3a")), None));
+        let ahead = read_reader(&conn, by_url("/1b"), None).unwrap().ahead;
+        assert_eq!(ahead, [by_url("/2b"), by_url("/3a"), by_url("/4b")], "downloading ahead follows B, with A's chapter 3 filling in");
 
         // With one upload per chapter, an upload the title hides is still followed by its own group.
         conn.execute("UPDATE manga SET dedupe = 1, scanlators = '[\"A\"]' WHERE id = ?1", [id]).unwrap();

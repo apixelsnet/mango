@@ -11,4 +11,5 @@ accepted = [
     "MPL-2.0",
     "CDLA-Permissive-2.0",
     "IJG",
+    "Zlib",
 ]

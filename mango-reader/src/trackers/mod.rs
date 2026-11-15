@@ -1,7 +1,7 @@
 //! Trackers: sites that keep a reading list. Mango links a title to its entry on one
 //! and sends the chapter reached, the status and the score.
 //!
-//! Tracker ids, statuses and scores are stored as Mihon stores them, so links come in
+//! Tracker ids, statuses and scores are stored as the backup format carries them, so links come in
 //! with a backup and go out with one unchanged. Tokens live in the `state` table, which
 //! the settings API never shows. A password is used once to sign in and is not kept.
 
@@ -42,7 +42,7 @@ pub enum Kind {
 impl Kind {
     const ALL: [Kind; 4] = [Kind::AniList, Kind::MyAnimeList, Kind::Kitsu, Kind::MangaUpdates];
 
-    /// The tracker's id in Mihon, which backups carry.
+    /// The tracker's id in the backup format.
     pub fn id(self) -> i64 {
         match self {
             Kind::MyAnimeList => 1,
@@ -74,7 +74,7 @@ impl Kind {
         }
     }
 
-    /// The statuses in the order shown, by Mihon's numbers. On MangaUpdates they are its lists.
+    /// The statuses in the order shown, by the backup format's numbers. On MangaUpdates they are its lists.
     fn statuses(self) -> &'static [(i32, &'static str)] {
         match self {
             Kind::AniList => &[(1, "Reading"), (2, "Completed"), (3, "Paused"), (4, "Dropped"), (5, "Planning"), (6, "Rereading")],
@@ -237,6 +237,20 @@ pub struct View {
 }
 
 // ---------- talking to a tracker ----------
+
+/// Where tests send every tracker's calls instead: a stand-in on this machine (`wire.rs`).
+#[cfg(test)]
+static STAND_IN: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
+
+/// A tracker's address. In tests, the same path at the stand-in.
+fn at(address: &str) -> String {
+    #[cfg(test)]
+    if let Some(base) = STAND_IN.lock().unwrap_or_else(|e| e.into_inner()).clone() {
+        let path = address.splitn(4, '/').nth(3).map(|rest| format!("/{rest}")).unwrap_or_default();
+        return format!("{base}{path}");
+    }
+    address.to_owned()
+}
 
 fn tracker_error(message: String) -> AppError {
     AppError::new(502, "tracker_error", message)
@@ -817,6 +831,9 @@ impl Trackers {
 }
 
 #[cfg(test)]
+mod wire;
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use serde_json::json;
@@ -850,7 +867,7 @@ mod tests {
     }
 
     #[test]
-    fn trackers_keep_mihons_numbers() {
+    fn trackers_keep_the_backup_formats_numbers() {
         for kind in Kind::ALL {
             assert_eq!(Kind::from_id(kind.id()), Some(kind));
             for status in [kind.reading(), kind.completed(), kind.planned()] {

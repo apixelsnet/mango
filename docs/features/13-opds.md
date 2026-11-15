@@ -62,3 +62,7 @@ Checked by unit tests (the sampling, both directions) and end to end on Linux an
 - `/opds` and `/opds/` are the catalog itself, no longer a redirect to it: KOReader leaves the name and password out when it follows a redirect, and `/opds/` was answered with the web page before.
 
 Checked in the emulator of KOReader 2026.07.1, driven on Linux: the catalog opened at `/opds/` with an app password, a chapter downloaded as "Sample Series - Arrival.cbz", a push moved the chapter in Mango, a place read on in Mango was pulled back into KOReader, matching by file name moved it as well, and the last page marked the chapter read.
+
+## Another site's link (2026-11-14)
+
+The feed takes a browser's session as well as a name and password. A link or a picture on another site that pointed at a page in the feed would have come with the session, and reading a page through the feed moves the place reached. A call that carries no name and password, and that the browser labels as coming from another site, is now refused (`opds.rs`, `sign_in`). Reading apps send a name and password, and no such label.

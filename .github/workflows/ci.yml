@@ -1,8 +1,9 @@
 name: CI
 
 # Checks every push to the main branch and every pull request: the UI type-checks
-# and builds, the core's tests pass with that UI built in, the UI's main paths work
-# in Chromium against a stand-in API, and the desktop shell compiles.
+# and builds, the core's tests and lints pass with that UI built in, the UI's main paths
+# work in Chromium and Firefox against a stand-in API, the extension host compiles, the
+# desktop shell compiles, and no dependency has a known serious advisory.
 
 on:
   push:
@@ -52,6 +53,11 @@ jobs:
         working-directory: mango-reader
         run: cargo test --release --locked
 
+      # Long types are the code's style; every other lint is an error.
+      - name: Lint the core
+        working-directory: mango-reader
+        run: cargo clippy --release --locked --all-targets -- -D warnings -A clippy::type_complexity
+
   browser:
     name: UI in a browser
     runs-on: ubuntu-24.04
@@ -71,7 +77,7 @@ jobs:
         working-directory: mango-reader/ui
         run: |
           npm ci --no-audit --no-fund
-          npx playwright install --with-deps chromium
+          npx playwright install --with-deps chromium firefox
 
       # The built UI against a stand-in API (e2e/mock.mjs), at a desktop and a phone size.
       - name: Smoke test
@@ -85,6 +91,47 @@ jobs:
           name: playwright-traces
           path: mango-reader/ui/test-results/
           retention-days: 7
+
+  host:
+    name: Extension host
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          # Nothing after the checkout pushes with git; the token is not left in the folder.
+          persist-credentials: false
+
+      # The host's jars, as the release image builds them: the runtime at its pinned version
+      # and hash, the host compiled against it.
+      - name: Build the host
+        run: docker buildx build --target jars --output type=local,dest=/tmp/jars .
+
+  dependencies:
+    name: Dependency advisories
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          # Nothing after the checkout pushes with git; the token is not left in the folder.
+          persist-credentials: false
+
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 22
+
+      - name: The UI's packages
+        working-directory: mango-reader/ui
+        run: npm audit --audit-level=high
+
+      - name: The core's and the shell's crates
+        run: |
+          cargo install cargo-audit --locked
+          # RUSTSEC-2023-0071: rsa only checks extensions' signatures, with public keys; the
+          # timing attack is on decryption with a private key, which Mango never does.
+          # RUSTSEC-2026-0387: crypto-bigint comes with p256, which signs Web Push messages;
+          # no release of p256 takes the fixed version yet.
+          cargo audit --file mango-reader/Cargo.lock --ignore RUSTSEC-2023-0071 --ignore RUSTSEC-2026-0387
+          cargo audit --file mango-desktop/Cargo.lock
 
   shell:
     name: Desktop shell

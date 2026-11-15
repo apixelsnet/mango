@@ -49,6 +49,11 @@ const PROGRESSIVE_MAX_PIXELS: u32 = 16_000_000;
 /// The box a cover's small copy fits in, for grids and lists: twice the widest card, so
 /// it stays sharp on a phone's screen.
 const SMALL_BOX: (u32, u32) = (360, 540);
+/// The box a page fits in for a reader saving data: a phone's width, twice over for its
+/// sharp screen, and any length, as a webtoon strip runs long.
+const SAVER_BOX: (u32, u32) = (1080, 65_535);
+/// How fine a lighter page is: lower is smaller and blurrier.
+const SAVER_QUALITY: u8 = 70;
 /// A PNG or WebP bigger than this is not decoded whole for a small copy.
 const SMALL_MAX_PIXELS: u64 = 40_000_000;
 /// Covers are shrunk one at a time in the whole process, so a page of them cannot add up.
@@ -285,6 +290,14 @@ impl Images {
         self.covers.join(format!("{manga}-custom-{mark}"))
     }
 
+    /// Copies a title's cover set by hand to another title, for a title moved to another
+    /// source. The one there, if any, stays until the other's is taken up.
+    pub async fn copy_cover(&self, from: i64, to: i64, mark: &str) -> Result<()> {
+        let (source, target) = (self.custom_cover(from, mark), self.custom_cover(to, mark));
+        tokio::task::spawn_blocking(move || fs::copy(source, target)).await.map_err(|e| AppError::internal(e.to_string()))?.map_err(|e| AppError::internal(format!("Could not copy the cover: {e}")))?;
+        Ok(())
+    }
+
     /// Keeps a cover given by hand, made smaller when it is a big JPEG, in place of any
     /// given before. Answers the mark that names it, for `Titles::set_cover`.
     pub async fn save_cover(&self, manga: i64, bytes: Vec<u8>) -> Result<String> {
@@ -334,6 +347,41 @@ impl Images {
             })
             .await?;
         Ok(count)
+    }
+
+    /// Lets go of what is kept of a chapter's pages: the pictures, the list of them and their
+    /// number. They are fetched again from the source the next time they are wanted, for a
+    /// source that fixed a page. A downloaded or local chapter is its file, and is refused.
+    pub async fn forget_pages(&self, chapter: i64) -> Result<()> {
+        if !matches!(self.kept(chapter).await?, Kept::Remote) {
+            return Err(AppError::new(409, "kept_on_disk", "This chapter is read from a file on disk. Delete the saved file to fetch its pages again."));
+        }
+        self.lists.lock().unwrap_or_else(|e| e.into_inner()).remove(&chapter);
+        let dir = self.cache.join("pages").join(chapter.to_string());
+        let _ = tokio::task::spawn_blocking(move || fs::remove_dir_all(dir)).await;
+        self.db
+            .call(move |conn| {
+                conn.execute("UPDATE chapters SET page_count = NULL WHERE id = ?1", [chapter])?;
+                Ok(())
+            })
+            .await
+    }
+
+    /// A page made lighter, for a reader who asked to save data, kept beside the page. The
+    /// page itself when it would not come out smaller.
+    pub async fn lighter_page(&self, chapter: i64, index: i64) -> Result<Image> {
+        let file = self.cache.join("pages").join(chapter.to_string()).join(format!("{index}.light"));
+        if let Some(bytes) = read(file.clone()).await {
+            return Image::checked(bytes);
+        }
+        let page = self.page(chapter, index).await?;
+        let bytes = page.bytes.clone();
+        let Some(made) = tokio::task::spawn_blocking(move || lighter(&bytes)).await.ok().flatten() else {
+            return Ok(page);
+        };
+        let made = Bytes::from(made);
+        self.stash(file, made.clone()).await;
+        Ok(Image { bytes: made, content_type: "image/jpeg" })
     }
 
     pub async fn page(&self, chapter: i64, index: i64) -> Result<Image> {
@@ -512,7 +560,7 @@ fn shrink(bytes: Vec<u8>) -> Vec<u8> {
             return None;
         }
         // The browser turns the picture by its EXIF orientation; a new file would lose it.
-        if decoder.exif_data().is_some_and(|exif| turned(exif)) {
+        if decoder.exif_data().is_some_and(turned) {
             return None;
         }
         let (width, height) = decoder.scale(COVER_BOX.0, COVER_BOX.1).ok()?;
@@ -562,9 +610,9 @@ fn small_copy(cover: &Path) -> PathBuf {
 fn small(bytes: &[u8]) -> Option<Vec<u8>> {
     let _one = SHRINKING.lock().unwrap_or_else(|e| e.into_inner());
     let (pixels, width, height, channels) = match sniff(bytes)? {
-        "image/jpeg" => decode_jpeg(bytes)?,
-        "image/png" => decode_png(bytes)?,
-        "image/webp" => decode_webp(bytes)?,
+        "image/jpeg" => decode_jpeg(bytes, SMALL_BOX, true)?,
+        "image/png" => decode_png(bytes, SMALL_BOX, true)?,
+        "image/webp" => decode_webp(bytes, SMALL_BOX, true)?,
         _ => return None,
     };
     let to = fit((width, height), SMALL_BOX)?;
@@ -576,6 +624,29 @@ fn small(bytes: &[u8]) -> Option<Vec<u8>> {
     let mut out = Vec::new();
     jpeg_encoder::Encoder::new(&mut out, 82).encode(&pixels, to.0 as u16, to.1 as u16, color).ok()?;
     (out.len() < bytes.len()).then_some(out)
+}
+
+/// A page made lighter for a reader saving data: no wider than `SAVER_BOX` allows, as a JPEG
+/// of middling quality. None when that comes out no smaller, or the page is not one of the
+/// kinds Mango decodes (an animation, a picture that is see-through).
+fn lighter(bytes: &[u8]) -> Option<Vec<u8>> {
+    let _one = SHRINKING.lock().unwrap_or_else(|e| e.into_inner());
+    let (pixels, width, height, channels) = match sniff(bytes)? {
+        "image/jpeg" => decode_jpeg(bytes, SAVER_BOX, false)?,
+        "image/png" => decode_png(bytes, SAVER_BOX, false)?,
+        "image/webp" => decode_webp(bytes, SAVER_BOX, false)?,
+        _ => return None,
+    };
+    if pixels.len() < width as usize * height as usize * channels {
+        return None;
+    }
+    let to = fit((width, height), SAVER_BOX).unwrap_or((width, height));
+    let pixels = if to == (width, height) { pixels } else { resize(&pixels, (width, height), channels, to) };
+    let color = if channels == 1 { jpeg_encoder::ColorType::Luma } else { jpeg_encoder::ColorType::Rgb };
+    let mut out = Vec::new();
+    jpeg_encoder::Encoder::new(&mut out, SAVER_QUALITY).encode(&pixels, u16::try_from(to.0).ok()?, u16::try_from(to.1).ok()?, color).ok()?;
+    // Worth it only when it saves a tenth or more.
+    (out.len() * 10 < bytes.len() * 9).then_some(out)
 }
 
 /// The size a picture of `size` comes out at inside `bounds`, keeping its shape. None when it fits already.
@@ -591,18 +662,20 @@ fn fit(size: (u32, u32), bounds: (u32, u32)) -> Option<(u32, u32)> {
 /// that still covers the small copy's box.
 type Decoded = (Vec<u8>, u32, u32, usize);
 
-fn decode_jpeg(bytes: &[u8]) -> Option<Decoded> {
+fn decode_jpeg(bytes: &[u8], bounds: (u32, u32), shrinks: bool) -> Option<Decoded> {
     let mut decoder = jpeg_decoder::Decoder::new(bytes);
     decoder.read_info().ok()?;
     let info = decoder.info()?;
     if info.coding_process == jpeg_decoder::CodingProcess::DctProgressive && u32::from(info.width) * u32::from(info.height) > PROGRESSIVE_MAX_PIXELS {
         return None;
     }
-    if decoder.exif_data().is_some_and(|exif| turned(exif)) {
+    if decoder.exif_data().is_some_and(turned) {
         return None;
     }
-    fit((info.width.into(), info.height.into()), SMALL_BOX)?;
-    let (width, height) = decoder.scale(SMALL_BOX.0 as u16, SMALL_BOX.1 as u16).ok()?;
+    if shrinks {
+        fit((info.width.into(), info.height.into()), bounds)?;
+    }
+    let (width, height) = decoder.scale(bounds.0.min(65_535) as u16, bounds.1.min(65_535) as u16).ok()?;
     let pixels = decoder.decode().ok()?;
     let channels = match decoder.info()?.pixel_format {
         jpeg_decoder::PixelFormat::RGB24 => 3,
@@ -612,7 +685,7 @@ fn decode_jpeg(bytes: &[u8]) -> Option<Decoded> {
     Some((pixels, width.into(), height.into(), channels))
 }
 
-fn decode_png(bytes: &[u8]) -> Option<Decoded> {
+fn decode_png(bytes: &[u8], bounds: (u32, u32), shrinks: bool) -> Option<Decoded> {
     let mut decoder = png::Decoder::new(bytes);
     decoder.set_transformations(png::Transformations::EXPAND | png::Transformations::STRIP_16);
     let mut reader = decoder.read_info().ok()?;
@@ -620,7 +693,9 @@ fn decode_png(bytes: &[u8]) -> Option<Decoded> {
     if u64::from(width) * u64::from(height) > SMALL_MAX_PIXELS {
         return None;
     }
-    fit((width, height), SMALL_BOX)?;
+    if shrinks {
+        fit((width, height), bounds)?;
+    }
     let mut pixels = vec![0; reader.output_buffer_size()];
     let frame = reader.next_frame(&mut pixels).ok()?;
     pixels.truncate(frame.buffer_size());
@@ -635,7 +710,7 @@ fn decode_png(bytes: &[u8]) -> Option<Decoded> {
     Some((pixels, width, height, channels))
 }
 
-fn decode_webp(bytes: &[u8]) -> Option<Decoded> {
+fn decode_webp(bytes: &[u8], bounds: (u32, u32), shrinks: bool) -> Option<Decoded> {
     let mut decoder = image_webp::WebPDecoder::new(std::io::Cursor::new(bytes)).ok()?;
     if decoder.is_animated() {
         return None;
@@ -644,7 +719,9 @@ fn decode_webp(bytes: &[u8]) -> Option<Decoded> {
     if u64::from(width) * u64::from(height) > SMALL_MAX_PIXELS {
         return None;
     }
-    fit((width, height), SMALL_BOX)?;
+    if shrinks {
+        fit((width, height), bounds)?;
+    }
     let mut pixels = vec![0; decoder.output_buffer_size()?];
     decoder.read_image(&mut pixels).ok()?;
     let (pixels, channels) = opaque(pixels, if decoder.has_alpha() { 4 } else { 3 })?;
@@ -757,9 +834,8 @@ async fn write(path: PathBuf, bytes: Bytes) {
         }
         let part = path.with_extension(format!("part{:08x}", fnv(&format!("{:?}", Instant::now()))));
         fs::write(&part, bytes)?;
-        fs::rename(&part, &path).or_else(|e| {
+        fs::rename(&part, &path).inspect_err(|_| {
             let _ = fs::remove_file(&part);
-            Err(e)
         })
     })
     .await;
@@ -886,6 +962,24 @@ mod tests {
         let clear = vec![0u8; 800 * 1200 * 4];
         assert_eq!(small(&png(&clear, 800, 1200, png::ColorType::Rgba)), None, "a see-through one is left alone");
         assert_eq!(small(b"GIF89a not decoded here"), None);
+    }
+
+    #[test]
+    fn lighter_pages_are_narrower_and_smaller() {
+        let jpeg = |width: u16, height: u16| {
+            let pixels: Vec<u8> = (0..u32::from(width) * u32::from(height)).flat_map(|i| [(i % 251) as u8, (i % 13) as u8 * 19, 90]).collect();
+            let mut out = Vec::new();
+            jpeg_encoder::Encoder::new(&mut out, 95).encode(&pixels, width, height, jpeg_encoder::ColorType::Rgb).unwrap();
+            out
+        };
+        let big = jpeg(2000, 3000);
+        let light = lighter(&big).expect("a big page comes out lighter");
+        assert!(light.len() < big.len());
+        let mut decoder = jpeg_decoder::Decoder::new(light.as_slice());
+        decoder.read_info().unwrap();
+        let info = decoder.info().unwrap();
+        assert_eq!((info.width, info.height), (1080, 1620), "as wide as the box, the same shape");
+        assert_eq!(lighter(b"not a picture"), None);
     }
 
     #[test]

@@ -16,7 +16,7 @@ use crate::{
     import::{self, Importer, Preview},
     library::{self, Bulk, Category, LibraryView, Stats},
     migrate::{self, Comparison, Outcome},
-    notify::Notifier,
+    notify::{self, Notifier},
     opds, push, settings,
     spaces::Spaces,
     store::{CatalogItem, CatalogQuery, Installed, StoreInfo, Stores},
@@ -120,6 +120,7 @@ pub fn router(state: Spaces) -> Router {
         .route("/manga/{id}/chapters", put(mark_chapters))
         .route("/chapters/{id}", get(reader))
         .route("/chapters/{id}/pages", get(pages))
+        .route("/chapters/{id}/pages/reload", post(reload_pages))
         .route("/chapters/{id}/pages/{index}", get(page))
         .route("/chapters/{id}/progress", put(progress))
         .route("/chapters/{id}/marks/{page}", put(mark_page).delete(unmark_page))
@@ -133,8 +134,9 @@ pub fn router(state: Spaces) -> Router {
         .route("/history/{chapter}", delete(forget))
         .route("/updates", get(updates))
         .route("/updates/fresh", get(fresh_updates))
-        .route("/updates/run", post(run_updates))
+        .route("/updates/run", post(run_updates).delete(stop_updates))
         .route("/notify/test", post(test_notify))
+        .route("/notify/header", get(notify_header).put(set_notify_header))
         .route("/push", get(push_status).put(push_add).delete(push_remove))
         .route("/push/test", post(push_test))
         .route("/downloads", get(downloads).post(queue_downloads).delete(clear_downloads))
@@ -300,7 +302,7 @@ async fn same_site_only(request: Request, next: Next) -> Response {
 /// Whether a request was sent by a page that is not Mango's own. Browsers label such
 /// requests, but only where the address is HTTPS or this machine's own. Without the
 /// label, what tells is the page the request says it comes from.
-fn from_elsewhere(headers: &HeaderMap) -> bool {
+pub(crate) fn from_elsewhere(headers: &HeaderMap) -> bool {
     let header = |name: &str| headers.get(name).and_then(|value| value.to_str().ok());
     match header("sec-fetch-site") {
         Some(site) => site != "same-origin" && site != "none",
@@ -320,6 +322,11 @@ fn done() -> Json<Value> {
     Json(json!({ "ok": true }))
 }
 
+/// A picture, kept by the browser as `cache` says. Each account numbers its titles and
+/// chapters from 1, so `chapters/5/pages/0` is another page for another account: the
+/// reader asks for pages with its account's number in the address (`?a=`), so a browser
+/// keeps them apart. Not `Vary: Cookie`, which would throw away every page kept whenever a
+/// cookie in front of Mango changes. A cover's address carries a mark of its picture already.
 fn picture(image: Image, cache: &'static str) -> Response {
     let headers =
         [(header::CONTENT_TYPE, image.content_type), (header::CACHE_CONTROL, cache), (header::X_CONTENT_TYPE_OPTIONS, "nosniff")];
@@ -801,8 +808,24 @@ async fn pages(Me(app): Me, Path(id): Path<i64>) -> Result<Json<Value>> {
     Ok(Json(json!({ "count": app.images.page_count(id).await? })))
 }
 
-async fn page(Me(app): Me, Path((id, index)): Path<(i64, i64)>) -> Result<Response> {
-    Ok(picture(app.images.page(id, index).await?, FOREVER))
+/// Fetches a chapter's pages again from its source, for a source that fixed one. Answers
+/// how many there are now. The browser then asks for each again, bypassing what it keeps.
+async fn reload_pages(Me(app): Me, Path(id): Path<i64>) -> Result<Json<Value>> {
+    app.images.forget_pages(id).await?;
+    Ok(Json(json!({ "count": app.images.page_count(id).await? })))
+}
+
+#[derive(Deserialize)]
+struct PageWanted {
+    /// `light=1`, from a reader saving data: the page comes smaller, as a JPEG.
+    #[serde(default)]
+    light: Option<String>,
+}
+
+async fn page(Me(app): Me, Path((id, index)): Path<(i64, i64)>, Query(wanted): Query<PageWanted>) -> Result<Response> {
+    let light = wanted.light.is_some_and(|value| matches!(value.as_str(), "1" | "true"));
+    let image = if light { app.images.lighter_page(id, index).await? } else { app.images.page(id, index).await? };
+    Ok(picture(image, FOREVER))
 }
 
 #[derive(Deserialize)]
@@ -844,7 +867,37 @@ async fn run_updates(Me(app): Me) -> Json<Status> {
     Json(app.updates.start())
 }
 
+/// Stops the library update going on. What it found so far stays.
+async fn stop_updates(Me(app): Me) -> Json<Status> {
+    Json(app.updates.stop())
+}
+
 /// Sends a message to the address set for notifications, so it can be tried.
+/// Whether a header goes with notifications, and its name. Its value is never sent back.
+async fn notify_header(Me(app): Me) -> Result<Json<Value>> {
+    let set = app.db.call(|conn| Ok(settings::get::<String>(conn, notify::HEADER))).await?;
+    let name = set.as_deref().and_then(|text| text.split_once(':')).map(|(name, _)| name.trim().to_owned());
+    Ok(Json(json!({ "name": name })))
+}
+
+#[derive(Deserialize)]
+struct NotifyHeader {
+    header: String,
+}
+
+/// Sets the header that goes with notifications, `Name: value`; empty takes it away.
+async fn set_notify_header(Me(app): Me, Json(body): Json<NotifyHeader>) -> Result<Json<Value>> {
+    let checked = notify::header(&body.header)?;
+    let name = checked.as_ref().map(|(name, _)| name.clone());
+    app.db
+        .call(move |conn| match checked {
+            Some((name, value)) => settings::set(conn, notify::HEADER, &json!(format!("{name}: {value}"))),
+            None => settings::forget(conn, notify::HEADER),
+        })
+        .await?;
+    Ok(Json(json!({ "name": name })))
+}
+
 async fn test_notify(Me(app): Me) -> Result<Json<Value>> {
     app.notifier.test().await?;
     Ok(done())
@@ -1003,17 +1056,26 @@ async fn migrate_title(
     if id != to && target.chapters_at.is_none() {
         app.titles.fetch(to, !target.initialized, true).await?;
     }
+    // A cover set by hand is a file of the old title's: the new one gets a copy before it is named there.
+    let custom = app.db.call(move |conn| Ok(rusqlite::OptionalExtension::optional(conn.query_row("SELECT thumbnail_url FROM manga WHERE id = ?1", [id], |r| r.get::<_, Option<String>>(0)))?.flatten())).await?;
+    if let Some(mark) = custom.as_deref().and_then(|url| url.strip_prefix(crate::titles::CUSTOM_COVER)).filter(|_| id != to) {
+        // A cover file that is gone does not stop the move; the new title shows it gone too.
+        if let Err(e) = app.images.copy_cover(id, to, mark).await {
+            tracing::warn!("moving title {id}: its cover set by hand was not copied: {}", e.message);
+        }
+    }
     Ok(Json(app.db.call(move |conn| migrate::apply(conn, id, to, &options)).await?))
 }
 
 // ---------- import ----------
 
-/// What a Mihon or Suwayomi backup holds. The body is the `.tachibk` file itself.
+/// What a backup from a Mihon-compatible app holds. The body is the `.tachibk` file itself.
 async fn preview_import(Me(app): Me, file: Bytes) -> Result<Json<Preview>> {
     Ok(Json(app.importer.preview(file.to_vec()).await?))
 }
 
-/// Starts importing the backup in the body. Answers at once; `GET /import` follows it.
+/// Starts importing the backup in the body or, with no body, the one just previewed.
+/// Answers at once; `GET /import` follows it.
 async fn start_import(Me(app): Me, file: Bytes) -> Result<Json<import::Status>> {
     Ok(Json(app.importer.start(file.to_vec())?))
 }
@@ -1022,9 +1084,9 @@ async fn import_status(Me(app): Me) -> Json<import::Status> {
     Json(app.importer.status())
 }
 
-/// The library as a `.tachibk` that Mihon, Suwayomi and Mango itself read.
+/// The library as a `.tachibk`, which Mihon-compatible apps and Mango itself read.
 async fn export_library(Me(app): Me) -> Result<Response> {
-    let file = app.db.call(|conn| export::write(conn)).await?;
+    let file = app.db.read(export::write).await?;
     let headers = [
         (header::CONTENT_TYPE, "application/octet-stream".to_owned()),
         (header::CONTENT_DISPOSITION, format!("attachment; filename=\"{}\"", export::file_name())),
@@ -1149,8 +1211,16 @@ async fn library(Me(app): Me) -> Result<Json<LibraryView>> {
     Ok(Json(app.db.call(|conn| library::read(conn)).await?))
 }
 
-async fn stats(Me(app): Me) -> Result<Json<Stats>> {
-    Ok(Json(app.db.call(|conn| library::stats(conn)).await?))
+#[derive(Deserialize)]
+struct Clock {
+    /// Minutes the reader's clock is ahead of UTC.
+    #[serde(default)]
+    tz: i64,
+}
+
+/// What the reading adds up to, with days as the reader's clock has them.
+async fn stats(Me(app): Me, Query(clock): Query<Clock>) -> Result<Json<Stats>> {
+    Ok(Json(app.db.read(move |conn| library::stats(conn, clock.tz)).await?))
 }
 
 #[derive(Deserialize)]

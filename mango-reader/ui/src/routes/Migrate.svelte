@@ -3,6 +3,8 @@
   import Cover from '../lib/Cover.svelte';
   import Icon from '../lib/Icon.svelte';
   import Notice from '../lib/Notice.svelte';
+  import { keep, recall } from '../lib/keep';
+  import { BY_HAND, MOVED } from '../lib/movingMany';
   import { go } from '../lib/router.svelte';
   import { langName } from '../lib/util';
 
@@ -38,7 +40,13 @@
     error = null;
     try {
       await send('POST', `/manga/${from}/migrate/${to}`, options);
-      go(`/title/${to}`, true);
+      // Picked by hand from the screen that moves many: back there, with this one marked moved.
+      const many = recall<{ from: number; back: string }>(BY_HAND);
+      if (many?.from === from) {
+        keep(BY_HAND, null);
+        keep(MOVED, [...(recall<number[]>(MOVED) ?? []), from]);
+        go(many.back, true);
+      } else go(`/title/${to}`, true);
     } catch (e) {
       error = message(e);
       busy = false;

@@ -19,14 +19,20 @@ const SHELL_MOST = 60;
 self.addEventListener('install', () => self.skipWaiting());
 self.addEventListener('activate', (event) => event.waitUntil(self.clients.claim()));
 
-/** A kept copy of this request, in any account's cache. */
+/** Where the page notes whose kept chapters are this browser's now (lib/offline.ts). */
+const WHO = 'mango-who';
+
+/**
+ * A kept copy of this request, from the cache of the account signed in here, and no other.
+ * Each account numbers its chapters from 1, so another account's chapter 5 is another chapter.
+ * The account is read from a cache, not kept in a variable: the browser stops this worker
+ * whenever it likes, and a new one would not know it.
+ */
 async function kept(request) {
-  for (const name of await caches.keys()) {
-    if (!name.startsWith(KEPT)) continue;
-    const found = await (await caches.open(name)).match(request, { ignoreSearch: true });
-    if (found) return found;
-  }
-  return undefined;
+  const who = await (await caches.open(WHO)).match(new URL('who', self.registration.scope));
+  const name = who ? await who.text() : '';
+  if (!name.startsWith(KEPT) || !(await caches.has(name))) return undefined;
+  return (await caches.open(name)).match(request, { ignoreSearch: true });
 }
 
 async function shell(request) {
@@ -59,6 +65,15 @@ async function networkFirst(request) {
 }
 
 async function keptFirst(request) {
+  // Asked to fetch a page again ("Fetch pages again"): from Mango, and a kept copy takes the new one.
+  if (request.cache === 'reload') {
+    const answer = await fetch(request);
+    if (answer.ok && (await kept(request))) {
+      const who = await (await caches.open(WHO)).match(new URL('who', self.registration.scope));
+      if (who) await (await caches.open(await who.text())).put(request, answer.clone());
+    }
+    return answer;
+  }
   return (await kept(request)) ?? fetch(request);
 }
 

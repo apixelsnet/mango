@@ -1,10 +1,11 @@
 // Who is using Mango: whether it asks for a password, and which account this browser is signed in to.
 
 import { gate, get, message, send } from './api';
-import { forgetAll } from './offline';
+import { forgetAll, noteWho } from './offline';
+import { dropAll } from './unsent';
 import { turnOff } from './push';
 
-type Status = { login: boolean; setup: boolean; setupCode: boolean; signup: boolean; signedIn: boolean; named: boolean; name: string | null; admin: boolean; account?: string };
+type Status = { login: boolean; setup: boolean; setupCode: boolean; signup: boolean; signedIn: boolean; named: boolean; name: string | null; id?: number; admin: boolean; account?: string };
 
 export const session = $state({
   /** False until Mango has said who we are. */
@@ -23,6 +24,8 @@ export const session = $state({
   named: false,
   /** The account this browser is signed in to. */
   name: null as string | null,
+  /** Its number. Each account numbers its chapters from 1: page addresses carry this, so the browser keeps them apart. */
+  id: null as number | null,
   /** Whether that account may change what all accounts share: the accounts themselves, and the solver. */
   admin: false,
   /** Where this reader's account is kept, when whoever runs this Mango keeps one: their plan, billing and the like. */
@@ -31,7 +34,9 @@ export const session = $state({
 
 export async function loadSession() {
   try {
-    Object.assign(session, await get<Status>('/auth'), { known: true, error: null });
+    Object.assign(session, { id: null }, await get<Status>('/auth'), { known: true, error: null });
+    // Signed in when no password is asked for, too: the owner's library is open to this browser.
+    await noteWho(session.signedIn || !session.login).catch(() => {});
   } catch (e) {
     session.error = message(e);
   }
@@ -58,8 +63,10 @@ export async function signUp(name: string, password: string, code: string) {
 export async function signOut() {
   // Whoever signs in next on this device is not to hear of this account's chapters.
   await turnOff().catch(() => {});
-  await send('POST', '/auth/logout');
-  // Chapters kept on this device go too: whoever signs in next is not to read them.
+  // Chapters kept on this device go too, before Mango is asked: whoever signs in next is not
+  // to read them, even when the sign-out call itself fails for want of a connection.
   await forgetAll().catch(() => {});
+  dropAll();
+  await send('POST', '/auth/logout');
   location.reload();
 }

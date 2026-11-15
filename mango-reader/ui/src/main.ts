@@ -6,6 +6,7 @@ import { loadPrefs } from './lib/prefs.svelte';
 import { startWorker } from './lib/offline';
 import { loadSession, session } from './lib/session.svelte';
 import { adoptServerTheme, initTheme } from './lib/theme.svelte';
+import { sendHeld } from './lib/unsent';
 
 // A tracker that signs in through its own page sends the browser back here with its
 // answer in the address. It is put aside for the Trackers settings, which finish the
@@ -25,7 +26,10 @@ initTheme();
 initDisplay();
 loadSession().then(() => {
   if (session.signedIn) loadPrefs().then(adoptServerTheme);
+  // Places read with no connection go once Mango answers: now, and whenever the connection is back.
+  sendHeld();
 });
+addEventListener('online', () => void sendHeld());
 
 mount(App, { target: document.getElementById('app')! });
 // Chapters kept on this device are read through it when Mango cannot be reached.

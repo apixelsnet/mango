@@ -76,7 +76,7 @@ pub struct Push {
 impl Push {
     pub fn new(db: Db) -> Result<Self> {
         let builder = Client::builder()
-            .user_agent(concat!("Mango/", env!("CARGO_PKG_VERSION")))
+            .user_agent(concat!("Mango/", env!("MANGO_VERSION")))
             .connect_timeout(Duration::from_secs(10))
             .timeout(Duration::from_secs(20));
         let http = net::guard(builder, false).build().map_err(|e| AppError::internal(e.to_string()))?;
