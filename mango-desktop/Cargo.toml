@@ -12,7 +12,7 @@ path = "src/main.rs"
 [dependencies]
 tao = "0.30"
 wry = "0.47"
-tray-icon = "0.19"
+tray-icon = "0.26"
 
 [profile.release]
 opt-level = "s"
