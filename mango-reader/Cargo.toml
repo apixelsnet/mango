@@ -36,7 +36,7 @@ jpeg-encoder = "0.7"
 png = "0.17"
 image-webp = "0.2"
 p256 = { version = "0.13", default-features = false, features = ["ecdh", "ecdsa", "std"] }
-hkdf = "0.12"
+hkdf = "0.13"
 hmac = "0.12"
 sha1 = "0.10"
 md-5 = "0.10"
