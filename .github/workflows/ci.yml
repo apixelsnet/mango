@@ -176,9 +176,6 @@ jobs:
   image:
     name: Image on ${{ matrix.arch }}
     if: github.event_name != 'pull_request'
-    # New and not yet run on GitHub: a failure is shown but does not fail the run. Take
-    # this line out once it has passed on both processors.
-    continue-on-error: true
     strategy:
       fail-fast: false
       matrix:
