@@ -272,7 +272,7 @@ fn device_id(hash: &str) -> String {
 
 fn random<const N: usize>() -> Result<[u8; N]> {
     let mut bytes = [0u8; N];
-    getrandom::getrandom(&mut bytes).map_err(|e| AppError::internal(format!("no random bytes: {e}")))?;
+    getrandom::fill(&mut bytes).map_err(|e| AppError::internal(format!("no random bytes: {e}")))?;
     Ok(bytes)
 }
 

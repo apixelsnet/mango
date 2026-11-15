@@ -720,7 +720,7 @@ fn decode_jpeg(bytes: &[u8], bounds: (u32, u32), shrinks: bool) -> Option<Decode
 }
 
 fn decode_png(bytes: &[u8], bounds: (u32, u32), shrinks: bool) -> Option<Decoded> {
-    let mut decoder = png::Decoder::new(bytes);
+    let mut decoder = png::Decoder::new(std::io::Cursor::new(bytes));
     decoder.set_transformations(png::Transformations::EXPAND | png::Transformations::STRIP_16);
     let mut reader = decoder.read_info().ok()?;
     let (width, height) = (reader.info().width, reader.info().height);
@@ -730,7 +730,7 @@ fn decode_png(bytes: &[u8], bounds: (u32, u32), shrinks: bool) -> Option<Decoded
     if shrinks {
         fit((width, height), bounds)?;
     }
-    let mut pixels = vec![0; reader.output_buffer_size()];
+    let mut pixels = vec![0; reader.output_buffer_size()?];
     let frame = reader.next_frame(&mut pixels).ok()?;
     pixels.truncate(frame.buffer_size());
     let channels = match frame.color_type {
@@ -992,6 +992,9 @@ mod tests {
             let mut out = Vec::new();
             let mut encoder = png::Encoder::new(&mut out, width, height);
             encoder.set_color(color);
+            // Stored, not deflated: the encoder squeezes this repeating pattern below the
+            // size of its JPEG copy, and a big PNG is what is being tested.
+            encoder.set_compression(png::Compression::NoCompression);
             encoder.write_header().unwrap().write_image_data(pixels).unwrap();
             out
         };

@@ -199,7 +199,7 @@ fn signing_key(conn: &Connection) -> Result<SecretKey> {
 fn random_key() -> Result<SecretKey> {
     loop {
         let mut bytes = [0u8; 32];
-        getrandom::getrandom(&mut bytes).map_err(|e| AppError::internal(e.to_string()))?;
+        getrandom::fill(&mut bytes).map_err(|e| AppError::internal(e.to_string()))?;
         // Nearly every 32 bytes make a key; the few that do not are drawn again.
         if let Ok(key) = SecretKey::from_slice(&bytes) {
             return Ok(key);
@@ -209,7 +209,7 @@ fn random_key() -> Result<SecretKey> {
 
 fn random_salt() -> Result<[u8; 16]> {
     let mut salt = [0u8; 16];
-    getrandom::getrandom(&mut salt).map_err(|e| AppError::internal(e.to_string()))?;
+    getrandom::fill(&mut salt).map_err(|e| AppError::internal(e.to_string()))?;
     Ok(salt)
 }
 
@@ -245,7 +245,7 @@ fn encrypt(device_key: &[u8], auth: &[u8], payload: &[u8], own: SecretKey, salt:
     let plain = [payload, &[2]].concat();
     let sealed = Aes128Gcm::new_from_slice(&cek)
         .map_err(|_| AppError::internal("could not encrypt a push message"))?
-        .encrypt(Nonce::from_slice(&nonce), plain.as_slice())
+        .encrypt(&Nonce::from(nonce), plain.as_slice())
         .map_err(broken)?;
     Ok([salt.as_slice(), &RECORD.to_be_bytes(), &[own_public.len() as u8], &own_public, &sealed].concat())
 }

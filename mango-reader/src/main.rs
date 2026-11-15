@@ -186,7 +186,7 @@ fn health() -> Result<(), String> {
     let mark = cfg.data_dir.join(INSTANCE);
     let instance = std::fs::read_to_string(&mark).map_err(|e| format!("no running Mango left its mark at {}: {e}", mark.display()))?;
     let mut nonce = [0u8; 16];
-    getrandom::getrandom(&mut nonce).map_err(|e| format!("no random bytes: {e}"))?;
+    getrandom::fill(&mut nonce).map_err(|e| format!("no random bytes: {e}"))?;
     let challenge = hex::encode(nonce);
 
     let wait = Some(Duration::from_secs(3));

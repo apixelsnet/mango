@@ -677,7 +677,7 @@ fn backoff(failures: u32) -> Duration {
 
 fn new_token() -> Result<String> {
     let mut bytes = [0u8; 32];
-    getrandom::getrandom(&mut bytes).map_err(|e| AppError::internal(format!("no random numbers: {e}")))?;
+    getrandom::fill(&mut bytes).map_err(|e| AppError::internal(format!("no random numbers: {e}")))?;
     Ok(hex::encode(bytes))
 }
 

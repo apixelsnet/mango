@@ -353,7 +353,7 @@ fn plain(value: &Value) -> String {
 /// Random letters for a sign-in's secrets.
 fn secret(bytes: usize) -> Result<String> {
     let mut raw = vec![0u8; bytes];
-    getrandom::getrandom(&mut raw).map_err(|e| AppError::internal(format!("no random bytes: {e}")))?;
+    getrandom::fill(&mut raw).map_err(|e| AppError::internal(format!("no random bytes: {e}")))?;
     Ok(URL_SAFE_NO_PAD.encode(raw))
 }
 
