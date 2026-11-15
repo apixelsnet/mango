@@ -1130,7 +1130,7 @@ dependencies = [
  "der 0.7.10",
  "flate2",
  "futures-core",
- "getrandom 0.2.17",
+ "getrandom 0.4.3",
  "hex",
  "hkdf 0.13.0",
  "hmac 0.13.0",
