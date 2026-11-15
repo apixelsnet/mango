@@ -14,6 +14,8 @@
   import { session, signOut } from '../lib/session.svelte';
   import Storage from '../lib/Storage.svelte';
   import { savingData, setSavingData } from '../lib/saver';
+  import { markdown } from '../lib/markdown';
+  import { allReleases, changes, worthShowing } from '../lib/releases';
   import { againTour } from '../lib/guide.svelte';
   import { ago, copyText } from '../lib/util';
   import { checkVersion, version as about } from '../lib/version.svelte';
@@ -2110,20 +2112,32 @@
         </section>
 
         {#if v.releases.length}
+          {@const shown = worthShowing(v.releases, v.current)}
           <section class="card">
-            <h3>Releases and their notes</h3>
+            <h3>What's new</h3>
             <ul class="rows releases">
-              {#each v.releases as release (release.version)}
+              {#each shown as release, i (release.version)}
+                {@const text = changes(release.notes)}
                 <li>
                   <span class="main">
                     <strong>{release.name}</strong>
                     <span>{[day(release.publishedAt), release.prerelease ? 'pre-release' : '', release.version === v.current ? 'this one' : ''].filter(Boolean).join(' · ')}</span>
-                    {#if release.notes.trim()}<pre>{release.notes.trim()}</pre>{/if}
+                    {#if text}
+                      <!-- Open by itself only for an update, not for notes of the Mango already running. -->
+                      <details open={i === 0 && release.version !== v.current}>
+                        <summary>What changed</summary>
+                        <!-- Escaped before it is read as Markdown: only the tags markdown() makes get here. -->
+                        <div class="notes">{@html markdown(text)}</div>
+                      </details>
+                    {/if}
                   </span>
-                  <a class="btn" href={release.url} target="_blank" rel="noreferrer">Open</a>
+                  <a class="btn" href={release.url} target="_blank" rel="noreferrer">Full notes</a>
                 </li>
               {/each}
             </ul>
+            <div class="set all">
+              <a class="btn" href={allReleases(shown[0])} target="_blank" rel="noreferrer">Every release and its full notes</a>
+            </div>
           </section>
         {/if}
       {:else}
@@ -2454,11 +2468,41 @@
     gap: 8px;
   }
 
-  pre {
-    margin: 8px 0 0;
-    font: 13px/1.5 ui-monospace, Consolas, monospace;
-    white-space: pre-wrap;
-    overflow-wrap: anywhere;
+  .releases details {
+    margin-top: 8px;
+  }
+
+  .releases summary {
+    cursor: pointer;
+    font-weight: 700;
+  }
+
+  /* What markdown() makes from the notes: kept to the size of the text around it. */
+  .notes {
+    margin-top: 6px;
+    overflow-wrap: break-word;
+  }
+
+  .notes :global(:is(p, ul, ol, h3, h4, h5, h6)) {
+    margin: 0 0 0.6em;
+  }
+
+  .notes :global(:is(h3, h4, h5, h6)) {
+    font-size: 13px;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+  }
+
+  .notes :global(ul) {
+    padding-left: 1.2em;
+  }
+
+  .notes :global(li + li) {
+    margin-top: 4px;
+  }
+
+  .all {
+    border-top: 2px solid var(--ink);
   }
 
   .rename .field,

@@ -4,6 +4,9 @@ What changed for people who read with Mango, in plain words. Changes to how Mang
 
 ## Unreleased
 
+### Changed
+- **What's new** under **Settings › About** is short now: only the releases newer than yours (or just the newest), each with what changed in plain words, the newest open and the rest folded. **Full notes** and **Every release and its full notes** open the whole list on the releases page.
+
 ## 1.5.2 — 2026-11-15
 
 ### Added
