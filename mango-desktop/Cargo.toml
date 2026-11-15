@@ -10,7 +10,7 @@ name = "mango-desktop"
 path = "src/main.rs"
 
 [dependencies]
-tao = "0.30"
+tao = "0.37"
 wry = "0.47"
 tray-icon = "0.19"
 
