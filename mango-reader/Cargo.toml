@@ -18,7 +18,7 @@ rust-embed = "8"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 toml = "0.8"
-prost = "0.13"
+prost = "0.14"
 flate2 = "1"
 futures-core = "0.3"
 # deflate-flate2 rather than deflate: that one moves flate2 onto zlib-rs. Without it flate2
