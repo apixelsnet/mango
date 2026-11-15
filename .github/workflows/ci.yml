@@ -176,9 +176,6 @@ jobs:
   image:
     name: Image on ${{ matrix.arch }}
     if: github.event_name != 'pull_request'
-    # New and not yet run on GitHub: a failure is shown but does not fail the run. Take
-    # this line out once it has passed on both processors.
-    continue-on-error: true
     strategy:
       fail-fast: false
       matrix:
@@ -196,7 +193,7 @@ jobs:
 
       - name: Start it
         run: |
-          docker run -d --name mango -p 127.0.0.1:8787:8787 -e MANGO_PASSWORD=smoke-test-password mango:ci
+          docker run -d --name mango -p 127.0.0.1:8787:8787 -e MANGO_PASSWORD=smoke-test-password -e MANGO_HOST_IDLE_SECS=10 mango:ci
           for _ in $(seq 1 60); do curl -fsS http://127.0.0.1:8787/api/health && break; sleep 2; done
           docker exec mango mango version
           uname -m
