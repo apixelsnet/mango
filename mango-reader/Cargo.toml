@@ -38,7 +38,7 @@ image-webp = "0.2"
 p256 = { version = "0.13", default-features = false, features = ["ecdh", "ecdsa", "std"] }
 hkdf = "0.12"
 hmac = "0.12"
-sha1 = "0.10"
+sha1 = "0.11"
 md-5 = "0.10"
 aes-gcm = "0.10"
 getrandom = "0.2"
