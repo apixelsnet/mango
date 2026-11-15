@@ -33,7 +33,7 @@ base64 = "0.22"
 hex = "0.4"
 jpeg-decoder = { version = "0.3", default-features = false }
 jpeg-encoder = "0.7"
-png = "0.17"
+png = "0.18"
 image-webp = "0.2"
 p256 = { version = "0.13", default-features = false, features = ["ecdh", "ecdsa", "std"] }
 hkdf = "0.13"
