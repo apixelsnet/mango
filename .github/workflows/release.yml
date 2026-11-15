@@ -45,7 +45,7 @@ jobs:
       tag: ${{ steps.pick.outputs.tag }}
       prerelease: ${{ steps.pick.outputs.prerelease }}
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           # Nothing after the checkout pushes with git; the token is not left in the folder.
           persist-credentials: false
@@ -131,7 +131,7 @@ jobs:
       TEST_IMAGE: mango:release-test-${{ github.run_id }}
       TEST_NAME: mango-release-test-${{ github.run_id }}
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           # Nothing after the checkout pushes with git; the token is not left in the folder.
           persist-credentials: false
@@ -256,7 +256,7 @@ jobs:
       MANGO_COMMIT: ${{ github.sha }}
       MANGO_REPO: ${{ github.repository }}
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           # Nothing after the checkout pushes with git; the token is not left in the folder.
           persist-credentials: false
