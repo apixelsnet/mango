@@ -26,7 +26,7 @@ use axum::{
     Json, Router,
 };
 use base64::Engine;
-use hmac::{Hmac, Mac};
+use hmac::{Hmac, KeyInit, Mac};
 use md5::Md5;
 use rusqlite::{params, Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
@@ -355,7 +355,7 @@ fn base32(bytes: &[u8]) -> String {
 
 /// The six digits an authenticator shows for `secret` in the step `step` (RFC 6238, SHA-1).
 fn totp(secret: &[u8], step: i64) -> u32 {
-    let mut mac = <Hmac<Sha1> as Mac>::new_from_slice(secret).expect("HMAC takes a key of any length");
+    let mut mac = <Hmac<Sha1> as KeyInit>::new_from_slice(secret).expect("HMAC takes a key of any length");
     mac.update(&(step as u64).to_be_bytes());
     let digest = mac.finalize().into_bytes();
     let at = usize::from(digest[19] & 0x0f);

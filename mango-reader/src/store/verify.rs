@@ -16,7 +16,7 @@ use rsa::{
     pkcs1v15::{Signature, VerifyingKey},
     pkcs8::DecodePublicKey,
     signature::Verifier,
-    RsaPublicKey,
+    PublicKey,
 };
 use sha2::{Digest, Sha256};
 use std::{
@@ -141,7 +141,7 @@ fn signer(block: &[u8], sf: &[u8]) -> Result<String, String> {
         for choice in certificates.0.iter() {
             let CertificateChoices::Certificate(certificate) = choice else { continue };
             let Ok(key_der) = certificate.tbs_certificate.subject_public_key_info.to_der() else { continue };
-            let Ok(key) = RsaPublicKey::from_public_key_der(&key_der) else { continue };
+            let Ok(key) = PublicKey::from_public_key_der(&key_der) else { continue };
             if VerifyingKey::<Sha256>::new(key).verify(&message, &signature).is_ok() {
                 let der = certificate.to_der().map_err(|e| e.to_string())?;
                 return Ok(hex::encode(Sha256::digest(der)));
