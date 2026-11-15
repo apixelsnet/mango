@@ -26,7 +26,7 @@ futures-core = "0.3"
 zip = { version = "9.0.5", default-features = false, features = ["deflate-flate2", "deflate-zopfli"] }
 sha2 = { version = "0.10", features = ["oid"] }
 argon2 = { version = "0.5", default-features = false, features = ["alloc", "password-hash"] }
-rsa = "0.9"
+rsa = "0.10"
 cms = "0.2"
 der = { version = "0.7", features = ["oid", "std"] }
 base64 = "0.22"
